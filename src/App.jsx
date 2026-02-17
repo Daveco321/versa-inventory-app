@@ -585,8 +585,11 @@ export default function VersaInventoryApp() {
     }
   }, [filterMode, inventory]);
 
-  // ─── Navigation ────────────────────────
-  const goToBrands = useCallback(() => { setView("brands"); setCurrentBrand(null); setSelectedItem(null); setSearchQuery(""); setFitFilter([]); setFabricFilter([]); }, []);
+  // ─── Navigation with Browser History ────────────────────────
+  const goToBrands = useCallback(() => { 
+    setView("brands"); setCurrentBrand(null); setSelectedItem(null); setSearchQuery(""); setFitFilter([]); setFabricFilter([]); 
+    window.history.pushState({ view: "brands" }, "", "#brands");
+  }, []);
   const goToInventory = useCallback((brandKey) => { 
     setCurrentBrand(brandKey); 
     setView("inventory"); 
@@ -594,11 +597,60 @@ export default function VersaInventoryApp() {
     setSearchQuery(""); 
     setFitFilter([]); 
     setFabricFilter([]); 
+    window.history.pushState({ view: "inventory", brand: brandKey }, "", `#brand-${brandKey}`);
     // Preload images for this brand
     const b = brands[brandKey];
     if (b?.items) preloadImages(b.items);
   }, [brands]);
-  const goToDetail = useCallback((item) => { setSelectedItem(item); }, []);
+  const goToDetail = useCallback((item) => { 
+    setSelectedItem(item); 
+    window.history.pushState({ view: "detail", sku: item.sku }, "", `#sku-${item.sku}`);
+  }, []);
+
+  // ─── Browser Back Button Support ────────────────────────
+  useEffect(() => {
+    const handlePopState = (e) => {
+      const state = e.state;
+      if (!state || state.view === "brands") {
+        setView("brands"); setCurrentBrand(null); setSelectedItem(null); setSearchQuery(""); setFitFilter([]); setFabricFilter([]);
+      } else if (state.view === "inventory" && state.brand) {
+        setCurrentBrand(state.brand); setView("inventory"); setSelectedItem(null); setSearchQuery(""); setFitFilter([]); setFabricFilter([]);
+      } else if (state.view === "detail") {
+        // just close the modal, stay on inventory
+        setSelectedItem(null);
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    // Set initial state
+    window.history.replaceState({ view: "brands" }, "", "#brands");
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  // ─── Backspace Key Navigation ────────────────────────
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Don't interfere if user is typing in an input/textarea
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+      if (e.key === "Backspace") {
+        e.preventDefault();
+        if (selectedItem) {
+          setSelectedItem(null);
+          window.history.back();
+        } else if (showCart) {
+          setShowCart(false);
+        } else if (view === "inventory") {
+          goToBrands();
+        }
+      }
+      // Escape also closes modals
+      if (e.key === "Escape") {
+        if (selectedItem) { setSelectedItem(null); window.history.back(); }
+        else if (showCart) setShowCart(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedItem, showCart, view, goToBrands]);
 
   // ─── Cart Actions ──────────────────────
   const addToCart = useCallback((item) => {
