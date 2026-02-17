@@ -42,9 +42,9 @@ const BRAND_ORDER = ["NAUTICA","DKNY","EB","VINCE","KL","CHAPS","USPA","LUCKY","
 const SKU_BRAND_CODE_MAP = {};
 Object.entries(BRAND_IMAGE_PREFIX).forEach(([brand, prefix]) => { SKU_BRAND_CODE_MAP[prefix] = brand; });
 
-const FABRIC_RULES = {AW:"All-Over Wash",BF:"Bedford Cord",BR:"Brushed Twill",CB:"Chambray",CH:"Check",CK:"Tattersall Check",CL:"Cluster Print",CR:"Corduroy",CT:"Cotton",DB:"Dobby",DC:"Denim Chambray",DG:"Digital Print",DL:"Delave",DM:"Denim",DN:"Donegal",DP:"Dot Print",DS:"Dash Stripe",EN:"End on End",FD:"Feeder Stripe",FL:"Flannel",FP:"Floral Print",GH:"Gingham",GP:"Geo Print",GT:"Garment Wash",HB:"Houndstooth",HD:"Heather",HT:"Herringbone",IN:"Indigo",IR:"Iridescent",JQ:"Jacquard",KN:"Knit",LI:"Linen",LN:"Linen Blend",MD:"Madras",ML:"Melange",MR:"Micro Print",NP:"Novelty Print",OG:"Organic Cotton",OH:"Oxford Horizontal",OX:"Oxford",PA:"Paisley",PD:"Plaid",PG:"Pigment Dye",PK:"Pique",PL:"Poplin",PN:"Pinpoint",PP:"Polka Dot Print",PR:"Performance",PT:"Print",QT:"Quilted",RP:"Retro Print",SA:"Sateen",SD:"Solid",SH:"Stretch Herringbone",SL:"Slim",SN:"Seersucker",SP:"Stripe",SR:"Stretch",SS:"Satin Stripe",ST:"Stretch Poplin",SW:"Stretch Woven",TB:"Textured Basket",TC:"Texture Check",TD:"Texture Dobby",TH:"Thermal Heather",TP:"Tropical Print",TR:"Twill",TS:"Texture Stripe",TT:"Tattersall",TW:"Tweed",TY:"Ticking Stripe",VL:"Velvet",VT:"Vintage",WF:"Waffle",WN:"Window Pane",WV:"Woven"};
+const FABRIC_RULES = {AW:"4 Way Stretch",CA:"Cataonic 95% Polyester / 5% Spandex",TD:"CVC Dobby 60% Polyester / 40% Cotton",CH:"Chambray TC Stretch",CS:"Cooling Stretch",CV:"Cotton / Poly CVC",DS:"4 Way Stretch Dobby 95% Polyester / 5% Spandex",OX:"Pinpoint Oxford 65%/35% Poly/Cotton",PP:"100% Polyester 150D",SA:"150D Sateen 100% Polyester",LN:"100% Slab Linen",ST:"97% Cotton 3% Spandex",SW:"97% Cotton 3% Stretch Twill",SU:"Stretch Supershirt (95% Polyester, 5% Spandex)",TR:"Traveler Stretch",TW:"4 Way Stretch Twill",TS:"TC Stretch (77% Polyester / 20% Cotton / 3% Spandex)",WS:"4 Way Stretch (95%,5%) Sateen",PC:"TC Poplin 65%/35% Poly/Cotton",PT:"97% Poly 3% Stretch 150D",VS:"Viscose (31%) Stretch",VP:"50% Viscose 50% Polyester",LP:"Linen Polyester/Spandex",MR:"50% Microfiber 50% Rayon",CT:"100% Cotton",CP:"98% Cotton / 2% Spandex",BP:"50% Bamboo / 50% Polyester",TC:"TC Stretch (52P, 45C, 3S %)",SC:"60% Cotton, 38% Poly, 2% Spandex",BM:"30% Rayon Bamboo / 30% Microfiber / 36% Poly / 4% Spandex Twill",VM:"62% Poly 35% Viscose Bamboo 3% Spandex",SP:"52% Poly 45% Cotton 3% Spandex CVC Yarn Dye",TP:"Solid Twill 21% Rayon / 75.5% Poly / 3.5% Spandex",LC:"Linen 51% Cotton / 49% Poly",CX:"97% Cotton / 3% Polyester",WF:"96% Poly 4% Spandex Waffle",FT:"97% Poly / 3% Spandex Flax Texture",CE:"88% Polyester / 7% Cellulose / 5% Spandex Tech",PK:"100% Polyester Knit",PD:"60% Cotton / 40% Polyester Dobby",PY:"50% Cotton / 47% Polyester / 3% Spandex CVC Oxford",UP:"95% Poly / 5% Spandex Perforated",NY:"78% Nylon / 22% Spandex",CL:"35% Lyocell / 35% Cotton / 27% Nylon / 3% Spandex",PM:"50% Polyester / 50% Microfiber",PX:"95% Polyester / 5% Spandex Core",CN:"71% Cotton / 27% Nylon / 2% Spandex",MP:"74% Modal / 26% Polyester",LE:"100% Linen",PE:"96% Polyester / 4% Spandex End on End",OC:"100% Cotton Oxford",CD:"100% Cotton Dobby",CY:"100% Cotton Yarn Dye",CW:"100% Cotton Twill",CJ:"100% Cotton Jacquard",LT:"45% Cotton / 55% Linen",DP:"95% Polyester / 5% Spandex Knit Performance",PR:"87% Polyamide / 13% Elastic",PS:"94% Polyester / 6% Spandex Knit",CG:"100% Cotton Poplin 105gsm",PA:"88% Polyester / 12% Spandex Seamless Lux Knit",PN:"88% Polyester / 12% Spandex Non-Seamless",CF:"100% Cotton 50s 2 Ply",CB:"100% Cotton 80s 2 Ply (Bloomingdale)",KN:"Knits",WT:"Woven Tops",SD:"Sweaters",SF:"Flannel (Shackets)",SB:"Trucker (Shackets)",CO:"Corduroy (Shackets)",YD:"Yarn Dye"};
 
-const FIT_CODES = {S:"Slim Fit",R:"Regular Fit",T:"Trim Fit",A:"Athletic Fit",C:"Classic Fit",F:"Fitted",K:"Skinny Fit",P:"Performance Fit",X:"Extra Slim Fit"};
+const FIT_CODES = {SL:"Slim Fit",RF:"Regular Fit",TF:"Tailored Fit",MF:"Modern Fit",BT:"Big & Tall",CF:"Classic Fit",AF:"Athletic Fit"};
 
 // ═══════════════════════════════════════════
 // UTILITY FUNCTIONS
@@ -78,26 +78,36 @@ function getImageUrl(item) {
 }
 
 function getFabricFromSKU(sku) {
-  if (!sku || sku.length < 8) return { code: "—", description: "Unknown" };
-  const code = sku.substring(6, 8).toUpperCase();
-  return { code, description: FABRIC_RULES[code] || code };
+  if (!sku || sku.length < 6) return { code: "—", description: "Unknown" };
+  // SKU structure: [0-1] customer + [2-3] brand + [4-5] fabric + [6-9] style# + [9-10] fit + [11] collar
+  const brand = sku.substring(2, 4).toUpperCase();
+  const code = sku.substring(4, 6).toUpperCase();
+  let desc = FABRIC_RULES[code] || code;
+  // Special brand overrides
+  if (brand === "CH" && code === "YD") desc = "50% Microfiber / 50% Polyester Yarn Dye";
+  if (brand === "CH" && code === "PT") desc = "97% Polyester / 3% Spandex (150D STRETCH)";
+  if (brand === "BE" && code === "YD") desc = "77% Poly / 20% Cotton / 3% Spandex";
+  return { code, description: desc };
 }
 
 function getFitFromSKU(sku) {
-  if (!sku || sku.length < 9) return "Unknown";
-  const code = sku[8]?.toUpperCase();
-  return FIT_CODES[code] || code || "Unknown";
+  if (!sku || sku.length < 3) return "Unknown";
+  // Fit code is 2nd and 3rd characters from the end of the base style
+  const baseStyle = sku.split("-")[0].toUpperCase();
+  const fitCode = baseStyle.slice(-3, -1);
+  return FIT_CODES[fitCode] || fitCode || "Unknown";
 }
 
-function getSizePack(sku) {
-  if (!sku || sku.length < 12) return { master_qty: "—", inner_qty: "—", sizes: [] };
-  const packChar = sku[9];
-  const sizeCode = sku.substring(10, 12);
-  const packs = {"A":{master:36,inner:6},"B":{master:48,inner:8},"C":{master:60,inner:10},"D":{master:24,inner:4},"E":{master:72,inner:12},"F":{master:30,inner:5},"G":{master:42,inner:7},"H":{master:54,inner:9},"J":{master:66,inner:11}};
-  const sizeSets = {"LS":[["S",1],["M",2],["L",2],["XL",1]],"LX":[["M",1],["L",2],["XL",2],["XXL",1]],"LB":[["L",2],["XL",2],["XXL",1],["3XL",1]],"NS":[["14.5/32-33",1],["15/32-33",1],["15.5/32-33",1],["16/34-35",1],["16.5/34-35",1],["17/34-35",1]]};
-  const p = packs[packChar] || { master: "—", inner: "—" };
-  const s = sizeSets[sizeCode] || [["N/A", 1]];
-  return { master_qty: p.master, inner_qty: p.inner, sizes: s };
+const SIZE_PACKS = {
+  "Slim Fit": { master_qty:36, inner_qty:9, sizes:[["14-14.5 / 32-33",4],["15-15.5 / 32-33",8],["15-15.5 / 34-35",4],["16-16.5 / 32-33",4],["16-16.5 / 34-35",8],["17-17.5 / 34-35",8]] },
+  "Regular Fit": { master_qty:36, inner_qty:9, sizes:[["15-15.5 / 32-33",8],["15-15.5 / 34-35",8],["16-16.5 / 32-33",4],["16-16.5 / 34-35",4],["17-17.5 / 34-35",4],["17-17.5 / 36-37",4],["18-18.5 / 36-37",4]] },
+  "Von Dutch": { master_qty:36, inner_qty:9, sizes:[["S (14-14.5)",6],["M (15-15.5)",8],["L (16-16.5)",8],["XL (17-17.5)",8],["XXL (18-18.5)",6]] }
+};
+
+function getSizePack(sku, brandAbbr) {
+  if (brandAbbr === "VD") return SIZE_PACKS["Von Dutch"];
+  const fit = getFitFromSKU(sku);
+  return SIZE_PACKS[fit] || SIZE_PACKS["Regular Fit"];
 }
 
 function sortBrands(entries) {
@@ -401,16 +411,54 @@ function ProductCard({ item, onClick }) {
   );
 }
 
+// ─── Fullscreen Image Viewer ────────────
+function FullscreenImage({ src, alt, onClose }) {
+  if (!src) return null;
+  useEffect(() => {
+    const handleKey = (e) => { if (e.key === "Escape" || e.key === "Backspace") { e.preventDefault(); onClose(); } };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+  return (
+    <div onClick={onClose} style={{
+      position:"fixed",inset:0,background:"rgba(0,0,0,.92)",backdropFilter:"blur(8px)",
+      display:"flex",alignItems:"center",justifyContent:"center",zIndex:1100,
+      cursor:"zoom-out",padding:16
+    }}>
+      <button onClick={onClose} style={{
+        position:"fixed",top:16,right:16,zIndex:1101,
+        background:"rgba(255,255,255,.15)",border:"1px solid rgba(255,255,255,.2)",
+        color:"#fff",fontSize:20,fontWeight:700,width:44,height:44,borderRadius:12,
+        cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",
+        backdropFilter:"blur(4px)"
+      }}>✕</button>
+      <img src={src} alt={alt} style={{
+        maxWidth:"95%",maxHeight:"92vh",objectFit:"contain",borderRadius:8,
+        boxShadow:"0 20px 60px rgba(0,0,0,.5)"
+      }} />
+      <p style={{
+        position:"fixed",bottom:20,left:0,right:0,textAlign:"center",
+        color:"rgba(255,255,255,.6)",fontSize:13,fontWeight:600
+      }}>{alt}</p>
+    </div>
+  );
+}
+
 // ─── Product Detail Modal ────────────────
 function ProductDetailModal({ item, onClose, onAddToCart }) {
   if (!item) return null;
   const fabric = getFabricFromSKU(item.sku);
   const fit = getFitFromSKU(item.sku);
-  const sp = getSizePack(item.sku);
+  const sp = getSizePack(item.sku, item.brand_abbr || item.brand);
   const totalStock = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
   const ats = item.total_ats || 0;
+  const [showFullImage, setShowFullImage] = useState(false);
 
   return (
+    <>
+    {showFullImage && (
+      <FullscreenImage src={resolveImageUrl(item)} alt={item.sku} onClose={() => setShowFullImage(false)} />
+    )}
     <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16 }} onClick={onClose}>
       <div style={{ background:"rgba(255,255,255,.97)",borderRadius:14,maxWidth:580,width:"100%",maxHeight:"85vh",display:"flex",flexDirection:"column",boxShadow:"0 25px 60px rgba(0,0,0,.3)",position:"relative" }} onClick={e => e.stopPropagation()}>
         
@@ -428,7 +476,10 @@ function ProductDetailModal({ item, onClose, onAddToCart }) {
           
           {/* Image + Key Stats Row */}
           <div style={{ display:"flex",gap:16,marginBottom:16 }}>
-            <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ width:140,height:180,borderRadius:10,objectFit:"cover",border:"2px solid #e5e7eb",flexShrink:0 }} />
+            <div style={{ position:"relative",flexShrink:0,cursor:"zoom-in" }} onClick={() => setShowFullImage(true)}>
+              <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ width:140,height:180,borderRadius:10,objectFit:"cover",border:"2px solid #e5e7eb" }} />
+              <div style={{ position:"absolute",bottom:6,right:6,background:"rgba(0,0,0,.5)",color:"#fff",borderRadius:6,padding:"3px 6px",fontSize:10,fontWeight:600,backdropFilter:"blur(4px)" }}>🔍 Tap</div>
+            </div>
             <div style={{ flex:1,display:"flex",flexDirection:"column",gap:8 }}>
               <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>
                 <div style={{ background:"linear-gradient(135deg,#10b981,#059669)",color:"#fff",padding:10,borderRadius:10 }}>
@@ -503,6 +554,7 @@ function ProductDetailModal({ item, onClose, onAddToCart }) {
         </div>
       </div>
     </div>
+    </>
   );
 }
 
@@ -969,11 +1021,22 @@ export default function VersaInventoryApp() {
 
 
 
-              <p style={{ fontSize:12,color:"#64748b",marginTop:10 }}>
+              <p style={{ fontSize:12,color:"#64748b",marginTop:10,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
                 Showing <strong style={{ color:"#e2e8f0" }}>{filteredItems.length}</strong> of {brandData.items.length} styles
+                {filterMode !== "all" && (
+                  <span style={{
+                    display:"inline-flex",alignItems:"center",gap:4,
+                    background: filterMode === "incoming" ? "rgba(245,158,11,.15)" : "rgba(59,130,246,.15)",
+                    color: filterMode === "incoming" ? "#f59e0b" : "#60a5fa",
+                    padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,
+                    border: `1px solid ${filterMode === "incoming" ? "rgba(245,158,11,.3)" : "rgba(59,130,246,.3)"}`
+                  }}>
+                    {filterMode === "incoming" ? "🚢 Overseas Only" : "🏭 Warehouse ATS"}
+                  </span>
+                )}
                 {searchQuery && (
                   <button onClick={() => setSearchQuery("")}
-                    style={{ marginLeft:8,fontSize:11,color:"#818cf8",background:"none",border:"none",cursor:"pointer",fontWeight:600 }}>Clear search</button>
+                    style={{ fontSize:11,color:"#818cf8",background:"none",border:"none",cursor:"pointer",fontWeight:600 }}>Clear search</button>
                 )}
               </p>
             </div>
