@@ -358,86 +358,94 @@ function ProductDetailModal({ item, onClose, onAddToCart }) {
   const ats = item.total_ats || 0;
 
   return (
-    <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20 }} onClick={onClose}>
-      <div style={{ background:"rgba(255,255,255,.97)",borderRadius:16,maxWidth:960,width:"100%",maxHeight:"90vh",overflowY:"auto",boxShadow:"0 25px 60px rgba(0,0,0,.3)",padding:28 }} onClick={e => e.stopPropagation()}>
-        <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24 }}>
-          <h2 style={{ fontSize:22,fontWeight:800 }}>Product Details</h2>
-          <button onClick={onClose} style={{ fontSize:28,background:"none",border:"none",color:"#9ca3af",cursor:"pointer",lineHeight:1 }}>×</button>
-        </div>
-        <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:32 }}>
-          {/* Image */}
-          <div style={{ textAlign:"center" }}>
-            <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ maxWidth:"100%",maxHeight:400,borderRadius:12,objectFit:"contain",border:"2px solid #e5e7eb" }} />
-            {ats > 0 && (
-              <button onClick={() => onAddToCart(item)} style={{ marginTop:16,background:"linear-gradient(135deg,#667eea,#764ba2)",color:"#fff",border:"none",padding:"12px 32px",borderRadius:12,fontSize:16,fontWeight:700,cursor:"pointer" }}>
-                🛒 Add to Cart
-              </button>
-            )}
-          </div>
-          {/* Details */}
+    <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16 }} onClick={onClose}>
+      <div style={{ background:"rgba(255,255,255,.97)",borderRadius:14,maxWidth:580,width:"100%",maxHeight:"85vh",display:"flex",flexDirection:"column",boxShadow:"0 25px 60px rgba(0,0,0,.3)",position:"relative" }} onClick={e => e.stopPropagation()}>
+        
+        {/* Sticky header with close button */}
+        <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 20px",borderBottom:"1px solid #e5e7eb",flexShrink:0 }}>
           <div>
-            <h3 style={{ fontSize:28,fontWeight:800,color:"#1f2937",marginBottom:4 }}>{item.sku}</h3>
-            <p style={{ fontSize:16,color:"#6b7280",marginBottom:16 }}>{item.brand_full}</p>
+            <h2 style={{ fontSize:18,fontWeight:800,color:"#1f2937" }}>{item.sku}</h2>
+            <p style={{ fontSize:12,color:"#6b7280" }}>{item.brand_full}</p>
+          </div>
+          <button onClick={onClose} style={{ fontSize:24,background:"#f3f4f6",border:"none",color:"#6b7280",cursor:"pointer",lineHeight:1,width:36,height:36,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,flexShrink:0 }}>✕</button>
+        </div>
 
-            {/* Stats */}
-            <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20 }}>
-              <div style={{ background:"linear-gradient(135deg,#10b981,#059669)",color:"#fff",padding:16,borderRadius:12 }}>
-                <p style={{ fontSize:12,opacity:.85 }}>Available to Sell</p>
-                <p style={{ fontSize:32,fontWeight:800 }}>{ats.toLocaleString()}</p>
-              </div>
-              <div style={{ background:"linear-gradient(135deg,#3b82f6,#4f46e5)",color:"#fff",padding:16,borderRadius:12 }}>
-                <p style={{ fontSize:12,opacity:.85 }}>Total Stock</p>
-                <p style={{ fontSize:32,fontWeight:800 }}>{totalStock.toLocaleString()}</p>
-              </div>
-            </div>
-
-            {/* Product Info */}
-            <div style={{ background:"#f9fafb",padding:20,borderRadius:12,marginBottom:16 }}>
-              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:12 }}>
-                <div><p style={{ fontSize:12,color:"#6b7280",fontWeight:600 }}>Fit</p><p style={{ fontSize:17,fontWeight:700,color:"#7c3aed" }}>{fit}</p></div>
-                <div><p style={{ fontSize:12,color:"#6b7280",fontWeight:600 }}>Fabric Code</p><p style={{ fontSize:17,fontWeight:700 }}>{fabric.code}</p></div>
-              </div>
-              <div><p style={{ fontSize:12,color:"#6b7280",fontWeight:600 }}>Fabrication</p><p style={{ fontSize:14 }}>{fabric.description}</p></div>
-            </div>
-
-            {/* Warehouse */}
-            <h4 style={{ fontSize:16,fontWeight:700,marginBottom:10 }}>Warehouse Stock</h4>
-            <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:16 }}>
-              {[["JTW",item.jtw,"#dbeafe","#1d4ed8"],["TR",item.tr,"#f3e8ff","#7c3aed"],["DCW",item.dcw,"#ffedd5","#c2410c"],["QA",item.qa||0,"#ccfbf1","#0f766e"]].map(([label,val,bg,color]) => (
-                <div key={label} style={{ background:bg,padding:12,borderRadius:10,textAlign:"center" }}>
-                  <p style={{ fontSize:12,color,fontWeight:600 }}>{label}</p>
-                  <p style={{ fontSize:22,fontWeight:800 }}>{val}</p>
+        {/* Scrollable content */}
+        <div style={{ overflowY:"auto",padding:"16px 20px" }}>
+          
+          {/* Image + Key Stats Row */}
+          <div style={{ display:"flex",gap:16,marginBottom:16 }}>
+            <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ width:140,height:180,borderRadius:10,objectFit:"cover",border:"2px solid #e5e7eb",flexShrink:0 }} />
+            <div style={{ flex:1,display:"flex",flexDirection:"column",gap:8 }}>
+              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>
+                <div style={{ background:"linear-gradient(135deg,#10b981,#059669)",color:"#fff",padding:10,borderRadius:10 }}>
+                  <p style={{ fontSize:10,opacity:.85 }}>ATS</p>
+                  <p style={{ fontSize:22,fontWeight:800 }}>{ats.toLocaleString()}</p>
                 </div>
-              ))}
-            </div>
-
-            {/* Committed & Incoming */}
-            <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16 }}>
-              <div style={{ background:"#fefce8",padding:12,borderRadius:10 }}>
-                <p style={{ fontSize:12,color:"#a16207",fontWeight:600 }}>Committed & Allocated</p>
-                <p style={{ fontSize:20,fontWeight:800 }}>{((item.committed||0)+(item.allocated||0)).toLocaleString()}</p>
-              </div>
-              <div style={{ background:"#ecfeff",padding:12,borderRadius:10 }}>
-                <p style={{ fontSize:12,color:"#0e7490",fontWeight:600 }}>Incoming</p>
-                <p style={{ fontSize:20,fontWeight:800 }}>{(item.incoming||0).toLocaleString()}</p>
-              </div>
-            </div>
-
-            {/* Size Pack */}
-            <h4 style={{ fontSize:16,fontWeight:700,marginBottom:10 }}>Case Pack</h4>
-            <div style={{ background:"linear-gradient(135deg,#faf5ff,#eff6ff)",padding:14,borderRadius:12,display:"flex",gap:20,marginBottom:12 }}>
-              <div><p style={{ fontSize:12,color:"#6b7280" }}>Master</p><p style={{ fontSize:22,fontWeight:800,color:"#7c3aed" }}>{sp.master_qty} pcs</p></div>
-              <div><p style={{ fontSize:12,color:"#6b7280" }}>Inner</p><p style={{ fontSize:22,fontWeight:800,color:"#3b82f6" }}>{sp.inner_qty} pcs</p></div>
-            </div>
-            <div style={{ background:"#e5e7eb",borderRadius:10,overflow:"hidden" }}>
-              <div style={{ background:"#667eea",color:"#fff",padding:10,textAlign:"center",fontWeight:700,fontSize:13 }}>Size Breakdown</div>
-              {sp.sizes.map(([size, qty], i) => (
-                <div key={i} style={{ display:"grid",gridTemplateColumns:"2fr 1fr",gap:2 }}>
-                  <div style={{ background:"#fff",padding:8,textAlign:"center",fontWeight:600,fontSize:13 }}>{size}</div>
-                  <div style={{ background:"#fff",padding:8,textAlign:"center",color:"#7c3aed",fontWeight:700,fontSize:13 }}>{qty} pcs</div>
+                <div style={{ background:"linear-gradient(135deg,#3b82f6,#4f46e5)",color:"#fff",padding:10,borderRadius:10 }}>
+                  <p style={{ fontSize:10,opacity:.85 }}>Total Stock</p>
+                  <p style={{ fontSize:22,fontWeight:800 }}>{totalStock.toLocaleString()}</p>
                 </div>
-              ))}
+              </div>
+              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>
+                <div style={{ background:"#f9fafb",padding:8,borderRadius:8 }}>
+                  <p style={{ fontSize:10,color:"#6b7280",fontWeight:600 }}>Fit</p>
+                  <p style={{ fontSize:13,fontWeight:700,color:"#7c3aed" }}>{fit}</p>
+                </div>
+                <div style={{ background:"#f9fafb",padding:8,borderRadius:8 }}>
+                  <p style={{ fontSize:10,color:"#6b7280",fontWeight:600 }}>Fabric</p>
+                  <p style={{ fontSize:13,fontWeight:700 }}>{fabric.code}: {fabric.description.length > 18 ? fabric.description.substring(0,16)+"…" : fabric.description}</p>
+                </div>
+              </div>
+              {ats > 0 && (
+                <button onClick={() => onAddToCart(item)} style={{ background:"linear-gradient(135deg,#667eea,#764ba2)",color:"#fff",border:"none",padding:"9px 0",borderRadius:10,fontSize:13,fontWeight:700,cursor:"pointer",width:"100%" }}>
+                  🛒 Add to Cart
+                </button>
+              )}
             </div>
+          </div>
+
+          {/* Warehouse */}
+          <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:12 }}>
+            {[["JTW",item.jtw,"#dbeafe","#1d4ed8"],["TR",item.tr,"#f3e8ff","#7c3aed"],["DCW",item.dcw,"#ffedd5","#c2410c"],["QA",item.qa||0,"#ccfbf1","#0f766e"]].map(([label,val,bg,color]) => (
+              <div key={label} style={{ background:bg,padding:8,borderRadius:8,textAlign:"center" }}>
+                <p style={{ fontSize:10,color,fontWeight:600 }}>{label}</p>
+                <p style={{ fontSize:18,fontWeight:800 }}>{val}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Committed & Incoming */}
+          <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12 }}>
+            <div style={{ background:"#fefce8",padding:8,borderRadius:8 }}>
+              <p style={{ fontSize:10,color:"#a16207",fontWeight:600 }}>Committed & Allocated</p>
+              <p style={{ fontSize:16,fontWeight:800 }}>{((item.committed||0)+(item.allocated||0)).toLocaleString()}</p>
+            </div>
+            <div style={{ background:"#ecfeff",padding:8,borderRadius:8 }}>
+              <p style={{ fontSize:10,color:"#0e7490",fontWeight:600 }}>Incoming</p>
+              <p style={{ fontSize:16,fontWeight:800 }}>{(item.incoming||0).toLocaleString()}</p>
+            </div>
+          </div>
+
+          {/* Size Pack */}
+          <div style={{ display:"flex",gap:12,marginBottom:10 }}>
+            <div style={{ background:"#faf5ff",padding:8,borderRadius:8,flex:1 }}>
+              <p style={{ fontSize:10,color:"#6b7280" }}>Master</p>
+              <p style={{ fontSize:16,fontWeight:800,color:"#7c3aed" }}>{sp.master_qty} pcs</p>
+            </div>
+            <div style={{ background:"#eff6ff",padding:8,borderRadius:8,flex:1 }}>
+              <p style={{ fontSize:10,color:"#6b7280" }}>Inner</p>
+              <p style={{ fontSize:16,fontWeight:800,color:"#3b82f6" }}>{sp.inner_qty} pcs</p>
+            </div>
+          </div>
+          <div style={{ background:"#e5e7eb",borderRadius:8,overflow:"hidden" }}>
+            <div style={{ background:"#667eea",color:"#fff",padding:6,textAlign:"center",fontWeight:700,fontSize:11 }}>Size Breakdown</div>
+            {sp.sizes.map(([size, qty], i) => (
+              <div key={i} style={{ display:"grid",gridTemplateColumns:"2fr 1fr",gap:1 }}>
+                <div style={{ background:"#fff",padding:5,textAlign:"center",fontWeight:600,fontSize:12 }}>{size}</div>
+                <div style={{ background:"#fff",padding:5,textAlign:"center",color:"#7c3aed",fontWeight:700,fontSize:12 }}>{qty} pcs</div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -933,6 +941,23 @@ export default function VersaInventoryApp() {
           </>
         )}
       </main>
+
+      {/* ─── FLOATING BACK BUTTON (inventory view) ─── */}
+      {view === "inventory" && (
+        <button onClick={goToBrands} style={{
+          position:"fixed", bottom:24, left:24, zIndex:900,
+          background:"linear-gradient(135deg,#334155,#1e293b)", color:"#e2e8f0",
+          border:"1px solid rgba(255,255,255,.15)", padding:"12px 20px", borderRadius:14,
+          fontWeight:700, fontSize:14, cursor:"pointer",
+          boxShadow:"0 8px 24px rgba(0,0,0,.4)", display:"flex", alignItems:"center", gap:8,
+          transition:"all .2s"
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = "linear-gradient(135deg,#667eea,#764ba2)"; }}
+        onMouseLeave={e => { e.currentTarget.style.background = "linear-gradient(135deg,#334155,#1e293b)"; }}
+        >
+          ← All Brands
+        </button>
+      )}
 
       {/* ─── MODALS ────────────────────────── */}
       {selectedItem && (
