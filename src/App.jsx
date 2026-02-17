@@ -192,12 +192,52 @@ function cacheImageUrl(sku, url) {
 function preloadImages(items) {
   items.slice(0, 30).forEach(item => {
     const url = resolveImageUrl(item);
-    const link = document.createElement("link");
-    link.rel = "preload";
-    link.as = "image";
-    link.href = url;
-    document.head.appendChild(link);
+    const img = new Image();
+    img.src = url;
   });
+}
+
+// Background preloader — loads ALL images across every brand in batches
+let _bgPreloadStarted = false;
+function backgroundPreloadAll(inventory) {
+  if (_bgPreloadStarted) return;
+  _bgPreloadStarted = true;
+  
+  const BATCH_SIZE = 8;   // concurrent loads
+  const DELAY_MS = 100;   // pause between batches
+  let idx = 0;
+
+  function loadBatch() {
+    if (idx >= inventory.length) return;
+    const batch = inventory.slice(idx, idx + BATCH_SIZE);
+    batch.forEach(item => {
+      const sku = item.sku || "";
+      if (imageUrlCache[sku]) return; // already resolved
+      const url = getImageUrl(item);
+      const img = new Image();
+      img.onload = () => cacheImageUrl(sku, url);
+      img.onerror = () => {
+        // try override
+        const url2 = `${S3_OVERRIDE}/${sku}.jpg`;
+        const img2 = new Image();
+        img2.onload = () => cacheImageUrl(sku, url2);
+        img2.onerror = () => {
+          // try png
+          const url3 = url2.replace(".jpg", ".png");
+          const img3 = new Image();
+          img3.onload = () => cacheImageUrl(sku, url3);
+          img3.src = url3;
+        };
+        img2.src = url2;
+      };
+      img.src = url;
+    });
+    idx += BATCH_SIZE;
+    setTimeout(loadBatch, DELAY_MS);
+  }
+  
+  // Start after a short delay so UI loads first
+  setTimeout(loadBatch, 1500);
 }
 
 function ImageWithFallback({ src, alt, style, className, onClick }) {
@@ -544,6 +584,7 @@ export default function VersaInventoryApp() {
             setBrands(rebuildBrands(data, "all"));
             setView("brands");
             setSyncStatus({ text: `📦 Cached · ${data.length} items`, type: "cached" });
+            backgroundPreloadAll(data);
           }
         }
       } catch (e) { /* ignore */ }
@@ -564,6 +605,8 @@ export default function VersaInventoryApp() {
           try { localStorage.setItem("versa_inventory_v2", JSON.stringify(result.inventory)); } catch (e) { /* quota */ }
           const t = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
           setSyncStatus({ text: `⚡ Live · ${result.inventory.length} items · ${t}`, type: "success" });
+          _bgPreloadStarted = false; // reset so live data gets preloaded
+          backgroundPreloadAll(result.inventory);
         }
       } catch (err) {
         console.warn("Sync failed:", err.message);
