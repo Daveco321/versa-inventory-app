@@ -381,7 +381,7 @@ function FullscreenImage({ src, alt, onClose }) {
 }
 
 // ─── Product Detail Modal ────────────────
-function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, colorMap }) {
+function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, colorMap, allocationData }) {
   if (!item) return null;
   const fabric = getFabricFromSKU(item.sku);
   const fit = getFitFromSKU(item.sku);
@@ -389,10 +389,13 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
   const totalStock = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
   const ats = item.total_ats || 0;
   const [showFullImage, setShowFullImage] = useState(false);
+  const [showAllocations, setShowAllocations] = useState(false);
   const isOverseas = filterMode === "incoming";
   const dates = getEarliestDates(item.sku, prodData);
   const prods = dates.productions;
   const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap);
+  const allocations = (allocationData || []).filter(a => a.sku === (item.sku || "").toUpperCase());
+  const allocTotal = allocations.reduce((s, a) => s + a.qty, 0);
 
   return (
     <>
@@ -470,8 +473,11 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
 
           {/* Committed & Incoming */}
           <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12 }}>
-            <div style={{ background:"#fefce8",padding:8,borderRadius:8 }}>
-              <p style={{ fontSize:10,color:"#a16207",fontWeight:600 }}>Committed & Allocated</p>
+            <div onClick={() => allocations.length > 0 && setShowAllocations(!showAllocations)}
+              style={{ background:"#fefce8",padding:8,borderRadius:8,cursor:allocations.length > 0 ? "pointer" : "default",border:showAllocations ? "2px solid #f59e0b" : "2px solid transparent",transition:"border .15s" }}>
+              <p style={{ fontSize:10,color:"#a16207",fontWeight:600 }}>
+                Committed & Allocated {allocations.length > 0 && <span style={{ fontSize:9,color:"#d97706" }}>▼ tap</span>}
+              </p>
               <p style={{ fontSize:16,fontWeight:800 }}>{((item.committed||0)+(item.allocated||0)).toLocaleString()}</p>
             </div>
             <div style={{ background:"#ecfeff",padding:8,borderRadius:8 }}>
@@ -479,6 +485,31 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
               <p style={{ fontSize:16,fontWeight:800 }}>{(item.incoming||0).toLocaleString()}</p>
             </div>
           </div>
+
+          {/* Allocation Breakdown (expandable) */}
+          {showAllocations && allocations.length > 0 && (
+            <div style={{ marginBottom:12 }}>
+              <div style={{ background:"#92400e",color:"#fff",padding:6,borderRadius:"8px 8px 0 0",textAlign:"center",fontWeight:700,fontSize:11 }}>
+                Allocation Breakdown ({allocations.length} record{allocations.length > 1 ? "s" : ""})
+              </div>
+              <div style={{ border:"1px solid #fde68a",borderTop:"none",borderRadius:"0 0 8px 8px",overflow:"hidden" }}>
+                <div style={{ display:"grid",gridTemplateColumns:"1fr auto auto",gap:0,background:"#fefce8",padding:"4px 8px",fontSize:10,fontWeight:600,color:"#92400e" }}>
+                  <span>Customer</span><span style={{ textAlign:"right" }}>Qty</span><span style={{ textAlign:"right",paddingLeft:8 }}>PO #</span>
+                </div>
+                {allocations.map((a, i) => (
+                  <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr auto auto",gap:0,padding:"5px 8px",fontSize:11,borderTop:"1px solid #fef3c7",background:i%2===0?"#fff":"#fffbeb" }}>
+                    <span style={{ fontWeight:600,color:"#1f2937" }}>{a.customer}</span>
+                    <span style={{ textAlign:"right",fontWeight:700,fontFamily:"monospace" }}>{a.qty.toLocaleString()}</span>
+                    <span style={{ textAlign:"right",color:"#6b7280",fontFamily:"monospace",paddingLeft:8 }}>{a.po}</span>
+                  </div>
+                ))}
+                <div style={{ display:"grid",gridTemplateColumns:"1fr auto",padding:"5px 8px",fontSize:11,borderTop:"2px solid #fde68a",background:"#fefce8",fontWeight:700 }}>
+                  <span>Total</span>
+                  <span style={{ textAlign:"right",fontFamily:"monospace" }}>{allocTotal.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Shipment Dates (always show if available, highlighted in overseas mode) */}
           {(dates.ex_factory || dates.arrival) && (
@@ -733,6 +764,7 @@ export default function VersaInventoryApp() {
   const [fabricFilter, setFabricFilter] = useState([]);
   const [productionData, setProductionData] = useState([]);
   const [colorMap, setColorMap] = useState({});
+  const [allocationData, setAllocationData] = useState([]);
 
   const allItems = useMemo(() => {
     return Object.values(brands).flatMap(b => b.items || []);
@@ -833,6 +865,18 @@ export default function VersaInventoryApp() {
     };
     loadColorMap();
 
+    // Load allocation data (virtual warehouse)
+    const loadAllocations = async () => {
+      try {
+        const resp = await fetch(`${API_URL}/allocations`);
+        if (!resp.ok) return;
+        const json = await resp.json();
+        setAllocationData(json.allocations || []);
+        console.log("✓ Allocations loaded:", (json.allocations || []).length, "rows");
+      } catch (e) { console.warn("Allocations unavailable:", e.message); }
+    };
+    loadAllocations();
+
     // Auto-refresh inventory every 5 minutes
     const refreshInterval = setInterval(async () => {
       try {
@@ -847,7 +891,21 @@ export default function VersaInventoryApp() {
         }
       } catch (e) { /* silent retry next interval */ }
     }, 300000); // 5 min
-    return () => clearInterval(refreshInterval);
+
+    // Daily refresh for production data and color map
+    const dailyRefresh = setInterval(() => {
+      loadProduction();
+      loadColorMap();
+      console.log("🔄 Daily refresh: production + colors reloaded");
+    }, 86400000); // 24 hours
+
+    // Weekly refresh for allocation data (every 7 days)
+    const weeklyRefresh = setInterval(() => {
+      loadAllocations();
+      console.log("🔄 Weekly refresh: allocations reloaded");
+    }, 604800000); // 7 days
+
+    return () => { clearInterval(refreshInterval); clearInterval(dailyRefresh); clearInterval(weeklyRefresh); };
   }, []);
 
   // Rebuild brands when filterMode changes
@@ -1212,7 +1270,7 @@ export default function VersaInventoryApp() {
 
       {/* ─── MODALS ────────────────────────── */}
       {selectedItem && (
-        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} colorMap={colorMap} />
+        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} colorMap={colorMap} allocationData={allocationData} />
       )}
       {showCart && (
         <CartModal cart={cart} onClose={() => setShowCart(false)}
