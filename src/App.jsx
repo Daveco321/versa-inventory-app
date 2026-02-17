@@ -49,10 +49,32 @@ const FIT_CODES = {S:"Slim Fit",R:"Regular Fit",T:"Trim Fit",A:"Athletic Fit",C:
 // ═══════════════════════════════════════════
 // UTILITY FUNCTIONS
 // ═══════════════════════════════════════════
+// Folder name mapping for brands whose S3 folder doesn't match brand_abbr
+const BRAND_FOLDER_MAP = {
+  EB:"EDDIE+BAUER", USPA:"US+POLO", VINCE:"VINCE+CAMUTO",
+  LUCKY:"LUCKY+BRAND", BEN:"BEN+SHERMAN", BEENE:"GEOFFREY+BEENE",
+  NICOLE:"NICOLE+MILLER", AMERICA:"AMERICAN+CREW",
+  TAYION:"TAYON", VD:"Von+Dutch"
+};
+
+function extractImageCode(sku, brandAbbr) {
+  const prefix = BRAND_IMAGE_PREFIX[brandAbbr] || (brandAbbr || "XX").substring(0, 2);
+  const baseSku = sku.split("-")[0];
+  const numbers = baseSku.match(/\d+/g);
+  if (numbers && numbers.length > 0) {
+    const mainNumber = numbers.reduce((a, b) => a.length > b.length ? a : b);
+    const paddedNumber = mainNumber.padStart(3, "0");
+    return `${prefix}_${paddedNumber}`;
+  }
+  return `${prefix}_${baseSku}`;
+}
+
 function getImageUrl(item) {
   const sku = item.sku || "";
-  const prefix = BRAND_IMAGE_PREFIX[item.brand_abbr || item.brand] || "XX";
-  return `${S3_BASE}/${prefix}/${sku}.jpg`;
+  const brandAbbr = item.brand_abbr || item.brand || "";
+  const imageCode = extractImageCode(sku, brandAbbr);
+  const folderName = BRAND_FOLDER_MAP[brandAbbr] || brandAbbr;
+  return `${S3_BASE}/${folderName}/${imageCode}.jpg`;
 }
 
 function getFabricFromSKU(sku) {
@@ -174,18 +196,22 @@ function LoadingSpinner({ text = "Loading..." }) {
 
 // ═══════════════════════════════════════════
 // IMAGE CACHE — remembers working URLs so
-// fallback chain only runs once per SKU
+// fallback chain only runs once per base style
 // ═══════════════════════════════════════════
 const imageUrlCache = {};
 
+function getBaseStyle(sku) {
+  return (sku || "").split("-")[0].toUpperCase();
+}
+
 function resolveImageUrl(item) {
-  const sku = item.sku || item.alt || "";
-  if (imageUrlCache[sku]) return imageUrlCache[sku];
+  const base = getBaseStyle(item.sku || item.alt || "");
+  if (imageUrlCache[base]) return imageUrlCache[base];
   return getImageUrl(item);
 }
 
-function cacheImageUrl(sku, url) {
-  imageUrlCache[sku] = url;
+function cacheImageUrl(base, url) {
+  imageUrlCache[base] = url;
 }
 
 // Preload a batch of images into browser cache
@@ -197,75 +223,104 @@ function preloadImages(items) {
   });
 }
 
-// Background preloader — loads ALL images using a throttled queue
-// Only 3 concurrent requests so visible on-screen images always get priority
+// Background preloader — 15 concurrent downloads with auto-retry on failure
 let _bgPreloadStarted = false;
 let _bgQueue = [];
 let _bgActive = 0;
-const BG_MAX = 3;
+const BG_MAX = 15;
 
 function backgroundPreloadAll(inventory) {
   if (_bgPreloadStarted) return;
   _bgPreloadStarted = true;
-  _bgQueue = inventory.filter(item => item.sku && !imageUrlCache[item.sku]);
-  setTimeout(_bgNext, 3000); // wait for UI to settle
+  // Deduplicate by base style so we don't load same image for size variants
+  const seen = new Set();
+  _bgQueue = inventory.filter(item => {
+    const base = getBaseStyle(item.sku);
+    if (!base || imageUrlCache[base] || seen.has(base)) return false;
+    seen.add(base);
+    return true;
+  });
+  setTimeout(_bgPump, 2000);
 }
 
-function _bgNext() {
+function _bgPump() {
   while (_bgActive < BG_MAX && _bgQueue.length > 0) {
     const item = _bgQueue.shift();
-    const sku = item.sku || "";
-    if (imageUrlCache[sku]) continue;
+    const base = getBaseStyle(item.sku);
+    if (imageUrlCache[base]) { continue; }
     _bgActive++;
-    const url = getImageUrl(item);
+    _bgLoadImage(item, base, 0);
+  }
+}
+
+function _bgLoadImage(item, base, attempt) {
+  const imageCode = extractImageCode(item.sku, item.brand_abbr || item.brand || "");
+  const urls = [
+    getImageUrl(item),
+    `${S3_OVERRIDE}/${imageCode}.jpg`,
+    `${S3_OVERRIDE}/${imageCode}.png`
+  ];
+  let urlIdx = 0;
+
+  function tryNext() {
+    if (urlIdx >= urls.length) {
+      // All URL variants failed — retry once after a pause (S3 may have throttled)
+      if (attempt < 1) {
+        setTimeout(() => _bgLoadImage(item, base, attempt + 1), 5000);
+      } else {
+        _bgActive--;
+        _bgPump();
+      }
+      return;
+    }
+    const url = urls[urlIdx];
+    urlIdx++;
     const img = new Image();
-    const done = () => { _bgActive--; setTimeout(_bgNext, 80); };
-    img.onload = () => { cacheImageUrl(sku, url); done(); };
-    img.onerror = () => {
-      const url2 = `${S3_OVERRIDE}/${sku}.jpg`;
-      const img2 = new Image();
-      img2.onload = () => { cacheImageUrl(sku, url2); done(); };
-      img2.onerror = () => {
-        const url3 = url2.replace(".jpg", ".png");
-        const img3 = new Image();
-        img3.onload = () => { cacheImageUrl(sku, url3); done(); };
-        img3.onerror = done;
-        img3.src = url3;
-      };
-      img2.src = url2;
-    };
+    img.onload = () => { cacheImageUrl(base, url); _bgActive--; _bgPump(); };
+    img.onerror = tryNext;
     img.src = url;
   }
+  tryNext();
 }
 
 function ImageWithFallback({ src, alt, style, className, onClick }) {
   const sku = alt || "";
-  const cached = imageUrlCache[sku];
+  const base = getBaseStyle(sku);
+  const cached = imageUrlCache[base];
   const [currentSrc, setCurrentSrc] = useState(cached || src);
   const [error, setError] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const triedRef = useRef(new Set());
 
+  // Extract image code from the primary src URL (e.g., "NA_201" from ".../NAUTICA/NA_201.jpg")
+  const imageFileRef = useRef("");
   useEffect(() => {
-    const c = imageUrlCache[sku];
+    const parts = (src || "").split("/");
+    const filename = parts[parts.length - 1]?.replace(/\.(jpg|png)$/i, "") || base;
+    imageFileRef.current = filename;
+  }, [src, base]);
+
+  useEffect(() => {
+    const c = imageUrlCache[base];
     setCurrentSrc(c || src);
     setError(false);
     setLoaded(false);
     triedRef.current.clear();
-  }, [src, sku]);
+  }, [src, base]);
 
   const handleLoad = () => {
     setLoaded(true);
-    cacheImageUrl(sku, currentSrc);
+    cacheImageUrl(base, currentSrc);
   };
 
   const handleError = () => {
+    const code = imageFileRef.current;
     if (!triedRef.current.has("override")) {
       triedRef.current.add("override");
-      setCurrentSrc(`${S3_OVERRIDE}/${sku}.jpg`);
+      setCurrentSrc(`${S3_OVERRIDE}/${code}.jpg`);
     } else if (!triedRef.current.has("png")) {
       triedRef.current.add("png");
-      setCurrentSrc(currentSrc.replace(".jpg", ".png"));
+      setCurrentSrc(`${S3_OVERRIDE}/${code}.png`);
     } else {
       setError(true);
     }
