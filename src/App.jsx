@@ -944,8 +944,15 @@ export default function VersaInventoryApp() {
 
   // ─── Filter Mode Toggle ────────────────
   const cycleFilterMode = useCallback(() => {
-    setFilterMode(prev => prev === "all" ? "incoming" : prev === "incoming" ? "ats" : "all");
-  }, []);
+    setFilterMode(prev => {
+      const next = prev === "all" ? "incoming" : prev === "incoming" ? "ats" : "all";
+      // Reset sort if leaving overseas mode while on arrival sort
+      if (prev === "incoming" && (sortBy === "arrival-asc" || sortBy === "arrival-desc")) {
+        setSortBy("ats-desc");
+      }
+      return next;
+    });
+  }, [sortBy]);
 
   // ─── Brand View Filtering ─────────────
   const brandData = currentBrand ? brands[currentBrand] : null;
@@ -973,8 +980,18 @@ export default function VersaInventoryApp() {
     else if (sortBy === "ats-asc") items.sort((a,b) => (a.total_ats||0)-(b.total_ats||0));
     else if (sortBy === "sku-asc") items.sort((a,b) => (a.sku||"").localeCompare(b.sku||""));
     else if (sortBy === "sku-desc") items.sort((a,b) => (b.sku||"").localeCompare(a.sku||""));
+    else if (sortBy === "arrival-asc") items.sort((a,b) => {
+      const da = getEarliestDates(a.sku, productionData).arrival || new Date("2099");
+      const db = getEarliestDates(b.sku, productionData).arrival || new Date("2099");
+      return da - db;
+    });
+    else if (sortBy === "arrival-desc") items.sort((a,b) => {
+      const da = getEarliestDates(a.sku, productionData).arrival || new Date("1970");
+      const db = getEarliestDates(b.sku, productionData).arrival || new Date("1970");
+      return db - da;
+    });
     return items;
-  }, [brandData, searchQuery, fitFilter, fabricFilter, sortBy]);
+  }, [brandData, searchQuery, fitFilter, fabricFilter, sortBy, productionData]);
 
   // Get unique fits/fabrics for filters
   const availableFits = useMemo(() => {
@@ -1136,6 +1153,8 @@ export default function VersaInventoryApp() {
                   <option value="ats-asc">ATS: Low → High</option>
                   <option value="sku-asc">SKU: A → Z</option>
                   <option value="sku-desc">SKU: Z → A</option>
+                  {filterMode === "incoming" && <option value="arrival-asc">📅 Arriving Earliest</option>}
+                  {filterMode === "incoming" && <option value="arrival-desc">📅 Arriving Latest</option>}
                 </select>
               </div>
 
