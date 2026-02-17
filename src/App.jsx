@@ -197,47 +197,45 @@ function preloadImages(items) {
   });
 }
 
-// Background preloader — loads ALL images across every brand in batches
+// Background preloader — loads ALL images using a throttled queue
+// Only 3 concurrent requests so visible on-screen images always get priority
 let _bgPreloadStarted = false;
+let _bgQueue = [];
+let _bgActive = 0;
+const BG_MAX = 3;
+
 function backgroundPreloadAll(inventory) {
   if (_bgPreloadStarted) return;
   _bgPreloadStarted = true;
-  
-  const BATCH_SIZE = 8;   // concurrent loads
-  const DELAY_MS = 100;   // pause between batches
-  let idx = 0;
+  _bgQueue = inventory.filter(item => item.sku && !imageUrlCache[item.sku]);
+  setTimeout(_bgNext, 3000); // wait for UI to settle
+}
 
-  function loadBatch() {
-    if (idx >= inventory.length) return;
-    const batch = inventory.slice(idx, idx + BATCH_SIZE);
-    batch.forEach(item => {
-      const sku = item.sku || "";
-      if (imageUrlCache[sku]) return; // already resolved
-      const url = getImageUrl(item);
-      const img = new Image();
-      img.onload = () => cacheImageUrl(sku, url);
-      img.onerror = () => {
-        // try override
-        const url2 = `${S3_OVERRIDE}/${sku}.jpg`;
-        const img2 = new Image();
-        img2.onload = () => cacheImageUrl(sku, url2);
-        img2.onerror = () => {
-          // try png
-          const url3 = url2.replace(".jpg", ".png");
-          const img3 = new Image();
-          img3.onload = () => cacheImageUrl(sku, url3);
-          img3.src = url3;
-        };
-        img2.src = url2;
+function _bgNext() {
+  while (_bgActive < BG_MAX && _bgQueue.length > 0) {
+    const item = _bgQueue.shift();
+    const sku = item.sku || "";
+    if (imageUrlCache[sku]) continue;
+    _bgActive++;
+    const url = getImageUrl(item);
+    const img = new Image();
+    const done = () => { _bgActive--; setTimeout(_bgNext, 80); };
+    img.onload = () => { cacheImageUrl(sku, url); done(); };
+    img.onerror = () => {
+      const url2 = `${S3_OVERRIDE}/${sku}.jpg`;
+      const img2 = new Image();
+      img2.onload = () => { cacheImageUrl(sku, url2); done(); };
+      img2.onerror = () => {
+        const url3 = url2.replace(".jpg", ".png");
+        const img3 = new Image();
+        img3.onload = () => { cacheImageUrl(sku, url3); done(); };
+        img3.onerror = done;
+        img3.src = url3;
       };
-      img.src = url;
-    });
-    idx += BATCH_SIZE;
-    setTimeout(loadBatch, DELAY_MS);
+      img2.src = url2;
+    };
+    img.src = url;
   }
-  
-  // Start after a short delay so UI loads first
-  setTimeout(loadBatch, 1500);
 }
 
 function ImageWithFallback({ src, alt, style, className, onClick }) {
