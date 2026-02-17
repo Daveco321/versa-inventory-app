@@ -382,22 +382,40 @@ function BrandCard({ abbr, data, onClick }) {
 }
 
 // ─── Product Card ────────────────────────
-function ProductCard({ item, onClick }) {
+function ProductCard({ item, onClick, filterMode, prodData }) {
   const fabric = getFabricFromSKU(item.sku);
   const fit = getFitFromSKU(item.sku);
   const ats = item.total_ats || 0;
+  const isOverseas = filterMode === "incoming";
+  const dates = isOverseas ? getEarliestDates(item.sku, prodData) : null;
+  const atsLabel = isOverseas ? "Overseas ATS" : filterMode === "ats" ? "WH ATS" : "ATS";
+  const atsColor = ats > 0 ? (isOverseas ? "#d97706" : "#16a34a") : "#dc2626";
   return (
-    <div onClick={onClick} className="product-card" style={{ background:"#fff",borderRadius:14,overflow:"hidden",border:"2px solid #e5e7eb" }}>
+    <div onClick={onClick} className="product-card" style={{ background:"#fff",borderRadius:14,overflow:"hidden",border: isOverseas ? "2px solid #fcd34d" : "2px solid #e5e7eb" }}>
       <div style={{ position:"relative",overflow:"hidden" }}>
         <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ width:"100%",height:220,objectFit:"cover",background:"#f3f4f6" }} />
+        {isOverseas && <span style={{ position:"absolute",top:8,right:8,background:"rgba(217,119,6,.9)",color:"#fff",padding:"3px 8px",borderRadius:8,fontSize:10,fontWeight:700 }}>🚢 Overseas</span>}
       </div>
       <div style={{ padding:"12px 14px" }}>
         <h3 style={{ fontSize:15,fontWeight:700,color:"#1f2937",marginBottom:2 }}>{item.sku}</h3>
         <p style={{ fontSize:12,color:"#6b7280",marginBottom:4 }}>{item.brand_full}</p>
         <p style={{ fontSize:11,color:"#9ca3af",marginBottom:8 }}>{fit} · {fabric.description.length > 30 ? fabric.description.substring(0,28)+"..." : fabric.description}</p>
+        {/* Dates row for overseas */}
+        {isOverseas && dates && (dates.ex_factory || dates.arrival) && (
+          <div style={{ display:"flex",gap:6,marginBottom:8 }}>
+            <div style={{ flex:1,background:"#fffbeb",padding:"5px 8px",borderRadius:6,textAlign:"center" }}>
+              <p style={{ fontSize:9,color:"#92400e",fontWeight:600 }}>Ex-Factory</p>
+              <p style={{ fontSize:11,fontWeight:700,color:"#78350f" }}>{formatDateShort(dates.ex_factory)}</p>
+            </div>
+            <div style={{ flex:1,background:"#ecfeff",padding:"5px 8px",borderRadius:6,textAlign:"center" }}>
+              <p style={{ fontSize:9,color:"#0e7490",fontWeight:600 }}>Est. Arrival</p>
+              <p style={{ fontSize:11,fontWeight:700,color:"#164e63" }}>{formatDateShort(dates.arrival)}</p>
+            </div>
+          </div>
+        )}
         <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center" }}>
-          <span style={{ fontSize:13,fontWeight:700,color: ats > 0 ? "#16a34a" : "#dc2626" }}>
-            {ats > 0 ? `${ats.toLocaleString()} ATS` : "Out of Stock"}
+          <span style={{ fontSize:13,fontWeight:700,color:atsColor }}>
+            {ats > 0 ? `${ats.toLocaleString()} ${atsLabel}` : "Out of Stock"}
           </span>
           <div style={{ display:"flex",gap:4 }}>
             {item.jtw > 0 && <span style={{ fontSize:9,background:"#dbeafe",color:"#1d4ed8",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>JTW</span>}
@@ -445,7 +463,7 @@ function FullscreenImage({ src, alt, onClose }) {
 }
 
 // ─── Product Detail Modal ────────────────
-function ProductDetailModal({ item, onClose, onAddToCart }) {
+function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData }) {
   if (!item) return null;
   const fabric = getFabricFromSKU(item.sku);
   const fit = getFitFromSKU(item.sku);
@@ -453,6 +471,9 @@ function ProductDetailModal({ item, onClose, onAddToCart }) {
   const totalStock = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
   const ats = item.total_ats || 0;
   const [showFullImage, setShowFullImage] = useState(false);
+  const isOverseas = filterMode === "incoming";
+  const dates = getEarliestDates(item.sku, prodData);
+  const prods = dates.productions;
 
   return (
     <>
@@ -530,6 +551,48 @@ function ProductDetailModal({ item, onClose, onAddToCart }) {
               <p style={{ fontSize:16,fontWeight:800 }}>{(item.incoming||0).toLocaleString()}</p>
             </div>
           </div>
+
+          {/* Shipment Dates (always show if available, highlighted in overseas mode) */}
+          {(dates.ex_factory || dates.arrival) && (
+            <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12 }}>
+              <div style={{ background: isOverseas ? "#fffbeb" : "#f9fafb",padding:8,borderRadius:8,textAlign:"center",border: isOverseas ? "1px solid #fcd34d" : "none" }}>
+                <p style={{ fontSize:10,color:"#92400e",fontWeight:600 }}>🚢 Ex-Factory</p>
+                <p style={{ fontSize:14,fontWeight:800,color:"#78350f" }}>{formatDateShort(dates.ex_factory)}</p>
+              </div>
+              <div style={{ background: isOverseas ? "#ecfeff" : "#f9fafb",padding:8,borderRadius:8,textAlign:"center",border: isOverseas ? "1px solid #a5f3fc" : "none" }}>
+                <p style={{ fontSize:10,color:"#0e7490",fontWeight:600 }}>📅 Est. Arrival</p>
+                <p style={{ fontSize:14,fontWeight:800,color:"#164e63" }}>{formatDateShort(dates.arrival)}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Production / PO Table */}
+          {prods.length > 0 && (
+            <div style={{ marginBottom:12 }}>
+              <div style={{ background:"#166534",color:"#fff",padding:6,borderRadius:"8px 8px 0 0",textAlign:"center",fontWeight:700,fontSize:11 }}>
+                Shipment Details ({prods.length} PO{prods.length > 1 ? "s" : ""})
+              </div>
+              <div style={{ border:"1px solid #dcfce7",borderTop:"none",borderRadius:"0 0 8px 8px",overflow:"hidden" }}>
+                <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr auto auto",gap:0,background:"#f0fdf4",padding:"4px 8px",fontSize:10,fontWeight:600,color:"#166534" }}>
+                  <span>Production</span><span>PO Name</span><span style={{ textAlign:"right" }}>Ex-Factory</span><span style={{ textAlign:"right" }}>Arrival</span>
+                </div>
+                {prods.map((p, i) => (
+                  <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr 1fr auto auto",gap:0,padding:"5px 8px",fontSize:11,borderTop:"1px solid #dcfce7",background:i%2===0?"#fff":"#f9fafb" }}>
+                    <span style={{ fontWeight:600,fontFamily:"monospace" }}>{p.production || "—"}</span>
+                    <span style={{ color:"#374151",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:120 }} title={p.poName}>{p.poName || "—"}</span>
+                    <span style={{ textAlign:"right",color:"#6b7280" }}>{formatDateShort(p.etd)}</span>
+                    <span style={{ textAlign:"right",fontWeight:600,color:"#166534" }}>{formatDateShort(p.arrival)}</span>
+                  </div>
+                ))}
+                {prods.length > 0 && (
+                  <div style={{ display:"grid",gridTemplateColumns:"1fr auto",padding:"5px 8px",fontSize:11,borderTop:"2px solid #bbf7d0",background:"#f0fdf4",fontWeight:700 }}>
+                    <span>Total Units</span>
+                    <span style={{ textAlign:"right" }}>{prods.reduce((s,p)=>s+p.units,0).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Size Pack */}
           <div style={{ display:"flex",gap:12,marginBottom:10 }}>
@@ -661,6 +724,29 @@ function UniversalSearch({ items, onSelect, placeholder }) {
   );
 }
 
+// ─── Production / Shipment Date Helpers ──────
+function formatDateShort(d) {
+  if (!d) return "—";
+  return new Date(d).toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" });
+}
+
+function getProductionForSku(sku, prodData) {
+  if (!sku || !prodData || prodData.length === 0) return [];
+  const skuUpper = sku.toUpperCase();
+  return prodData.filter(p => p.style === skuUpper);
+}
+
+function getEarliestDates(sku, prodData) {
+  const prods = getProductionForSku(sku, prodData);
+  if (prods.length === 0) return { ex_factory: null, arrival: null, productions: [] };
+  const sorted = [...prods].sort((a, b) => (a.arrival || new Date("2099")) - (b.arrival || new Date("2099")));
+  return {
+    ex_factory: sorted[0].etd,
+    arrival: sorted[0].arrival,
+    productions: sorted
+  };
+}
+
 // ═══════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════
@@ -679,6 +765,7 @@ export default function VersaInventoryApp() {
   const [toast, setToast] = useState(null);
   const [fitFilter, setFitFilter] = useState([]);
   const [fabricFilter, setFabricFilter] = useState([]);
+  const [productionData, setProductionData] = useState([]);
 
   const allItems = useMemo(() => {
     return Object.values(brands).flatMap(b => b.items || []);
@@ -732,6 +819,39 @@ export default function VersaInventoryApp() {
       }
     };
     loadData();
+
+    // Load production data for shipment dates
+    const loadProduction = async () => {
+      try {
+        const resp = await fetch(`${API_URL}/production`);
+        if (!resp.ok) return;
+        const json = await resp.json();
+        const parsed = (json.production || []).map(p => {
+          let etdDate = p.etd ? new Date(p.etd) : null;
+          if (etdDate && isNaN(etdDate.getTime())) etdDate = null;
+          let arrivalDate = etdDate ? new Date(etdDate.getTime() + 37 * 24 * 60 * 60 * 1000) : null;
+          return { production: p.production || "", poName: p.poName || "", style: (p.style || "").toUpperCase(), units: p.units || 0, brand: p.brand || "", etd: etdDate, arrival: arrivalDate };
+        });
+        setProductionData(parsed);
+      } catch (e) { console.warn("Production data unavailable:", e.message); }
+    };
+    loadProduction();
+
+    // Auto-refresh inventory every 5 minutes
+    const refreshInterval = setInterval(async () => {
+      try {
+        const resp = await fetch(`${API_URL}/sync`);
+        if (!resp.ok) return;
+        const result = await resp.json();
+        if (result.inventory?.length > 0) {
+          setInventory(result.inventory);
+          const t = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
+          setSyncStatus({ text: `⚡ Live · ${result.inventory.length} items · ${t}`, type: "success" });
+          try { localStorage.setItem("versa_inventory_v2", JSON.stringify(result.inventory)); } catch (e) {}
+        }
+      } catch (e) { /* silent retry next interval */ }
+    }, 300000); // 5 min
+    return () => clearInterval(refreshInterval);
   }, []);
 
   // Rebuild brands when filterMode changes
@@ -1050,7 +1170,7 @@ export default function VersaInventoryApp() {
             ) : (
               <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16 }}>
                 {filteredItems.map(item => (
-                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} />
+                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} />
                 ))}
               </div>
             )}
@@ -1077,7 +1197,7 @@ export default function VersaInventoryApp() {
 
       {/* ─── MODALS ────────────────────────── */}
       {selectedItem && (
-        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} />
+        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} />
       )}
       {showCart && (
         <CartModal cart={cart} onClose={() => setShowCart(false)}
