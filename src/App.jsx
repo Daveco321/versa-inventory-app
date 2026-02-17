@@ -4,10 +4,9 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 // CONSTANTS & CONFIG
 // ═══════════════════════════════════════════
 const API_URL = "https://versa-inventory-api.onrender.com";
-const S3_BASE = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/PHOTOS+INVENTORY";
-const S3_OVERRIDE = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/STYLE+OVERRIDES";
 const S3_LOGO_BASE = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/";
 const DEFAULT_LOGO = "https://versamens.com/wp-content/uploads/2025/02/ac65455c-6152-4e4a-91f8-534f08254f81.png";
+const APP_LOGO = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Versa+App+logo.png";
 
 const BRAND_IMAGE_PREFIX = {NAUTICA:"NA",DKNY:"DK",EB:"EB",REEBOK:"RB",VINCE:"VC",BEN:"BE",USPA:"US",CHAPS:"CH",LUCKY:"LB",JNY:"JN",BEENE:"GB",NICOLE:"NM",SHAQ:"SH",TAYION:"TA",STRAHAN:"MS",VD:"VD",VERSA:"VR",CHEROKEE:"CK",AMERICA:"AC",BLO:"BL",DN:"D9",KL:"KL",NE:"NE"};
 
@@ -50,31 +49,10 @@ const FIT_CODES = {SL:"Slim Fit",RF:"Regular Fit",TF:"Tailored Fit",MF:"Modern F
 // UTILITY FUNCTIONS
 // ═══════════════════════════════════════════
 // Folder name mapping for brands whose S3 folder doesn't match brand_abbr
-const BRAND_FOLDER_MAP = {
-  EB:"EDDIE+BAUER", USPA:"US+POLO", VINCE:"VINCE+CAMUTO",
-  LUCKY:"LUCKY+BRAND", BEN:"BEN+SHERMAN", BEENE:"GEOFFREY+BEENE",
-  NICOLE:"NICOLE+MILLER", AMERICA:"AMERICAN+CREW",
-  TAYION:"TAYON", VD:"Von+Dutch"
-};
-
-function extractImageCode(sku, brandAbbr) {
-  const prefix = BRAND_IMAGE_PREFIX[brandAbbr] || (brandAbbr || "XX").substring(0, 2);
-  const baseSku = sku.split("-")[0];
-  const numbers = baseSku.match(/\d+/g);
-  if (numbers && numbers.length > 0) {
-    const mainNumber = numbers.reduce((a, b) => a.length > b.length ? a : b);
-    const paddedNumber = mainNumber.padStart(3, "0");
-    return `${prefix}_${paddedNumber}`;
-  }
-  return `${prefix}_${baseSku}`;
-}
-
 function getImageUrl(item) {
-  const sku = item.sku || "";
-  const brandAbbr = item.brand_abbr || item.brand || "";
-  const imageCode = extractImageCode(sku, brandAbbr);
-  const folderName = BRAND_FOLDER_MAP[brandAbbr] || brandAbbr;
-  return `${S3_BASE}/${folderName}/${imageCode}.jpg`;
+  const baseStyle = (item.sku || "").split("-")[0].toUpperCase();
+  const brand = item.brand_abbr || item.brand || "";
+  return `${API_URL}/image/${baseStyle}?brand=${brand}`;
 }
 
 function getFabricFromSKU(sku) {
@@ -208,32 +186,27 @@ function LoadingSpinner({ text = "Loading..." }) {
 // IMAGE CACHE — remembers working URLs so
 // fallback chain only runs once per base style
 // ═══════════════════════════════════════════
-const imageUrlCache = {};
-
 function getBaseStyle(sku) {
   return (sku || "").split("-")[0].toUpperCase();
 }
 
 function resolveImageUrl(item) {
-  const base = getBaseStyle(item.sku || item.alt || "");
-  if (imageUrlCache[base]) return imageUrlCache[base];
   return getImageUrl(item);
-}
-
-function cacheImageUrl(base, url) {
-  imageUrlCache[base] = url;
 }
 
 // Preload a batch of images into browser cache
 function preloadImages(items) {
+  const seen = new Set();
   items.slice(0, 30).forEach(item => {
-    const url = resolveImageUrl(item);
+    const base = getBaseStyle(item.sku);
+    if (seen.has(base)) return;
+    seen.add(base);
     const img = new Image();
-    img.src = url;
+    img.src = resolveImageUrl(item);
   });
 }
 
-// Background preloader — 15 concurrent downloads with auto-retry on failure
+// Background preloader — warm browser cache via backend proxy
 let _bgPreloadStarted = false;
 let _bgQueue = [];
 let _bgActive = 0;
@@ -242,11 +215,10 @@ const BG_MAX = 15;
 function backgroundPreloadAll(inventory) {
   if (_bgPreloadStarted) return;
   _bgPreloadStarted = true;
-  // Deduplicate by base style so we don't load same image for size variants
   const seen = new Set();
   _bgQueue = inventory.filter(item => {
     const base = getBaseStyle(item.sku);
-    if (!base || imageUrlCache[base] || seen.has(base)) return false;
+    if (!base || seen.has(base)) return false;
     seen.add(base);
     return true;
   });
@@ -256,85 +228,21 @@ function backgroundPreloadAll(inventory) {
 function _bgPump() {
   while (_bgActive < BG_MAX && _bgQueue.length > 0) {
     const item = _bgQueue.shift();
-    const base = getBaseStyle(item.sku);
-    if (imageUrlCache[base]) { continue; }
     _bgActive++;
-    _bgLoadImage(item, base, 0);
-  }
-}
-
-function _bgLoadImage(item, base, attempt) {
-  const imageCode = extractImageCode(item.sku, item.brand_abbr || item.brand || "");
-  const urls = [
-    getImageUrl(item),
-    `${S3_OVERRIDE}/${imageCode}.jpg`,
-    `${S3_OVERRIDE}/${imageCode}.png`
-  ];
-  let urlIdx = 0;
-
-  function tryNext() {
-    if (urlIdx >= urls.length) {
-      // All URL variants failed — retry once after a pause (S3 may have throttled)
-      if (attempt < 1) {
-        setTimeout(() => _bgLoadImage(item, base, attempt + 1), 5000);
-      } else {
-        _bgActive--;
-        _bgPump();
-      }
-      return;
-    }
-    const url = urls[urlIdx];
-    urlIdx++;
     const img = new Image();
-    img.onload = () => { cacheImageUrl(base, url); _bgActive--; _bgPump(); };
-    img.onerror = tryNext;
-    img.src = url;
+    img.onload = img.onerror = () => { _bgActive--; _bgPump(); };
+    img.src = resolveImageUrl(item);
   }
-  tryNext();
 }
 
 function ImageWithFallback({ src, alt, style, className, onClick }) {
-  const sku = alt || "";
-  const base = getBaseStyle(sku);
-  const cached = imageUrlCache[base];
-  const [currentSrc, setCurrentSrc] = useState(cached || src);
   const [error, setError] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const triedRef = useRef(new Set());
-
-  // Extract image code from the primary src URL (e.g., "NA_201" from ".../NAUTICA/NA_201.jpg")
-  const imageFileRef = useRef("");
-  useEffect(() => {
-    const parts = (src || "").split("/");
-    const filename = parts[parts.length - 1]?.replace(/\.(jpg|png)$/i, "") || base;
-    imageFileRef.current = filename;
-  }, [src, base]);
 
   useEffect(() => {
-    const c = imageUrlCache[base];
-    setCurrentSrc(c || src);
     setError(false);
     setLoaded(false);
-    triedRef.current.clear();
-  }, [src, base]);
-
-  const handleLoad = () => {
-    setLoaded(true);
-    cacheImageUrl(base, currentSrc);
-  };
-
-  const handleError = () => {
-    const code = imageFileRef.current;
-    if (!triedRef.current.has("override")) {
-      triedRef.current.add("override");
-      setCurrentSrc(`${S3_OVERRIDE}/${code}.jpg`);
-    } else if (!triedRef.current.has("png")) {
-      triedRef.current.add("png");
-      setCurrentSrc(`${S3_OVERRIDE}/${code}.png`);
-    } else {
-      setError(true);
-    }
-  };
+  }, [src]);
 
   if (error) return (
     <div style={{ ...style, background:"linear-gradient(135deg,#f1f5f9,#e2e8f0)", display:"flex",alignItems:"center",justifyContent:"center",color:"#94a3b8",fontSize:13,fontWeight:600 }} className={className}>
@@ -343,12 +251,12 @@ function ImageWithFallback({ src, alt, style, className, onClick }) {
   );
   return (
     <img
-      src={currentSrc}
+      src={src}
       alt={alt}
       style={{ ...style, opacity: loaded ? 1 : 0, transition:"opacity .15s ease" }}
       className={className}
-      onLoad={handleLoad}
-      onError={handleError}
+      onLoad={() => setLoaded(true)}
+      onError={() => setError(true)}
       onClick={onClick}
       loading="lazy"
       decoding="async"
@@ -382,7 +290,7 @@ function BrandCard({ abbr, data, onClick }) {
 }
 
 // ─── Product Card ────────────────────────
-function ProductCard({ item, onClick, filterMode, prodData }) {
+function ProductCard({ item, onClick, filterMode, prodData, colorMap }) {
   const fabric = getFabricFromSKU(item.sku);
   const fit = getFitFromSKU(item.sku);
   const ats = item.total_ats || 0;
@@ -390,6 +298,7 @@ function ProductCard({ item, onClick, filterMode, prodData }) {
   const dates = isOverseas ? getEarliestDates(item.sku, prodData) : null;
   const atsLabel = isOverseas ? "Overseas ATS" : filterMode === "ats" ? "WH ATS" : "ATS";
   const atsColor = ats > 0 ? (isOverseas ? "#d97706" : "#16a34a") : "#dc2626";
+  const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap);
   return (
     <div onClick={onClick} className="product-card" style={{ background:"#fff",borderRadius:14,overflow:"hidden",border: isOverseas ? "2px solid #fcd34d" : "2px solid #e5e7eb" }}>
       <div style={{ position:"relative",overflow:"hidden" }}>
@@ -398,7 +307,16 @@ function ProductCard({ item, onClick, filterMode, prodData }) {
       </div>
       <div style={{ padding:"12px 14px" }}>
         <h3 style={{ fontSize:15,fontWeight:700,color:"#1f2937",marginBottom:2 }}>{item.sku}</h3>
-        <p style={{ fontSize:12,color:"#6b7280",marginBottom:4 }}>{item.brand_full}</p>
+        <p style={{ fontSize:12,color:"#6b7280",marginBottom:colorInfo ? 2 : 4 }}>{item.brand_full}</p>
+        {colorInfo && (
+          <p style={{ fontSize:11,marginBottom:4 }}>
+            {colorInfo.hasPrint ? (
+              <><span style={{ color:"#7c3aed",fontWeight:600 }}>{colorInfo.ground}</span> <span style={{ color:"#6b7280" }}>/ {colorInfo.print}</span></>
+            ) : (
+              <span style={{ color:"#7c3aed",fontWeight:600 }}>{colorInfo.display}</span>
+            )}
+          </p>
+        )}
         <p style={{ fontSize:11,color:"#9ca3af",marginBottom:8 }}>{fit} · {fabric.description.length > 30 ? fabric.description.substring(0,28)+"..." : fabric.description}</p>
         {/* Dates row for overseas */}
         {isOverseas && dates && (dates.ex_factory || dates.arrival) && (
@@ -463,7 +381,7 @@ function FullscreenImage({ src, alt, onClose }) {
 }
 
 // ─── Product Detail Modal ────────────────
-function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData }) {
+function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, colorMap }) {
   if (!item) return null;
   const fabric = getFabricFromSKU(item.sku);
   const fit = getFitFromSKU(item.sku);
@@ -474,6 +392,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData }
   const isOverseas = filterMode === "incoming";
   const dates = getEarliestDates(item.sku, prodData);
   const prods = dates.productions;
+  const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap);
 
   return (
     <>
@@ -488,6 +407,15 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData }
           <div>
             <h2 style={{ fontSize:18,fontWeight:800,color:"#1f2937" }}>{item.sku}</h2>
             <p style={{ fontSize:12,color:"#6b7280" }}>{item.brand_full}</p>
+            {colorInfo && (
+              <p style={{ fontSize:12,marginTop:2 }}>
+                {colorInfo.hasPrint ? (
+                  <><span style={{ color:"#7c3aed",fontWeight:600 }}>{colorInfo.ground}</span> <span style={{ color:"#6b7280" }}>/ {colorInfo.print}</span></>
+                ) : (
+                  <span style={{ color:"#7c3aed",fontWeight:600 }}>{colorInfo.display}</span>
+                )}
+              </p>
+            )}
           </div>
           <button onClick={onClose} style={{ fontSize:24,background:"#f3f4f6",border:"none",color:"#6b7280",cursor:"pointer",lineHeight:1,width:36,height:36,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,flexShrink:0 }}>✕</button>
         </div>
@@ -573,15 +501,16 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData }
                 Shipment Details ({prods.length} PO{prods.length > 1 ? "s" : ""})
               </div>
               <div style={{ border:"1px solid #dcfce7",borderTop:"none",borderRadius:"0 0 8px 8px",overflow:"hidden" }}>
-                <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr auto auto",gap:0,background:"#f0fdf4",padding:"4px 8px",fontSize:10,fontWeight:600,color:"#166534" }}>
-                  <span>Production</span><span>PO Name</span><span style={{ textAlign:"right" }}>Ex-Factory</span><span style={{ textAlign:"right" }}>Arrival</span>
+                <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr auto auto auto",gap:0,background:"#f0fdf4",padding:"4px 8px",fontSize:10,fontWeight:600,color:"#166534" }}>
+                  <span>Production</span><span>PO Name</span><span style={{ textAlign:"right" }}>Units</span><span style={{ textAlign:"right" }}>Ex-Factory</span><span style={{ textAlign:"right" }}>Arrival</span>
                 </div>
                 {prods.map((p, i) => (
-                  <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr 1fr auto auto",gap:0,padding:"5px 8px",fontSize:11,borderTop:"1px solid #dcfce7",background:i%2===0?"#fff":"#f9fafb" }}>
+                  <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr 1fr auto auto auto",gap:0,padding:"5px 8px",fontSize:11,borderTop:"1px solid #dcfce7",background:i%2===0?"#fff":"#f9fafb" }}>
                     <span style={{ fontWeight:600,fontFamily:"monospace" }}>{p.production || "—"}</span>
                     <span style={{ color:"#374151",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:120 }} title={p.poName}>{p.poName || "—"}</span>
-                    <span style={{ textAlign:"right",color:"#6b7280" }}>{formatDateShort(p.etd)}</span>
-                    <span style={{ textAlign:"right",fontWeight:600,color:"#166534" }}>{formatDateShort(p.arrival)}</span>
+                    <span style={{ textAlign:"right",fontWeight:700,fontFamily:"monospace" }}>{(p.units||0).toLocaleString()}</span>
+                    <span style={{ textAlign:"right",color:"#6b7280",paddingLeft:8 }}>{formatDateShort(p.etd)}</span>
+                    <span style={{ textAlign:"right",fontWeight:600,color:"#166534",paddingLeft:8 }}>{formatDateShort(p.arrival)}</span>
                   </div>
                 ))}
                 {prods.length > 0 && (
@@ -724,6 +653,43 @@ function UniversalSearch({ items, onSelect, placeholder }) {
   );
 }
 
+// ─── Color Name Helpers ─────────────────
+const COLOR_MAP_URL = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/Inventory+Colors+Data/style_color_map.xlsx";
+
+function formatColorName(raw) {
+  if (!raw) return "";
+  let s = raw.trim();
+  const replacements = { BLK:"Black", WHT:"White", BLU:"Blue", NVY:"Navy", GRY:"Grey" };
+  s = s.replace(/\b([A-Za-z]+)\b/g, word => {
+    const match = replacements[word.toUpperCase()];
+    if (match) return match;
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  });
+  return s.replace(/\s{2,}/g, " ").trim();
+}
+
+function getStyleColorInfo(sku, brandAbbr, colorMap) {
+  if (!colorMap || Object.keys(colorMap).length === 0) return null;
+  const fullSku = (sku || "").toUpperCase().trim();
+  const baseSku = fullSku.split("-")[0];
+  let raw = fullSku.includes("-") ? colorMap[fullSku] : undefined;
+  if (!raw) raw = colorMap[baseSku];
+  if (!raw) {
+    const prefix = BRAND_IMAGE_PREFIX[brandAbbr] || (brandAbbr || "").substring(0, 2);
+    const numbers = baseSku.match(/\d+/g);
+    if (!numbers || numbers.length === 0) return null;
+    const mainNumber = numbers.reduce((a, b) => a.length > b.length ? a : b);
+    const key = prefix + "_" + mainNumber.padStart(3, "0");
+    raw = colorMap[key];
+  }
+  if (!raw) return null;
+  if (raw.includes("||")) {
+    const parts = raw.split("||");
+    return { ground: formatColorName(parts[0]), print: formatColorName(parts[1]), display: formatColorName(parts[0]) + " / " + formatColorName(parts[1]), hasPrint: true };
+  }
+  return { color: formatColorName(raw), display: formatColorName(raw), hasPrint: false };
+}
+
 // ─── Production / Shipment Date Helpers ──────
 function formatDateShort(d) {
   if (!d) return "—";
@@ -766,6 +732,7 @@ export default function VersaInventoryApp() {
   const [fitFilter, setFitFilter] = useState([]);
   const [fabricFilter, setFabricFilter] = useState([]);
   const [productionData, setProductionData] = useState([]);
+  const [colorMap, setColorMap] = useState({});
 
   const allItems = useMemo(() => {
     return Object.values(brands).flatMap(b => b.items || []);
@@ -836,6 +803,35 @@ export default function VersaInventoryApp() {
       } catch (e) { console.warn("Production data unavailable:", e.message); }
     };
     loadProduction();
+
+    // Load color map from S3 Excel
+    const loadColorMap = async () => {
+      try {
+        // Dynamically load SheetJS
+        if (!window.XLSX) {
+          await new Promise((resolve, reject) => {
+            const s = document.createElement("script");
+            s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+            s.onload = resolve;
+            s.onerror = reject;
+            document.head.appendChild(s);
+          });
+        }
+        const resp = await fetch(COLOR_MAP_URL);
+        if (!resp.ok) throw new Error("Status " + resp.status);
+        const data = await resp.arrayBuffer();
+        const wb = window.XLSX.read(data, { type: "array" });
+        const sheet = wb.Sheets["Color Map"] || wb.Sheets[wb.SheetNames[0]];
+        const rows = window.XLSX.utils.sheet_to_json(sheet);
+        const map = {};
+        rows.forEach(row => {
+          if (row.Key && row.Color_Description) map[row.Key] = row.Color_Description;
+        });
+        setColorMap(map);
+        console.log("✓ Color map loaded:", Object.keys(map).length, "entries");
+      } catch (e) { console.warn("Color map unavailable:", e.message); }
+    };
+    loadColorMap();
 
     // Auto-refresh inventory every 5 minutes
     const refreshInterval = setInterval(async () => {
@@ -1037,8 +1033,8 @@ export default function VersaInventoryApp() {
       <header style={{ background:"rgba(15,23,42,.85)",backdropFilter:"blur(12px)",borderBottom:"1px solid rgba(255,255,255,.06)",padding:"14px 24px",position:"sticky",top:0,zIndex:100 }}>
         <div style={{ maxWidth:1280,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,flexWrap:"wrap" }}>
           <div style={{ display:"flex",alignItems:"center",gap:14 }}>
-            <img src="https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Versa+LOGO111.png"
-              alt="Versa Group" style={{ height:38,filter:"brightness(0) invert(1)",opacity:.9 }} onError={e => e.target.style.display="none"} />
+            <img src={APP_LOGO}
+              alt="Versa Group" style={{ height:38,borderRadius:6 }} onError={e => e.target.style.display="none"} />
             <div>
               <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>Inventory Management</h1>
               <div style={{ display:"flex",alignItems:"center",gap:8 }}>
@@ -1189,7 +1185,7 @@ export default function VersaInventoryApp() {
             ) : (
               <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16 }}>
                 {filteredItems.map(item => (
-                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} />
+                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} />
                 ))}
               </div>
             )}
@@ -1216,7 +1212,7 @@ export default function VersaInventoryApp() {
 
       {/* ─── MODALS ────────────────────────── */}
       {selectedItem && (
-        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} />
+        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} colorMap={colorMap} />
       )}
       {showCart && (
         <CartModal cart={cart} onClose={() => setShowCart(false)}
