@@ -1,1285 +1,2152 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+"""
+VERSA INVENTORY EXPORT API v3
+- Dropbox as primary inventory source
+- STYLE+OVERRIDES image lookup (matches frontend)
+- Size-suffix stripping for correct image URLs
+"""
 
-// ═══════════════════════════════════════════
-// CONSTANTS & CONFIG
-// ═══════════════════════════════════════════
-const API_URL = "https://versa-inventory-api.onrender.com";
-const S3_LOGO_BASE = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/";
-const DEFAULT_LOGO = "https://versamens.com/wp-content/uploads/2025/02/ac65455c-6152-4e4a-91f8-534f08254f81.png";
-const APP_LOGO = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Versa+App+logo.png";
+# Gevent monkey-patch MUST happen before any other imports
+# to avoid SSL recursion errors with boto3/urllib3
+try:
+    from gevent import monkey
+    monkey.patch_all()
+except ImportError:
+    pass  # gevent not installed — run with sync workers
 
-const BRAND_IMAGE_PREFIX = {NAUTICA:"NA",DKNY:"DK",EB:"EB",REEBOK:"RB",VINCE:"VC",BEN:"BE",USPA:"US",CHAPS:"CH",LUCKY:"LB",JNY:"JN",BEENE:"GB",NICOLE:"NM",SHAQ:"SH",TAYION:"TA",STRAHAN:"MS",VD:"VD",VERSA:"VR",CHEROKEE:"CK",AMERICA:"AC",BLO:"BL",DN:"D9",KL:"KL",NE:"NE"};
+import os
+import re
+import json
+import time
+import threading
+import concurrent.futures
+from datetime import datetime
+from io import BytesIO
 
-const BRAND_MAPPING = {
-  NAUTICA:{full_name:"Nautica",logo:"https://versamens.com/wp-content/uploads/2025/07/nautica-logo-1-1-1024x576.png"},
-  DKNY:{full_name:"DKNY",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T210144.119-1024x576.png"},
-  EB:{full_name:"Eddie Bauer",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T141044.111-1-1024x576.png"},
-  REEBOK:{full_name:"Reebok",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-100-1-1024x576.png"},
-  VINCE:{full_name:"Vince Camuto",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T140302.980-1-1024x576.png"},
-  BEN:{full_name:"Ben Sherman",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T140546.875-1-1024x576.png"},
-  USPA:{full_name:"U.S. Polo Assn.",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T141256.597-2-1024x576.png"},
-  CHAPS:{full_name:"Chaps",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T203105.646-1024x576.png"},
-  LUCKY:{full_name:"Lucky Brand",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T142102.500-2-1024x576.png"},
-  JNY:{full_name:"Jones New York",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T200647.521-1024x576.png"},
-  BEENE:{full_name:"Geoffrey Beene",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T203625.911-1024x576.png"},
-  NICOLE:{full_name:"Nicole Miller",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T203949.948-1024x576.png"},
-  SHAQ:{full_name:"Shaquille O'Neal",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T204655.610-1024x576.png"},
-  TAYION:{full_name:"Tayion",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T202043.389-1024x576.png"},
-  STRAHAN:{full_name:"Michael Strahan",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T205523.268-1-1024x576.png"},
-  VD:{full_name:"Von Dutch",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T205306.479-1024x576.png"},
-  VERSA:{full_name:"Versa",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/VERSA-logo-1280x720.png"},
-  CHEROKEE:{full_name:"Cherokee",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T141858.534-2-1024x576.png"},
-  AMERICA:{full_name:"American Crew",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/AmericanCrew-logo-1280x720.png"},
-  BLO:{full_name:"Bloomingdales",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Bloomingdales-logo-1280x720.png"},
-  DN:{full_name:"Divine 9",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Divine9-logo-spaced-1280x720.png"},
-  KL:{full_name:"Karl Lagerfeld Paris",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/klp-wht-blue-back-1-1024x576.png"},
-  NE:{full_name:"Neiman Marcus",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Neiman_Marcus-Logo.wine-copy-1024x576.png"},
-};
+import boto3
+from botocore.exceptions import ClientError, NoCredentialsError
+from flask import Flask, request, jsonify, send_file, Response, make_response
+from flask_cors import CORS
+import xlsxwriter
+import requests as http_requests
+import openpyxl
+from PIL import Image as PilImage
+from PIL import ImageOps
 
-const BRAND_ORDER = ["NAUTICA","DKNY","EB","VINCE","KL","CHAPS","USPA","LUCKY","BEN","BEENE","NE","JNY","NICOLE","VD","REEBOK","SHAQ","TAYION","STRAHAN","VERSA","AMERICA","BLO","DN"];
-
-const SKU_BRAND_CODE_MAP = {};
-Object.entries(BRAND_IMAGE_PREFIX).forEach(([brand, prefix]) => { SKU_BRAND_CODE_MAP[prefix] = brand; });
-
-const FABRIC_RULES = {AW:"4 Way Stretch",CA:"Cataonic 95% Polyester / 5% Spandex",TD:"CVC Dobby 60% Polyester / 40% Cotton",CH:"Chambray TC Stretch",CS:"Cooling Stretch",CV:"Cotton / Poly CVC",DS:"4 Way Stretch Dobby 95% Polyester / 5% Spandex",OX:"Pinpoint Oxford 65%/35% Poly/Cotton",PP:"100% Polyester 150D",SA:"150D Sateen 100% Polyester",LN:"100% Slab Linen",ST:"97% Cotton 3% Spandex",SW:"97% Cotton 3% Stretch Twill",SU:"Stretch Supershirt (95% Polyester, 5% Spandex)",TR:"Traveler Stretch",TW:"4 Way Stretch Twill",TS:"TC Stretch (77% Polyester / 20% Cotton / 3% Spandex)",WS:"4 Way Stretch (95%,5%) Sateen",PC:"TC Poplin 65%/35% Poly/Cotton",PT:"97% Poly 3% Stretch 150D",VS:"Viscose (31%) Stretch",VP:"50% Viscose 50% Polyester",LP:"Linen Polyester/Spandex",MR:"50% Microfiber 50% Rayon",CT:"100% Cotton",CP:"98% Cotton / 2% Spandex",BP:"50% Bamboo / 50% Polyester",TC:"TC Stretch (52P, 45C, 3S %)",SC:"60% Cotton, 38% Poly, 2% Spandex",BM:"30% Rayon Bamboo / 30% Microfiber / 36% Poly / 4% Spandex Twill",VM:"62% Poly 35% Viscose Bamboo 3% Spandex",SP:"52% Poly 45% Cotton 3% Spandex CVC Yarn Dye",TP:"Solid Twill 21% Rayon / 75.5% Poly / 3.5% Spandex",LC:"Linen 51% Cotton / 49% Poly",CX:"97% Cotton / 3% Polyester",WF:"96% Poly 4% Spandex Waffle",FT:"97% Poly / 3% Spandex Flax Texture",CE:"88% Polyester / 7% Cellulose / 5% Spandex Tech",PK:"100% Polyester Knit",PD:"60% Cotton / 40% Polyester Dobby",PY:"50% Cotton / 47% Polyester / 3% Spandex CVC Oxford",UP:"95% Poly / 5% Spandex Perforated",NY:"78% Nylon / 22% Spandex",CL:"35% Lyocell / 35% Cotton / 27% Nylon / 3% Spandex",PM:"50% Polyester / 50% Microfiber",PX:"95% Polyester / 5% Spandex Core",CN:"71% Cotton / 27% Nylon / 2% Spandex",MP:"74% Modal / 26% Polyester",LE:"100% Linen",PE:"96% Polyester / 4% Spandex End on End",OC:"100% Cotton Oxford",CD:"100% Cotton Dobby",CY:"100% Cotton Yarn Dye",CW:"100% Cotton Twill",CJ:"100% Cotton Jacquard",LT:"45% Cotton / 55% Linen",DP:"95% Polyester / 5% Spandex Knit Performance",PR:"87% Polyamide / 13% Elastic",PS:"94% Polyester / 6% Spandex Knit",CG:"100% Cotton Poplin 105gsm",PA:"88% Polyester / 12% Spandex Seamless Lux Knit",PN:"88% Polyester / 12% Spandex Non-Seamless",CF:"100% Cotton 50s 2 Ply",CB:"100% Cotton 80s 2 Ply (Bloomingdale)",KN:"Knits",WT:"Woven Tops",SD:"Sweaters",SF:"Flannel (Shackets)",SB:"Trucker (Shackets)",CO:"Corduroy (Shackets)",YD:"Yarn Dye"};
-
-const FIT_CODES = {SL:"Slim Fit",RF:"Regular Fit",TF:"Tailored Fit",MF:"Modern Fit",BT:"Big & Tall",CF:"Classic Fit",AF:"Athletic Fit"};
-
-// ═══════════════════════════════════════════
-// UTILITY FUNCTIONS
-// ═══════════════════════════════════════════
-// Folder name mapping for brands whose S3 folder doesn't match brand_abbr
-function getImageUrl(item) {
-  const baseStyle = (item.sku || "").split("-")[0].toUpperCase();
-  const brand = item.brand_abbr || item.brand || "";
-  return `${API_URL}/image/${baseStyle}?brand=${brand}`;
-}
-
-function getFabricFromSKU(sku) {
-  if (!sku || sku.length < 6) return { code: "—", description: "Unknown" };
-  // SKU structure: [0-1] customer + [2-3] brand + [4-5] fabric + [6-9] style# + [9-10] fit + [11] collar
-  const brand = sku.substring(2, 4).toUpperCase();
-  const code = sku.substring(4, 6).toUpperCase();
-  let desc = FABRIC_RULES[code] || code;
-  // Special brand overrides
-  if (brand === "CH" && code === "YD") desc = "50% Microfiber / 50% Polyester Yarn Dye";
-  if (brand === "CH" && code === "PT") desc = "97% Polyester / 3% Spandex (150D STRETCH)";
-  if (brand === "BE" && code === "YD") desc = "77% Poly / 20% Cotton / 3% Spandex";
-  return { code, description: desc };
-}
-
-function getFitFromSKU(sku) {
-  if (!sku || sku.length < 3) return "Unknown";
-  // Fit code is 2nd and 3rd characters from the end of the base style
-  const baseStyle = sku.split("-")[0].toUpperCase();
-  const fitCode = baseStyle.slice(-3, -1);
-  return FIT_CODES[fitCode] || fitCode || "Unknown";
-}
-
-const SIZE_PACKS = {
-  "Slim Fit": { master_qty:36, inner_qty:9, sizes:[["14-14.5 / 32-33",4],["15-15.5 / 32-33",8],["15-15.5 / 34-35",4],["16-16.5 / 32-33",4],["16-16.5 / 34-35",8],["17-17.5 / 34-35",8]] },
-  "Regular Fit": { master_qty:36, inner_qty:9, sizes:[["15-15.5 / 32-33",8],["15-15.5 / 34-35",8],["16-16.5 / 32-33",4],["16-16.5 / 34-35",4],["17-17.5 / 34-35",4],["17-17.5 / 36-37",4],["18-18.5 / 36-37",4]] },
-  "Von Dutch": { master_qty:36, inner_qty:9, sizes:[["S (14-14.5)",6],["M (15-15.5)",8],["L (16-16.5)",8],["XL (17-17.5)",8],["XXL (18-18.5)",6]] }
-};
-
-function getSizePack(sku, brandAbbr) {
-  if (brandAbbr === "VD") return SIZE_PACKS["Von Dutch"];
-  const fit = getFitFromSKU(sku);
-  return SIZE_PACKS[fit] || SIZE_PACKS["Regular Fit"];
-}
-
-function sortBrands(entries) {
-  return entries.sort((a, b) => {
-    const ia = BRAND_ORDER.indexOf(a[0]);
-    const ib = BRAND_ORDER.indexOf(b[0]);
-    if (ia !== -1 && ib !== -1) return ia - ib;
-    if (ia !== -1) return -1;
-    if (ib !== -1) return 1;
-    return (a[1].full_name || a[0]).localeCompare(b[1].full_name || b[0]);
-  });
-}
-
-function rebuildBrands(inventory, filterMode = "all") {
-  const brands = {};
-  let source = [...inventory];
-
-  if (filterMode === "incoming") {
-    source = source.filter(i => (i.incoming || 0) > 0).map(item => {
-      const incoming = item.incoming || 0;
-      const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
-      const ded = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
-      let osDed = 0;
-      if (ded > 0) {
-        if (wh <= 0) osDed = ded;
-        else if (incoming > 0) {
-          const neg = (wh - ded) < 0;
-          const covers = incoming >= ded;
-          const margin = ded > wh && Math.abs(incoming - ded) <= ded * 0.05;
-          if (margin || (neg && covers)) osDed = ded;
-        }
-      }
-      return { ...item, total_ats: incoming - osDed, total_warehouse: 0, jtw:0,tr:0,dcw:0,qa:0, _overseas_deducted: osDed, _display_mode:"overseas" };
-    });
-  } else if (filterMode === "ats") {
-    source = source.map(item => {
-      const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
-      if (wh <= 0) return null;
-      const ded = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
-      const incoming = item.incoming || 0;
-      let apply = ded;
-      if (ded > 0 && incoming > 0) {
-        const neg = (wh - ded) < 0;
-        const covers = incoming >= ded;
-        const margin = ded > wh && Math.abs(incoming - ded) <= ded * 0.05;
-        if (margin || (neg && covers)) apply = 0;
-      }
-      const sell = wh - apply;
-      if (sell <= 0) return null;
-      return { ...item, total_ats: sell, total_warehouse: wh, incoming: 0, _display_mode:"ats" };
-    }).filter(Boolean);
-  }
-
-  source.forEach(item => {
-    if (!item.sku) return;
-    let brand = item.brand || "UNKNOWN";
-    const skuUp = item.sku.toUpperCase();
-    if (skuUp.startsWith("LUCK")) brand = "LUCKY";
-    else if (item.sku.length >= 4) {
-      const code = item.sku.substring(2,4).toUpperCase();
-      if (SKU_BRAND_CODE_MAP[code]) brand = SKU_BRAND_CODE_MAP[code];
+app = Flask(__name__)
+CORS(app, resources={
+    r"/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
     }
-    item.brand = brand;
-    item.brand_abbr = brand;
-    item.brand_full = (BRAND_MAPPING[brand]||{}).full_name || brand;
-    if (!brands[brand]) brands[brand] = { full_name: item.brand_full, logo: (BRAND_MAPPING[brand]||{}).logo || DEFAULT_LOGO, items: [], sku_count: 0, total_ats: 0 };
-    brands[brand].items.push(item);
-    brands[brand].sku_count++;
-    brands[brand].total_ats += (item.total_ats || 0);
-  });
-  return brands;
+})
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
+
+AWS_REGION       = os.environ.get('AWS_REGION', 'us-east-2')
+S3_BUCKET        = os.environ.get('S3_BUCKET', 'nauticaslimfit')
+S3_INVENTORY_KEY = os.environ.get('S3_INVENTORY_KEY', 'inventory/daily_inventory.xlsx')
+S3_EXPORT_PREFIX = os.environ.get('S3_EXPORT_PREFIX', 'exports/').rstrip('/') + '/'
+S3_PHOTOS_PREFIX = os.environ.get('S3_PHOTOS_PREFIX',
+                                   'ALL+INVENTORY+Photos/PHOTOS+INVENTORY')
+
+S3_OVERRIDES_KEY = os.environ.get('S3_OVERRIDES_KEY', 'inventory/style_overrides.json')
+
+S3_PHOTOS_URL = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{S3_PHOTOS_PREFIX}"
+
+# STYLE+OVERRIDES — primary image source (matches frontend logic)
+S3_OVERRIDES_IMG_URL = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/ALL+INVENTORY+Photos/STYLE+OVERRIDES"
+S3_DROPBOX_SYNC_PREFIX = 'ALL INVENTORY Photos/DROPBOX_SYNC'
+S3_DROPBOX_SYNC_URL = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/ALL+INVENTORY+Photos/DROPBOX_SYNC"
+
+# Dropbox direct download URL for hourly inventory file
+# Dropbox shared link — will be converted to direct download at runtime
+DROPBOX_URL = os.environ.get('DROPBOX_URL',
+    'https://www.dropbox.com/scl/fi/de3nzb66mx41un0j69kyk/Inventory_ATS.xlsx?rlkey=ihoxu4s7gpb5ei14w2cl9dvyw&dl=1')
+
+# Dropbox shared folder link for PHOTOS INVENTORY (daily image sync)
+DROPBOX_PHOTOS_URL = os.environ.get('DROPBOX_PHOTOS_URL', '')
+DROPBOX_PHOTOS_TOKEN = re.sub(r'\s+', '', os.environ.get('DROPBOX_PHOTOS_TOKEN', ''))
+DROPBOX_PHOTOS_PATH = os.environ.get('DROPBOX_PHOTOS_PATH', '/Versa Share Files/PHOTOS INVENTORY')
+DROPBOX_PHOTOS_SYNC_HOURS = int(os.environ.get('DROPBOX_PHOTOS_SYNC_HOURS', 8))
+
+TARGET_W = 150
+TARGET_H = 150
+COL_WIDTH_UNITS = 22
+
+BRAND_IMAGE_PREFIX = {
+    'NAUTICA': 'NA', 'DKNY': 'DK', 'EB': 'EB', 'REEBOK': 'RB', 'VINCE': 'VC',
+    'BEN': 'BE', 'USPA': 'US', 'CHAPS': 'CH', 'LUCKY': 'LB', 'JNY': 'JN',
+    'BEENE': 'GB', 'NICOLE': 'NM', 'SHAQ': 'SH', 'TAYION': 'TA', 'STRAHAN': 'MS',
+    'VD': 'VD', 'VERSA': 'VR', 'CHEROKEE': 'CK', 'AMERICA': 'AC', 'BLO': 'BL', 'DN': 'D9',
+    'KL': 'KL', 'NE': 'NE'
 }
 
-// ═══════════════════════════════════════════
-// COMPONENTS
-// ═══════════════════════════════════════════
-
-function Toast({ message, type, onClose }) {
-  useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, [onClose]);
-  const bg = type === "error" ? "#ef4444" : type === "warning" ? "#f59e0b" : "#10b981";
-  return (
-    <div style={{ position:"fixed",bottom:20,right:20,padding:"14px 22px",background:bg,color:"#fff",borderRadius:12,boxShadow:"0 4px 16px rgba(0,0,0,.25)",zIndex:9999,fontSize:14,fontWeight:600,animation:"slideInRight .3s ease" }}>
-      {message}
-    </div>
-  );
+BRAND_FULL_NAMES = {
+    'NAUTICA': 'Nautica', 'DKNY': 'DKNY', 'EB': 'Eddie Bauer', 'REEBOK': 'Reebok',
+    'VINCE': 'Vince Camuto', 'BEN': 'Ben Sherman', 'USPA': 'U.S. Polo Assn.',
+    'CHAPS': 'Chaps', 'LUCKY': 'Lucky Brand', 'JNY': 'Jones New York',
+    'BEENE': 'Geoffrey Beene', 'NICOLE': 'Nicole Miller', 'SHAQ': "Shaquille O'Neal",
+    'TAYION': 'Tayion', 'STRAHAN': 'Michael Strahan', 'VD': 'Von Dutch',
+    'VERSA': 'Versa', 'CHEROKEE': 'Cherokee', 'AMERICA': 'American Crew', 'BLO': 'Bloomingdales', 'DN': 'Divine 9',
+    'KL': 'Karl Lagerfeld Paris', 'NE': 'Neiman Marcus'
 }
 
-function LoadingSpinner({ text = "Loading..." }) {
-  return (
-    <div style={{ textAlign:"center", padding:"60px 20px" }}>
-      <div className="spinner" />
-      <p style={{ marginTop:16, fontSize:18, fontWeight:600, color:"#4b5563" }}>{text}</p>
-    </div>
-  );
+FOLDER_MAPPING = {
+    'EB': 'EDDIE+BAUER', 'USPA': 'US+POLO', 'VINCE': 'VINCE+CAMUTO',
+    'LUCKY': 'LUCKY+BRAND', 'BEN': 'BEN+SHERMAN', 'BEENE': 'GEOFFREY+BEENE',
+    'NICOLE': 'NICOLE+MILLER', 'AMERICA': 'AMERICAN+CREW',
+    'TAYION': 'TAYON', 'VD': 'Von+Dutch',
+    'KL': 'KARL+LAGERFELD'
 }
 
-// ═══════════════════════════════════════════
-// IMAGE CACHE — remembers working URLs so
-// fallback chain only runs once per base style
-// ═══════════════════════════════════════════
-function getBaseStyle(sku) {
-  return (sku || "").split("-")[0].toUpperCase();
+STYLE_CONFIG = {
+    'header_bg': '#ADD8E6', 'header_text': '#000000',
+    'row_bg_odd': '#FFFFFF', 'row_bg_even': '#F0F4F8',
+    'border_color': '#000000', 'font_name': 'Calibri'
 }
 
-function resolveImageUrl(item) {
-  return getImageUrl(item);
+_s3_client = None
+
+def get_s3():
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client('s3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID', ''),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY', ''),
+            region_name=AWS_REGION
+        )
+    return _s3_client
+
+_inv_lock = threading.Lock()
+_inventory = {
+    'items': [],
+    'brands': {},
+    'etag': None,
+    'last_sync': None,
+    'item_count': 0,
+    'source': None,  # 'dropbox' or 's3'
 }
 
-// Preload a batch of images into browser cache
-function preloadImages(items) {
-  const seen = new Set();
-  items.slice(0, 30).forEach(item => {
-    const base = getBaseStyle(item.sku);
-    if (seen.has(base)) return;
-    seen.add(base);
-    const img = new Image();
-    img.src = resolveImageUrl(item);
-  });
+_img_lock = threading.Lock()
+_img_cache = {}  # base_style → image result (shared across all size variants)
+
+# --- Dropbox Photos Cache ---
+_dropbox_photo_index = {}   # image_code (uppercase) → file_path on disk
+_dropbox_thumb_cache = {}   # image_code → thumbnail bytes (for Excel exports)
+_dropbox_photo_lock = threading.Lock()
+_dropbox_photos_last_sync = 0
+
+_export_lock = threading.Lock()
+_exports = {
+    'brands': {},
+    'all_brands': None,
+    'generating': False,
+    'progress': '',
+    'last_generated': None,
 }
 
-// Background preloader — warm browser cache via backend proxy
-let _bgPreloadStarted = false;
-let _bgQueue = [];
-let _bgActive = 0;
-const BG_MAX = 15;
+_overrides_lock = threading.Lock()
+_style_overrides = {}
 
-function backgroundPreloadAll(inventory) {
-  if (_bgPreloadStarted) return;
-  _bgPreloadStarted = true;
-  const seen = new Set();
-  _bgQueue = inventory.filter(item => {
-    const base = getBaseStyle(item.sku);
-    if (!base || seen.has(base)) return false;
-    seen.add(base);
-    return true;
-  });
-  setTimeout(_bgPump, 2000);
-}
+def load_overrides_from_s3():
+    """Load style overrides from S3 on startup"""
+    global _style_overrides
+    try:
+        s3 = get_s3()
+        resp = s3.get_object(Bucket=S3_BUCKET, Key=S3_OVERRIDES_KEY)
+        data = json.loads(resp['Body'].read().decode('utf-8'))
+        with _overrides_lock:
+            _style_overrides = data
+        print(f"  ✓ Loaded {len(_style_overrides)} style overrides from S3")
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            print("  No existing style overrides in S3 (will create on first save)")
+        else:
+            print(f"  ⚠ Could not load overrides from S3: {e}")
+    except Exception as e:
+        print(f"  ⚠ Override load error: {e}")
 
-function _bgPump() {
-  while (_bgActive < BG_MAX && _bgQueue.length > 0) {
-    const item = _bgQueue.shift();
-    _bgActive++;
-    const img = new Image();
-    img.onload = img.onerror = () => { _bgActive--; _bgPump(); };
-    img.src = resolveImageUrl(item);
-  }
-}
+def save_overrides_to_s3():
+    """Save style overrides to S3"""
+    try:
+        s3 = get_s3()
+        with _overrides_lock:
+            data = json.dumps(_style_overrides)
+        s3.put_object(
+            Bucket=S3_BUCKET,
+            Key=S3_OVERRIDES_KEY,
+            Body=data.encode('utf-8'),
+            ContentType='application/json'
+        )
+        print(f"  ✓ Saved {len(_style_overrides)} style overrides to S3")
+        return True
+    except Exception as e:
+        print(f"  ✗ Failed to save overrides to S3: {e}")
+        return False
 
-function ImageWithFallback({ src, alt, style, className, onClick }) {
-  const [error, setError] = useState(false);
-  const [loaded, setLoaded] = useState(false);
 
-  useEffect(() => {
-    setError(false);
-    setLoaded(false);
-  }, [src]);
+S3_ALLOCATION_KEY = os.environ.get('S3_ALLOCATION_KEY', 'inventory/VIRTUAL WAREHOUSE ALLOCATION.csv')
+S3_PRODUCTION_KEY = os.environ.get('S3_PRODUCTION_KEY', 'inventory/Style Ledger.xlsx')
 
-  if (error) return (
-    <div style={{ ...style, background:"linear-gradient(135deg,#f1f5f9,#e2e8f0)", display:"flex",alignItems:"center",justifyContent:"center",color:"#94a3b8",fontSize:13,fontWeight:600 }} className={className}>
-      No Image
-    </div>
-  );
-  return (
-    <img
-      src={src}
-      alt={alt}
-      style={{ ...style, opacity: loaded ? 1 : 0, transition:"opacity .15s ease" }}
-      className={className}
-      onLoad={() => setLoaded(true)}
-      onError={() => setError(true)}
-      onClick={onClick}
-      loading="lazy"
-      decoding="async"
-    />
-  );
-}
 
-// ─── Brand Card ──────────────────────────
-function BrandCard({ abbr, data, onClick }) {
-  return (
-    <div onClick={onClick} className="brand-card">
-      <div style={{ height:120, display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(135deg,#f8fafc,#f1f5f9)",borderRadius:"12px 12px 0 0",padding:12,overflow:"hidden" }}>
-        <img src={data.logo || DEFAULT_LOGO} alt={data.full_name} style={{ maxHeight:80,maxWidth:"100%",objectFit:"contain" }} onError={e => { e.target.src = DEFAULT_LOGO; }} />
-      </div>
-      <div style={{ padding:"14px 16px" }}>
-        <h3 style={{ fontSize:16,fontWeight:700,color:"#1f2937",marginBottom:2 }}>{data.full_name}</h3>
-        <p style={{ fontSize:12,color:"#6b7280",marginBottom:8 }}>{abbr}</p>
-        <div style={{ display:"flex",justifyContent:"space-between",gap:8 }}>
-          <div style={{ background:"#f0fdf4",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
-            <p style={{ fontSize:10,color:"#16a34a",fontWeight:600 }}>SKUs</p>
-            <p style={{ fontSize:18,fontWeight:800,color:"#166534" }}>{data.sku_count}</p>
-          </div>
-          <div style={{ background:"#eef2ff",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
-            <p style={{ fontSize:10,color:"#4f46e5",fontWeight:600 }}>ATS</p>
-            <p style={{ fontSize:18,fontWeight:800,color:"#3730a3" }}>{(data.total_ats||0).toLocaleString()}</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+def load_allocation_from_s3():
+    """Load allocation CSV from S3 and return as list of dicts"""
+    try:
+        s3 = get_s3()
+        resp = s3.get_object(Bucket=S3_BUCKET, Key=S3_ALLOCATION_KEY)
+        text = resp['Body'].read().decode('utf-8-sig')
+        lines = text.strip().split('\n')
+        if len(lines) < 2:
+            return []
+        headers = [h.strip() for h in lines[0].split(',')]
+        po_idx = next((i for i, h in enumerate(headers) if 'po' in h.lower()), 0)
+        cust_idx = next((i for i, h in enumerate(headers) if 'customer' in h.lower()), 1)
+        sku_idx = next((i for i, h in enumerate(headers) if 'sku' in h.lower()), 2)
+        qty_idx = next((i for i, h in enumerate(headers) if 'qty' in h.lower()), 3)
 
-// ─── Product Card ────────────────────────
-function ProductCard({ item, onClick, filterMode, prodData, colorMap }) {
-  const fabric = getFabricFromSKU(item.sku);
-  const fit = getFitFromSKU(item.sku);
-  const ats = item.total_ats || 0;
-  const isOverseas = filterMode === "incoming";
-  const dates = isOverseas ? getEarliestDates(item.sku, prodData) : null;
-  const atsLabel = isOverseas ? "Overseas ATS" : filterMode === "ats" ? "WH ATS" : "ATS";
-  const atsColor = ats > 0 ? (isOverseas ? "#d97706" : "#16a34a") : "#dc2626";
-  const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap);
-  return (
-    <div onClick={onClick} className="product-card" style={{ background:"#fff",borderRadius:14,overflow:"hidden",border: isOverseas ? "2px solid #fcd34d" : "2px solid #e5e7eb" }}>
-      <div style={{ position:"relative",overflow:"hidden" }}>
-        <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ width:"100%",height:220,objectFit:"cover",background:"#f3f4f6" }} />
-        {isOverseas && <span style={{ position:"absolute",top:8,right:8,background:"rgba(217,119,6,.9)",color:"#fff",padding:"3px 8px",borderRadius:8,fontSize:10,fontWeight:700 }}>🚢 Overseas</span>}
-      </div>
-      <div style={{ padding:"12px 14px" }}>
-        <h3 style={{ fontSize:15,fontWeight:700,color:"#1f2937",marginBottom:2 }}>{item.sku}</h3>
-        <p style={{ fontSize:12,color:"#6b7280",marginBottom:colorInfo ? 2 : 4 }}>{item.brand_full}</p>
-        {colorInfo && (
-          <p style={{ fontSize:11,marginBottom:4 }}>
-            {colorInfo.hasPrint ? (
-              <><span style={{ color:"#7c3aed",fontWeight:600 }}>{colorInfo.ground}</span> <span style={{ color:"#6b7280" }}>/ {colorInfo.print}</span></>
-            ) : (
-              <span style={{ color:"#7c3aed",fontWeight:600 }}>{colorInfo.display}</span>
-            )}
-          </p>
-        )}
-        <p style={{ fontSize:11,color:"#9ca3af",marginBottom:8 }}>{fit} · {fabric.description.length > 30 ? fabric.description.substring(0,28)+"..." : fabric.description}</p>
-        {/* Dates row for overseas */}
-        {isOverseas && dates && (dates.ex_factory || dates.arrival) && (
-          <div style={{ display:"flex",gap:6,marginBottom:8 }}>
-            <div style={{ flex:1,background:"#fffbeb",padding:"5px 8px",borderRadius:6,textAlign:"center" }}>
-              <p style={{ fontSize:9,color:"#92400e",fontWeight:600 }}>Ex-Factory</p>
-              <p style={{ fontSize:11,fontWeight:700,color:"#78350f" }}>{formatDateShort(dates.ex_factory)}</p>
-            </div>
-            <div style={{ flex:1,background:"#ecfeff",padding:"5px 8px",borderRadius:6,textAlign:"center" }}>
-              <p style={{ fontSize:9,color:"#0e7490",fontWeight:600 }}>Est. Arrival</p>
-              <p style={{ fontSize:11,fontWeight:700,color:"#164e63" }}>{formatDateShort(dates.arrival)}</p>
-            </div>
-          </div>
-        )}
-        <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center" }}>
-          <span style={{ fontSize:13,fontWeight:700,color:atsColor }}>
-            {ats > 0 ? `${ats.toLocaleString()} ${atsLabel}` : "Out of Stock"}
-          </span>
-          <div style={{ display:"flex",gap:4 }}>
-            {item.jtw > 0 && <span style={{ fontSize:9,background:"#dbeafe",color:"#1d4ed8",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>JTW</span>}
-            {item.tr > 0 && <span style={{ fontSize:9,background:"#f3e8ff",color:"#7c3aed",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>TR</span>}
-            {item.dcw > 0 && <span style={{ fontSize:9,background:"#ffedd5",color:"#c2410c",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>DCW</span>}
-            {(item.qa||0) > 0 && <span style={{ fontSize:9,background:"#ccfbf1",color:"#0f766e",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>QA</span>}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+        results = []
+        for line in lines[1:]:
+            cols = [c.strip() for c in line.split(',')]
+            if len(cols) <= sku_idx or not cols[sku_idx]:
+                continue
+            try:
+                qty = int(cols[qty_idx]) if len(cols) > qty_idx else 0
+            except ValueError:
+                qty = 0
+            results.append({
+                'po': cols[po_idx] if len(cols) > po_idx else '',
+                'customer': cols[cust_idx] if len(cols) > cust_idx else '',
+                'sku': cols[sku_idx].upper(),
+                'qty': qty
+            })
+        print(f"  ✓ Loaded {len(results)} allocation rows from S3")
+        return results
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            print("  No allocation file found in S3")
+        else:
+            print(f"  ⚠ Could not load allocation from S3: {e}")
+        return []
+    except Exception as e:
+        print(f"  ⚠ Allocation load error: {e}")
+        return []
 
-// ─── Fullscreen Image Viewer ────────────
-function FullscreenImage({ src, alt, onClose }) {
-  if (!src) return null;
-  useEffect(() => {
-    const handleKey = (e) => { if (e.key === "Escape" || e.key === "Backspace") { e.preventDefault(); onClose(); } };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose]);
-  return (
-    <div onClick={onClose} style={{
-      position:"fixed",inset:0,background:"rgba(0,0,0,.92)",backdropFilter:"blur(8px)",
-      display:"flex",alignItems:"center",justifyContent:"center",zIndex:1100,
-      cursor:"zoom-out",padding:16
-    }}>
-      <button onClick={onClose} style={{
-        position:"fixed",top:16,right:16,zIndex:1101,
-        background:"rgba(255,255,255,.15)",border:"1px solid rgba(255,255,255,.2)",
-        color:"#fff",fontSize:20,fontWeight:700,width:44,height:44,borderRadius:12,
-        cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",
-        backdropFilter:"blur(4px)"
-      }}>✕</button>
-      <img src={src} alt={alt} style={{
-        maxWidth:"95%",maxHeight:"92vh",objectFit:"contain",borderRadius:8,
-        boxShadow:"0 20px 60px rgba(0,0,0,.5)"
-      }} />
-      <p style={{
-        position:"fixed",bottom:20,left:0,right:0,textAlign:"center",
-        color:"rgba(255,255,255,.6)",fontSize:13,fontWeight:600
-      }}>{alt}</p>
-    </div>
-  );
-}
 
-// ─── Product Detail Modal ────────────────
-function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, colorMap, allocationData }) {
-  if (!item) return null;
-  const fabric = getFabricFromSKU(item.sku);
-  const fit = getFitFromSKU(item.sku);
-  const sp = getSizePack(item.sku, item.brand_abbr || item.brand);
-  const totalStock = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
-  const ats = item.total_ats || 0;
-  const [showFullImage, setShowFullImage] = useState(false);
-  const [showAllocations, setShowAllocations] = useState(false);
-  const isOverseas = filterMode === "incoming";
-  const dates = getEarliestDates(item.sku, prodData);
-  const prods = dates.productions;
-  const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap);
-  const allocations = (allocationData || []).filter(a => a.sku === (item.sku || "").toUpperCase());
-  const allocTotal = allocations.reduce((s, a) => s + a.qty, 0);
+def load_production_from_s3():
+    """Load Style Ledger xlsx from S3 and return as list of dicts"""
+    try:
+        s3 = get_s3()
+        resp = s3.get_object(Bucket=S3_BUCKET, Key=S3_PRODUCTION_KEY)
+        data = resp['Body'].read()
+        wb = openpyxl.load_workbook(BytesIO(data), read_only=True)
+        ws = wb[wb.sheetnames[0]]
+        results = []
+        for row in ws.iter_rows(min_row=2, max_col=6, values_only=True):
+            style = str(row[2] or '').strip().upper()
+            if not style:
+                continue
+            etd = None
+            if row[5]:
+                if isinstance(row[5], datetime):
+                    etd = row[5].strftime('%Y-%m-%d')
+                else:
+                    try:
+                        etd = str(row[5])
+                    except:
+                        etd = None
+            try:
+                units = int(row[3] or 0)
+            except (ValueError, TypeError):
+                units = 0
+            results.append({
+                'production': str(row[0] or '').strip(),
+                'poName': str(row[1] or '').strip(),
+                'style': style,
+                'units': units,
+                'brand': str(row[4] or '').strip(),
+                'etd': etd
+            })
+        wb.close()
+        print(f"  ✓ Loaded {len(results)} production rows from S3")
+        return results
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            print("  No Style Ledger found in S3")
+        else:
+            print(f"  ⚠ Could not load production from S3: {e}")
+        return []
+    except Exception as e:
+        print(f"  ⚠ Production load error: {e}")
+        return []
 
-  return (
-    <>
-    {showFullImage && (
-      <FullscreenImage src={resolveImageUrl(item)} alt={item.sku} onClose={() => setShowFullImage(false)} />
-    )}
-    <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16 }} onClick={onClose}>
-      <div style={{ background:"rgba(255,255,255,.97)",borderRadius:14,maxWidth:580,width:"100%",maxHeight:"85vh",display:"flex",flexDirection:"column",boxShadow:"0 25px 60px rgba(0,0,0,.3)",position:"relative" }} onClick={e => e.stopPropagation()}>
-        
-        {/* Sticky header with close button */}
-        <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 20px",borderBottom:"1px solid #e5e7eb",flexShrink:0 }}>
-          <div>
-            <h2 style={{ fontSize:18,fontWeight:800,color:"#1f2937" }}>{item.sku}</h2>
-            <p style={{ fontSize:12,color:"#6b7280" }}>{item.brand_full}</p>
-            {colorInfo && (
-              <p style={{ fontSize:12,marginTop:2 }}>
-                {colorInfo.hasPrint ? (
-                  <><span style={{ color:"#7c3aed",fontWeight:600 }}>{colorInfo.ground}</span> <span style={{ color:"#6b7280" }}>/ {colorInfo.print}</span></>
-                ) : (
-                  <span style={{ color:"#7c3aed",fontWeight:600 }}>{colorInfo.display}</span>
-                )}
-              </p>
-            )}
-          </div>
-          <button onClick={onClose} style={{ fontSize:24,background:"#f3f4f6",border:"none",color:"#6b7280",cursor:"pointer",lineHeight:1,width:36,height:36,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,flexShrink:0 }}>✕</button>
-        </div>
 
-        {/* Scrollable content */}
-        <div style={{ overflowY:"auto",padding:"16px 20px" }}>
-          
-          {/* Image + Key Stats Row */}
-          <div style={{ display:"flex",gap:16,marginBottom:16 }}>
-            <div style={{ position:"relative",flexShrink:0,cursor:"zoom-in" }} onClick={() => setShowFullImage(true)}>
-              <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ width:140,height:180,borderRadius:10,objectFit:"cover",border:"2px solid #e5e7eb" }} />
-              <div style={{ position:"absolute",bottom:6,right:6,background:"rgba(0,0,0,.5)",color:"#fff",borderRadius:6,padding:"3px 6px",fontSize:10,fontWeight:600,backdropFilter:"blur(4px)" }}>🔍 Tap</div>
-            </div>
-            <div style={{ flex:1,display:"flex",flexDirection:"column",gap:8 }}>
-              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>
-                <div style={{ background:"linear-gradient(135deg,#10b981,#059669)",color:"#fff",padding:10,borderRadius:10 }}>
-                  <p style={{ fontSize:10,opacity:.85 }}>ATS</p>
-                  <p style={{ fontSize:22,fontWeight:800 }}>{ats.toLocaleString()}</p>
-                </div>
-                <div style={{ background:"linear-gradient(135deg,#3b82f6,#4f46e5)",color:"#fff",padding:10,borderRadius:10 }}>
-                  <p style={{ fontSize:10,opacity:.85 }}>Total Stock</p>
-                  <p style={{ fontSize:22,fontWeight:800 }}>{totalStock.toLocaleString()}</p>
-                </div>
-              </div>
-              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>
-                <div style={{ background:"#f9fafb",padding:8,borderRadius:8 }}>
-                  <p style={{ fontSize:10,color:"#6b7280",fontWeight:600 }}>Fit</p>
-                  <p style={{ fontSize:13,fontWeight:700,color:"#7c3aed" }}>{fit}</p>
-                </div>
-                <div style={{ background:"#f9fafb",padding:8,borderRadius:8 }}>
-                  <p style={{ fontSize:10,color:"#6b7280",fontWeight:600 }}>Fabric</p>
-                  <p style={{ fontSize:13,fontWeight:700 }}>{fabric.code}: {fabric.description.length > 18 ? fabric.description.substring(0,16)+"…" : fabric.description}</p>
-                </div>
-              </div>
-              {ats > 0 && (
-                <button onClick={() => onAddToCart(item)} style={{ background:"linear-gradient(135deg,#667eea,#764ba2)",color:"#fff",border:"none",padding:"9px 0",borderRadius:10,fontSize:13,fontWeight:700,cursor:"pointer",width:"100%" }}>
-                  🛒 Add to Cart
-                </button>
-              )}
-            </div>
-          </div>
+def extract_image_code(sku, brand_abbr):
+    """Extract image code from SKU — strips size suffix first"""
+    prefix = BRAND_IMAGE_PREFIX.get(brand_abbr, brand_abbr[:2])
+    # Strip size suffix (everything after first dash)
+    base_sku = sku.split('-')[0]
+    numbers = re.findall(r'\d+', str(base_sku))
+    if numbers:
+        main_number = max(numbers, key=len)
+        return f"{prefix}_{main_number}"
+    return f"{prefix}_{base_sku}"
 
-          {/* Warehouse */}
-          <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:12 }}>
-            {[["JTW",item.jtw,"#dbeafe","#1d4ed8"],["TR",item.tr,"#f3e8ff","#7c3aed"],["DCW",item.dcw,"#ffedd5","#c2410c"],["QA",item.qa||0,"#ccfbf1","#0f766e"]].map(([label,val,bg,color]) => (
-              <div key={label} style={{ background:bg,padding:8,borderRadius:8,textAlign:"center" }}>
-                <p style={{ fontSize:10,color,fontWeight:600 }}>{label}</p>
-                <p style={{ fontSize:18,fontWeight:800 }}>{val}</p>
-              </div>
-            ))}
-          </div>
 
-          {/* Committed & Incoming */}
-          <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12 }}>
-            <div onClick={() => allocations.length > 0 && setShowAllocations(!showAllocations)}
-              style={{ background:"#fefce8",padding:8,borderRadius:8,cursor:allocations.length > 0 ? "pointer" : "default",border:showAllocations ? "2px solid #f59e0b" : "2px solid transparent",transition:"border .15s" }}>
-              <p style={{ fontSize:10,color:"#a16207",fontWeight:600 }}>
-                Committed & Allocated {allocations.length > 0 && <span style={{ fontSize:9,color:"#d97706" }}>▼ tap</span>}
-              </p>
-              <p style={{ fontSize:16,fontWeight:800 }}>{((item.committed||0)+(item.allocated||0)).toLocaleString()}</p>
-            </div>
-            <div style={{ background:"#ecfeff",padding:8,borderRadius:8 }}>
-              <p style={{ fontSize:10,color:"#0e7490",fontWeight:600 }}>Incoming</p>
-              <p style={{ fontSize:16,fontWeight:800 }}>{(item.incoming||0).toLocaleString()}</p>
-            </div>
-          </div>
+def get_base_style(sku):
+    """Get base style from SKU by stripping size suffix — matches frontend logic"""
+    return sku.split('-')[0].upper()
 
-          {/* Allocation Breakdown (expandable) */}
-          {showAllocations && allocations.length > 0 && (
-            <div style={{ marginBottom:12 }}>
-              <div style={{ background:"#92400e",color:"#fff",padding:6,borderRadius:"8px 8px 0 0",textAlign:"center",fontWeight:700,fontSize:11 }}>
-                Allocation Breakdown ({allocations.length} record{allocations.length > 1 ? "s" : ""})
-              </div>
-              <div style={{ border:"1px solid #fde68a",borderTop:"none",borderRadius:"0 0 8px 8px",overflow:"hidden" }}>
-                <div style={{ display:"grid",gridTemplateColumns:"1fr auto auto",gap:0,background:"#fefce8",padding:"4px 8px",fontSize:10,fontWeight:600,color:"#92400e" }}>
-                  <span>Customer</span><span style={{ textAlign:"right" }}>Qty</span><span style={{ textAlign:"right",paddingLeft:8 }}>PO #</span>
-                </div>
-                {allocations.map((a, i) => (
-                  <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr auto auto",gap:0,padding:"5px 8px",fontSize:11,borderTop:"1px solid #fef3c7",background:i%2===0?"#fff":"#fffbeb" }}>
-                    <span style={{ fontWeight:600,color:"#1f2937" }}>{a.customer}</span>
-                    <span style={{ textAlign:"right",fontWeight:700,fontFamily:"monospace" }}>{a.qty.toLocaleString()}</span>
-                    <span style={{ textAlign:"right",color:"#6b7280",fontFamily:"monospace",paddingLeft:8 }}>{a.po}</span>
-                  </div>
-                ))}
-                <div style={{ display:"grid",gridTemplateColumns:"1fr auto",padding:"5px 8px",fontSize:11,borderTop:"2px solid #fde68a",background:"#fefce8",fontWeight:700 }}>
-                  <span>Total</span>
-                  <span style={{ textAlign:"right",fontFamily:"monospace" }}>{allocTotal.toLocaleString()}</span>
-                </div>
-              </div>
-            </div>
-          )}
 
-          {/* Shipment Dates (always show if available, highlighted in overseas mode) */}
-          {(dates.ex_factory || dates.arrival) && (
-            <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12 }}>
-              <div style={{ background: isOverseas ? "#fffbeb" : "#f9fafb",padding:8,borderRadius:8,textAlign:"center",border: isOverseas ? "1px solid #fcd34d" : "none" }}>
-                <p style={{ fontSize:10,color:"#92400e",fontWeight:600 }}>🚢 Ex-Factory</p>
-                <p style={{ fontSize:14,fontWeight:800,color:"#78350f" }}>{formatDateShort(dates.ex_factory)}</p>
-              </div>
-              <div style={{ background: isOverseas ? "#ecfeff" : "#f9fafb",padding:8,borderRadius:8,textAlign:"center",border: isOverseas ? "1px solid #a5f3fc" : "none" }}>
-                <p style={{ fontSize:10,color:"#0e7490",fontWeight:600 }}>📅 Est. Arrival</p>
-                <p style={{ fontSize:14,fontWeight:800,color:"#164e63" }}>{formatDateShort(dates.arrival)}</p>
-              </div>
-            </div>
-          )}
+def get_image_url(item, s3_base_url):
+    """Get brand-folder fallback URL"""
+    brand_abbr = item.get('brand_abbr', item.get('brand', ''))
+    folder_name = FOLDER_MAPPING.get(brand_abbr, brand_abbr)
+    image_code = extract_image_code(item['sku'], brand_abbr)
+    return f"{s3_base_url}/{folder_name}/{image_code}.jpg"
 
-          {/* Production / PO Table */}
-          {prods.length > 0 && (
-            <div style={{ marginBottom:12 }}>
-              <div style={{ background:"#166534",color:"#fff",padding:6,borderRadius:"8px 8px 0 0",textAlign:"center",fontWeight:700,fontSize:11 }}>
-                Shipment Details ({prods.length} PO{prods.length > 1 ? "s" : ""})
-              </div>
-              <div style={{ border:"1px solid #dcfce7",borderTop:"none",borderRadius:"0 0 8px 8px",overflow:"hidden" }}>
-                <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr auto auto auto",gap:0,background:"#f0fdf4",padding:"4px 8px",fontSize:10,fontWeight:600,color:"#166534" }}>
-                  <span>Production</span><span>PO Name</span><span style={{ textAlign:"right" }}>Units</span><span style={{ textAlign:"right" }}>Ex-Factory</span><span style={{ textAlign:"right" }}>Arrival</span>
-                </div>
-                {prods.map((p, i) => (
-                  <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr 1fr auto auto auto",gap:0,padding:"5px 8px",fontSize:11,borderTop:"1px solid #dcfce7",background:i%2===0?"#fff":"#f9fafb" }}>
-                    <span style={{ fontWeight:600,fontFamily:"monospace" }}>{p.production || "—"}</span>
-                    <span style={{ color:"#374151",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:120 }} title={p.poName}>{p.poName || "—"}</span>
-                    <span style={{ textAlign:"right",fontWeight:700,fontFamily:"monospace" }}>{(p.units||0).toLocaleString()}</span>
-                    <span style={{ textAlign:"right",color:"#6b7280",paddingLeft:8 }}>{formatDateShort(p.etd)}</span>
-                    <span style={{ textAlign:"right",fontWeight:600,color:"#166534",paddingLeft:8 }}>{formatDateShort(p.arrival)}</span>
-                  </div>
-                ))}
-                {prods.length > 0 && (
-                  <div style={{ display:"grid",gridTemplateColumns:"1fr auto",padding:"5px 8px",fontSize:11,borderTop:"2px solid #bbf7d0",background:"#f0fdf4",fontWeight:700 }}>
-                    <span>Total Units</span>
-                    <span style={{ textAlign:"right" }}>{prods.reduce((s,p)=>s+p.units,0).toLocaleString()}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
 
-          {/* Size Pack */}
-          <div style={{ display:"flex",gap:12,marginBottom:10 }}>
-            <div style={{ background:"#faf5ff",padding:8,borderRadius:8,flex:1 }}>
-              <p style={{ fontSize:10,color:"#6b7280" }}>Master</p>
-              <p style={{ fontSize:16,fontWeight:800,color:"#7c3aed" }}>{sp.master_qty} pcs</p>
-            </div>
-            <div style={{ background:"#eff6ff",padding:8,borderRadius:8,flex:1 }}>
-              <p style={{ fontSize:10,color:"#6b7280" }}>Inner</p>
-              <p style={{ fontSize:16,fontWeight:800,color:"#3b82f6" }}>{sp.inner_qty} pcs</p>
-            </div>
-          </div>
-          <div style={{ background:"#e5e7eb",borderRadius:8,overflow:"hidden" }}>
-            <div style={{ background:"#667eea",color:"#fff",padding:6,textAlign:"center",fontWeight:700,fontSize:11 }}>Size Breakdown</div>
-            {sp.sizes.map(([size, qty], i) => (
-              <div key={i} style={{ display:"grid",gridTemplateColumns:"2fr 1fr",gap:1 }}>
-                <div style={{ background:"#fff",padding:5,textAlign:"center",fontWeight:600,fontSize:12 }}>{size}</div>
-                <div style={{ background:"#fff",padding:5,textAlign:"center",color:"#7c3aed",fontWeight:700,fontSize:12 }}>{qty} pcs</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-    </>
-  );
-}
+def get_style_override_url(sku):
+    """Get STYLE+OVERRIDES URL — primary image source (matches frontend)"""
+    base_style = get_base_style(sku)
+    return f"{S3_OVERRIDES_IMG_URL}/{base_style}.jpg"
 
-// ─── Cart Modal ──────────────────────────
-function CartModal({ cart, onClose, onRemove, onClear, onUpdateQty }) {
-  const totalItems = cart.length;
-  const totalQty = cart.reduce((s, c) => s + c.qty, 0);
-  return (
-    <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20 }} onClick={onClose}>
-      <div style={{ background:"rgba(255,255,255,.97)",borderRadius:16,maxWidth:700,width:"100%",maxHeight:"90vh",overflowY:"auto",padding:28,boxShadow:"0 25px 60px rgba(0,0,0,.3)" }} onClick={e => e.stopPropagation()}>
-        <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20 }}>
-          <h2 style={{ fontSize:22,fontWeight:800 }}>🛒 Cart</h2>
-          <button onClick={onClose} style={{ fontSize:28,background:"none",border:"none",color:"#9ca3af",cursor:"pointer" }}>×</button>
-        </div>
-        {cart.length === 0 ? (
-          <div style={{ textAlign:"center",padding:40,color:"#9ca3af" }}>
-            <p style={{ fontSize:48,marginBottom:12 }}>🛒</p>
-            <p style={{ fontSize:16 }}>Cart is empty</p>
-          </div>
-        ) : (
-          <>
-            {cart.map((c, i) => (
-              <div key={i} style={{ display:"flex",alignItems:"center",gap:14,padding:14,border:"1px solid #e5e7eb",borderRadius:12,marginBottom:10 }}>
-                <ImageWithFallback src={resolveImageUrl(c)} alt={c.sku} style={{ width:56,height:56,borderRadius:8,objectFit:"cover" }} />
-                <div style={{ flex:1 }}>
-                  <p style={{ fontWeight:700,fontSize:14 }}>{c.sku}</p>
-                  <p style={{ fontSize:12,color:"#6b7280" }}>{c.brand_full}</p>
-                </div>
-                <div style={{ display:"flex",alignItems:"center",gap:6 }}>
-                  <button onClick={() => onUpdateQty(i, Math.max(1, c.qty-1))} style={{ width:28,height:28,border:"1px solid #d1d5db",borderRadius:6,background:"#fff",cursor:"pointer",fontWeight:700 }}>−</button>
-                  <span style={{ width:36,textAlign:"center",fontWeight:700,fontSize:15 }}>{c.qty}</span>
-                  <button onClick={() => onUpdateQty(i, c.qty+1)} style={{ width:28,height:28,border:"1px solid #d1d5db",borderRadius:6,background:"#fff",cursor:"pointer",fontWeight:700 }}>+</button>
-                </div>
-                <button onClick={() => onRemove(i)} style={{ color:"#ef4444",background:"none",border:"none",cursor:"pointer",fontSize:18 }}>×</button>
-              </div>
-            ))}
-            <div style={{ borderTop:"2px solid #e5e7eb",paddingTop:16,marginTop:16 }}>
-              <div style={{ display:"flex",justifyContent:"space-between",fontSize:16,fontWeight:700,marginBottom:6 }}>
-                <span>Total Items:</span><span>{totalItems}</span>
-              </div>
-              <div style={{ display:"flex",justifyContent:"space-between",fontSize:16,fontWeight:700 }}>
-                <span>Total Quantity:</span><span>{totalQty}</span>
-              </div>
-            </div>
-            <div style={{ display:"flex",gap:10,marginTop:20 }}>
-              <button onClick={onClear} style={{ background:"#ef4444",color:"#fff",border:"none",padding:"12px 20px",borderRadius:10,fontWeight:700,cursor:"pointer",fontSize:14 }}>
-                🗑️ Clear Cart
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
 
-// ─── Universal Search Dropdown ───────────
-function UniversalSearch({ items, onSelect, placeholder }) {
-  const [query, setQuery] = useState("");
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
+def _process_image_from_url(url, tw=TARGET_W, th=TARGET_H):
+    """Download and resize an image from URL, trying .jpg/.png/.jpeg extensions"""
+    if not (isinstance(url, str) and url.startswith('http')):
+        return None
 
-  const results = useMemo(() => {
-    if (!query || query.length < 2) return [];
-    const q = query.toLowerCase();
-    return items.filter(i => i.sku?.toLowerCase().includes(q) || i.brand_full?.toLowerCase().includes(q)).slice(0, 15);
-  }, [query, items]);
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    base_url = url.rsplit('.', 1)[0]
 
-  useEffect(() => {
-    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
+    for ext in ['.jpg', '.png', '.jpeg']:
+        try_url = base_url + ext
+        try:
+            resp = http_requests.get(try_url, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                continue
+            ct = resp.headers.get('Content-Type', '').lower()
+            if 'image' not in ct:
+                continue
 
-  return (
-    <div ref={ref} style={{ position:"relative",maxWidth:600,margin:"0 auto 24px" }}>
-      <input value={query} onChange={e => { setQuery(e.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
-        placeholder={placeholder || "🔍 Search any SKU across all brands..."}
-        style={{ width:"100%",padding:"14px 20px",border:"2px solid #d1d5db",borderRadius:14,fontSize:15,outline:"none",background:"#fff",transition:"border-color .2s" }}
-        onFocus={e => e.target.style.borderColor = "#667eea"}
-        onBlur={e => { e.target.style.borderColor = "#d1d5db"; }}
-      />
-      {open && results.length > 0 && (
-        <div style={{ position:"absolute",top:"100%",left:0,right:0,background:"#fff",border:"2px solid #e5e7eb",borderTop:"none",borderRadius:"0 0 14px 14px",maxHeight:380,overflowY:"auto",zIndex:100,boxShadow:"0 10px 25px rgba(0,0,0,.12)" }}>
-          {results.map((item, i) => (
-            <div key={i} onClick={() => { onSelect(item); setOpen(false); setQuery(""); }}
-              style={{ display:"flex",alignItems:"center",padding:"10px 16px",cursor:"pointer",borderBottom:"1px solid #f3f4f6",transition:"background .15s" }}
-              onMouseEnter={e => e.currentTarget.style.background = "#f3f4f6"}
-              onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-              <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ width:48,height:48,objectFit:"cover",borderRadius:8,marginRight:14 }} />
-              <div style={{ flex:1 }}>
-                <p style={{ fontWeight:700,fontSize:13,color:"#1f2937" }}>{item.sku}</p>
-                <p style={{ fontSize:11,color:"#6b7280" }}>{item.brand_full}</p>
-              </div>
-              <span style={{ fontSize:12,fontWeight:700,color: (item.total_ats||0) > 0 ? "#16a34a" : "#dc2626" }}>
-                {(item.total_ats||0).toLocaleString()} ATS
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+            with PilImage.open(BytesIO(resp.content)) as im:
+                im = ImageOps.exif_transpose(im)
+                im.thumbnail((tw * 2, th * 2), PilImage.Resampling.LANCZOS)
 
-// ─── Color Name Helpers ─────────────────
-const COLOR_MAP_URL = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/Inventory+Colors+Data/style_color_map.xlsx";
+                fmt = "PNG"
+                if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+                    fmt = "PNG"
+                else:
+                    if im.mode != "RGB":
+                        im = im.convert("RGB")
+                    fmt = "JPEG"
 
-function formatColorName(raw) {
-  if (!raw) return "";
-  let s = raw.trim();
-  const replacements = { BLK:"Black", WHT:"White", BLU:"Blue", NVY:"Navy", GRY:"Grey" };
-  s = s.replace(/\b([A-Za-z]+)\b/g, word => {
-    const match = replacements[word.toUpperCase()];
-    if (match) return match;
-    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-  });
-  return s.replace(/\s{2,}/g, " ").trim();
-}
+                buf = BytesIO()
+                im.save(buf, format=fmt, quality=85, optimize=True)
+                raw = buf.getvalue()
+                ow, oh = im.size
 
-function getStyleColorInfo(sku, brandAbbr, colorMap) {
-  if (!colorMap || Object.keys(colorMap).length === 0) return null;
-  const fullSku = (sku || "").toUpperCase().trim();
-  const baseSku = fullSku.split("-")[0];
-  let raw = fullSku.includes("-") ? colorMap[fullSku] : undefined;
-  if (!raw) raw = colorMap[baseSku];
-  if (!raw) {
-    const prefix = BRAND_IMAGE_PREFIX[brandAbbr] || (brandAbbr || "").substring(0, 2);
-    const numbers = baseSku.match(/\d+/g);
-    if (!numbers || numbers.length === 0) return null;
-    const mainNumber = numbers.reduce((a, b) => a.length > b.length ? a : b);
-    const key = prefix + "_" + mainNumber.padStart(3, "0");
-    raw = colorMap[key];
-  }
-  if (!raw) return null;
-  if (raw.includes("||")) {
-    const parts = raw.split("||");
-    return { ground: formatColorName(parts[0]), print: formatColorName(parts[1]), display: formatColorName(parts[0]) + " / " + formatColorName(parts[1]), hasPrint: true };
-  }
-  return { color: formatColorName(raw), display: formatColorName(raw), hasPrint: false };
-}
+            wr = tw / ow
+            hr = th / oh
+            sf = min(wr, hr)
+            return {
+                'raw_bytes': raw,
+                'x_scale': sf, 'y_scale': sf,
+                'x_offset': (tw - ow * sf) / 2,
+                'y_offset': (th - oh * sf) / 2,
+                'url': try_url
+            }
+        except Exception:
+            continue
+    return None
 
-// ─── Production / Shipment Date Helpers ──────
-function formatDateShort(d) {
-  if (!d) return "—";
-  return new Date(d).toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" });
-}
 
-function getProductionForSku(sku, prodData) {
-  if (!sku || !prodData || prodData.length === 0) return [];
-  const skuUpper = sku.toUpperCase();
-  return prodData.filter(p => p.style === skuUpper);
-}
+def sync_dropbox_photos():
+    """List files in Dropbox PHOTOS INVENTORY folder via API — just metadata, no downloading."""
+    global _dropbox_photo_index, _dropbox_photos_last_sync
+    if not DROPBOX_PHOTOS_TOKEN:
+        print("[Dropbox Photos] No DROPBOX_PHOTOS_TOKEN configured, skipping", flush=True)
+        return
 
-function getEarliestDates(sku, prodData) {
-  const prods = getProductionForSku(sku, prodData);
-  if (prods.length === 0) return { ex_factory: null, arrival: null, productions: [] };
-  const sorted = [...prods].sort((a, b) => (a.arrival || new Date("2099")) - (b.arrival || new Date("2099")));
-  return {
-    ex_factory: sorted[0].etd,
-    arrival: sorted[0].arrival,
-    productions: sorted
-  };
-}
-
-// ═══════════════════════════════════════════
-// MAIN APP
-// ═══════════════════════════════════════════
-export default function VersaInventoryApp() {
-  const [view, setView] = useState("loading"); // loading, brands, inventory, detail
-  const [inventory, setInventory] = useState([]);
-  const [brands, setBrands] = useState({});
-  const [currentBrand, setCurrentBrand] = useState(null);
-  const [selectedItem, setSelectedItem] = useState(null);
-  const [filterMode, setFilterMode] = useState("all");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [sortBy, setSortBy] = useState("ats-desc");
-  const [syncStatus, setSyncStatus] = useState({ text: "⏳ Connecting...", type: "loading" });
-  const [cart, setCart] = useState([]);
-  const [showCart, setShowCart] = useState(false);
-  const [toast, setToast] = useState(null);
-  const [fitFilter, setFitFilter] = useState([]);
-  const [fabricFilter, setFabricFilter] = useState([]);
-  const [productionData, setProductionData] = useState([]);
-  const [colorMap, setColorMap] = useState({});
-  const [allocationData, setAllocationData] = useState([]);
-
-  const allItems = useMemo(() => {
-    return Object.values(brands).flatMap(b => b.items || []);
-  }, [brands]);
-
-  // ─── Data Loading ──────────────────────
-  useEffect(() => {
-    const loadData = async () => {
-      // Try localStorage first
-      try {
-        const cached = localStorage.getItem("versa_inventory_v2");
-        if (cached) {
-          const data = JSON.parse(cached);
-          if (data.length > 0) {
-            setInventory(data);
-            setBrands(rebuildBrands(data, "all"));
-            setView("brands");
-            setSyncStatus({ text: `📦 Cached · ${data.length} items`, type: "cached" });
-            backgroundPreloadAll(data);
-          }
+    try:
+        print(f"[Dropbox Photos] Listing files via API in: {DROPBOX_PHOTOS_PATH}", flush=True)
+        print(f"[Dropbox Photos] Token length: {len(DROPBOX_PHOTOS_TOKEN)}", flush=True)
+        headers = {
+            'Authorization': f'Bearer {DROPBOX_PHOTOS_TOKEN}',
+            'Content-Type': 'application/json'
         }
-      } catch (e) { /* ignore */ }
 
-      // Fetch live data
-      try {
-        setSyncStatus({ text: "🔄 Syncing...", type: "loading" });
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 120000);
-        const resp = await fetch(`${API_URL}/sync`, { signal: controller.signal });
-        clearTimeout(timeout);
-        if (!resp.ok) throw new Error(`Status ${resp.status}`);
-        const result = await resp.json();
-        if (result.inventory?.length > 0) {
-          setInventory(result.inventory);
-          setBrands(rebuildBrands(result.inventory, "all"));
-          setView("brands");
-          try { localStorage.setItem("versa_inventory_v2", JSON.stringify(result.inventory)); } catch (e) { /* quota */ }
-          const t = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
-          setSyncStatus({ text: `⚡ Live · ${result.inventory.length} items · ${t}`, type: "success" });
-          _bgPreloadStarted = false; // reset so live data gets preloaded
-          backgroundPreloadAll(result.inventory);
+        new_index = {}  # image_code (uppercase) → dropbox_path
+        cursor = None
+        total_files = 0
+
+        # Initial list_folder call
+        payload = {
+            'path': DROPBOX_PHOTOS_PATH,
+            'recursive': True,
+            'limit': 2000
         }
-      } catch (err) {
-        console.warn("Sync failed:", err.message);
-        if (inventory.length > 0) {
-          setSyncStatus({ text: "📦 Offline (cached)", type: "cached" });
-        } else {
-          setSyncStatus({ text: "⚠️ Could not connect", type: "error" });
-          setView("brands"); // Show empty state
+        resp = http_requests.post(
+            'https://api.dropboxapi.com/2/files/list_folder',
+            headers=headers, json=payload, timeout=60
+        )
+
+        if resp.status_code == 401:
+            print(f"[Dropbox Photos] Auth failed (401) — token may be expired", flush=True)
+            return
+
+        # If path not found, try to discover it
+        if resp.status_code == 409:
+            print(f"[Dropbox Photos] Path '{DROPBOX_PHOTOS_PATH}' not found, searching root...", flush=True)
+            # List root to find the right folder
+            root_resp = http_requests.post(
+                'https://api.dropboxapi.com/2/files/list_folder',
+                headers=headers,
+                json={'path': '', 'recursive': False, 'limit': 500},
+                timeout=30
+            )
+            if root_resp.status_code == 200:
+                root_data = root_resp.json()
+                folders = [e['path_display'] for e in root_data.get('entries', []) if e['.tag'] == 'folder']
+                print(f"[Dropbox Photos] Root folders: {folders}", flush=True)
+                # Try to find PHOTOS INVENTORY anywhere
+                for folder in folders:
+                    sub_resp = http_requests.post(
+                        'https://api.dropboxapi.com/2/files/list_folder',
+                        headers=headers,
+                        json={'path': folder, 'recursive': False, 'limit': 500},
+                        timeout=30
+                    )
+                    if sub_resp.status_code == 200:
+                        sub_data = sub_resp.json()
+                        sub_folders = [e['path_display'] for e in sub_data.get('entries', []) if e['.tag'] == 'folder']
+                        for sf in sub_folders:
+                            if 'photo' in sf.lower() and 'inventory' in sf.lower():
+                                print(f"[Dropbox Photos] Found photos folder: {sf}", flush=True)
+                                # Re-do the listing with discovered path
+                                payload['path'] = sf
+                                resp = http_requests.post(
+                                    'https://api.dropboxapi.com/2/files/list_folder',
+                                    headers=headers, json=payload, timeout=60
+                                )
+                                break
+                        if resp.status_code == 200:
+                            break
+            if resp.status_code != 200:
+                print(f"[Dropbox Photos] Could not find photos folder. API response: {resp.text[:300]}", flush=True)
+                return
+
+        if resp.status_code != 200:
+            print(f"[Dropbox Photos] API error: {resp.status_code} {resp.text[:200]}", flush=True)
+            return
+
+        data = resp.json()
+
+        while True:
+            for entry in data.get('entries', []):
+                if entry['.tag'] != 'file':
+                    continue
+                name = entry['name']
+                path_lower = entry['path_lower']
+                lower = name.lower()
+
+                # Only image files, skip 1x folder and macOS metadata
+                if not lower.endswith(('.jpg', '.jpeg', '.png')):
+                    continue
+                if '/1x/' in path_lower or '__macosx' in path_lower:
+                    continue
+
+                name_no_ext = os.path.splitext(name)[0]
+                # Clean: remove " copy", " Copy 2", etc.
+                clean = re.sub(r'\s*copy\s*\d*$', '', name_no_ext, flags=re.IGNORECASE).strip()
+                # Normalize separators: both - and _ → _
+                clean = clean.replace('-', '_')
+                key = clean.upper()
+
+                # Store the Dropbox path (for on-demand download)
+                # Prefer .jpg over .png if duplicates exist
+                if key not in new_index or lower.endswith('.jpg'):
+                    new_index[key] = entry['path_display']
+                total_files += 1
+
+            if not data.get('has_more'):
+                break
+
+            # Continue listing
+            resp = http_requests.post(
+                'https://api.dropboxapi.com/2/files/list_folder/continue',
+                headers=headers,
+                json={'cursor': data['cursor']},
+                timeout=60
+            )
+            if resp.status_code != 200:
+                print(f"[Dropbox Photos] Continue error: {resp.status_code}", flush=True)
+                break
+            data = resp.json()
+
+        with _dropbox_photo_lock:
+            _dropbox_photo_index = new_index
+            _dropbox_photos_last_sync = time.time()
+
+        # Clear image caches so they rebuild with Dropbox awareness
+        _dropbox_img_cache.clear()
+        _web_img_cache.clear()
+        _img_cache.clear()
+
+        print(f"[Dropbox Photos] ✓ Indexed {len(new_index)} unique images ({total_files} total files)", flush=True)
+
+    except Exception as e:
+        print(f"[Dropbox Photos] Error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+
+
+# Cache for downloaded Dropbox images — disk-based for persistence across requests
+_dropbox_img_cache = {}  # image_code → (bytes, content_type) — small in-memory LRU for hot images
+_dropbox_img_cache_lock = threading.Lock()
+DROPBOX_DISK_CACHE = os.environ.get('DROPBOX_DISK_CACHE', '/var/data/dropbox_cache')
+os.makedirs(DROPBOX_DISK_CACHE, exist_ok=True)
+
+
+def _download_dropbox_file(dropbox_path):
+    """Download a single file from Dropbox via API."""
+    if not DROPBOX_PHOTOS_TOKEN:
+        return None, None
+    try:
+        headers = {
+            'Authorization': f'Bearer {DROPBOX_PHOTOS_TOKEN}',
+            'Dropbox-API-Arg': json.dumps({'path': dropbox_path})
         }
-      }
-    };
-    loadData();
+        resp = http_requests.post(
+            'https://content.dropboxapi.com/2/files/download',
+            headers=headers, timeout=30
+        )
+        if resp.status_code == 200:
+            ct = resp.headers.get('Content-Type', 'application/octet-stream').lower()
+            if 'image' not in ct:
+                ext = dropbox_path.lower().rsplit('.', 1)[-1]
+                ct = 'image/jpeg' if ext in ('jpg', 'jpeg') else 'image/png'
+            return resp.content, ct
+    except Exception as e:
+        print(f"[Dropbox Photos] Download error for {dropbox_path}: {e}")
+    return None, None
 
-    // Load production data for shipment dates
-    const loadProduction = async () => {
-      try {
-        const resp = await fetch(`${API_URL}/production`);
-        if (!resp.ok) return;
-        const json = await resp.json();
-        const parsed = (json.production || []).map(p => {
-          let etdDate = p.etd ? new Date(p.etd) : null;
-          if (etdDate && isNaN(etdDate.getTime())) etdDate = null;
-          let arrivalDate = etdDate ? new Date(etdDate.getTime() + 37 * 24 * 60 * 60 * 1000) : null;
-          return { production: p.production || "", poName: p.poName || "", style: (p.style || "").toUpperCase(), units: p.units || 0, brand: p.brand || "", etd: etdDate, arrival: arrivalDate };
-        });
-        setProductionData(parsed);
-      } catch (e) { console.warn("Production data unavailable:", e.message); }
-    };
-    loadProduction();
 
-    // Load color map from S3 Excel
-    const loadColorMap = async () => {
-      try {
-        // Dynamically load SheetJS
-        if (!window.XLSX) {
-          await new Promise((resolve, reject) => {
-            const s = document.createElement("script");
-            s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
-            s.onload = resolve;
-            s.onerror = reject;
-            document.head.appendChild(s);
-          });
+def _get_disk_cache_path(image_code):
+    """Get the disk cache file path for an image code."""
+    return os.path.join(DROPBOX_DISK_CACHE, image_code)
+
+
+def get_dropbox_image_bytes(image_code):
+    """Get raw image bytes from Dropbox (disk-cached). Returns (bytes, content_type) or (None, None)."""
+    key = image_code.upper().replace('-', '_')
+
+    # 1. Check in-memory hot cache
+    with _dropbox_img_cache_lock:
+        cached = _dropbox_img_cache.get(key, 'MISS')
+    if cached is None:
+        return None, None  # Previously failed
+    if cached != 'MISS':
+        return cached
+
+    # 2. Check disk cache
+    disk_path = _get_disk_cache_path(key)
+    if os.path.exists(disk_path + '.jpg'):
+        try:
+            with open(disk_path + '.jpg', 'rb') as f:
+                data = f.read()
+            result = (data, 'image/jpeg')
+            with _dropbox_img_cache_lock:
+                if len(_dropbox_img_cache) > 200:
+                    _dropbox_img_cache.clear()
+                _dropbox_img_cache[key] = result
+            return result
+        except Exception:
+            pass
+    elif os.path.exists(disk_path + '.png'):
+        try:
+            with open(disk_path + '.png', 'rb') as f:
+                data = f.read()
+            result = (data, 'image/png')
+            with _dropbox_img_cache_lock:
+                if len(_dropbox_img_cache) > 200:
+                    _dropbox_img_cache.clear()
+                _dropbox_img_cache[key] = result
+            return result
+        except Exception:
+            pass
+
+    # 3. Check if this image exists in the index
+    dropbox_path = _dropbox_photo_index.get(key)
+    if not dropbox_path:
+        return None, None
+
+    # 4. Download on demand and save to disk
+    data, ct = _download_dropbox_file(dropbox_path)
+    if data:
+        ext = '.png' if 'png' in ct else '.jpg'
+        try:
+            with open(disk_path + ext, 'wb') as f:
+                f.write(data)
+        except Exception:
+            pass
+        with _dropbox_img_cache_lock:
+            if len(_dropbox_img_cache) > 200:
+                _dropbox_img_cache.clear()
+            _dropbox_img_cache[key] = (data, ct)
+        return data, ct
+
+    return None, None
+
+
+def _upload_to_s3_sync(image_code, data, content_type):
+    """Upload an image to S3 DROPBOX_SYNC folder for CDN delivery."""
+    try:
+        s3 = get_s3_client()
+        ext = '.png' if 'png' in content_type else '.jpg'
+        key = f"{S3_DROPBOX_SYNC_PREFIX}/{image_code}{ext}"
+        s3.put_object(
+            Bucket=S3_BUCKET,
+            Key=key,
+            Body=data,
+            ContentType=content_type,
+            CacheControl='public, max-age=86400',
+            ACL='public-read'
+        )
+        return True
+    except Exception as e:
+        print(f"[S3 Sync] Upload failed for {image_code}: {e}")
+        return False
+
+
+def prewarm_dropbox_cache():
+    """Background job: download ALL Dropbox images to disk cache. Only one worker runs this."""
+    # Use a file lock so only one worker pre-warms
+    lock_file = '/tmp/dropbox_prewarm.lock'
+    try:
+        fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+    except FileExistsError:
+        print(f"[Dropbox Pre-warm] Another worker is already pre-warming, skipping", flush=True)
+        return
+
+    try:
+        if not _dropbox_photo_index:
+            return
+
+        # Count how many are already cached
+        already_cached = 0
+        to_download = []
+        for key in _dropbox_photo_index:
+            disk_path = _get_disk_cache_path(key)
+            if os.path.exists(disk_path + '.jpg') or os.path.exists(disk_path + '.png'):
+                already_cached += 1
+            else:
+                to_download.append(key)
+
+        total = len(_dropbox_photo_index)
+        print(f"[Dropbox Pre-warm] {already_cached}/{total} already cached on disk, {len(to_download)} to download...", flush=True)
+
+        # Check which images already exist in S3 DROPBOX_SYNC
+        s3_synced = set()
+        try:
+            s3 = get_s3_client()
+            paginator = s3.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=S3_DROPBOX_SYNC_PREFIX + '/'):
+                for obj in page.get('Contents', []):
+                    fname = obj['Key'].rsplit('/', 1)[-1]
+                    code = os.path.splitext(fname)[0].upper()
+                    s3_synced.add(code)
+            print(f"[Dropbox Pre-warm] {len(s3_synced)} images already in S3 DROPBOX_SYNC", flush=True)
+        except Exception as e:
+            print(f"[Dropbox Pre-warm] Could not list S3 sync folder: {e}", flush=True)
+
+        # If everything is on disk AND S3, nothing to do
+        if not to_download and s3_synced.issuperset(_dropbox_photo_index.keys()):
+            print(f"[Dropbox Pre-warm] ✓ All {total} images on disk and S3", flush=True)
+            return
+
+        downloaded = [0]
+        failed = [0]
+        s3_uploaded = [0]
+
+        def _download_one(key):
+            dropbox_path = _dropbox_photo_index.get(key)
+            if not dropbox_path:
+                return
+
+            # Check if already on disk
+            disk_path = _get_disk_cache_path(key)
+            already_on_disk = os.path.exists(disk_path + '.jpg') or os.path.exists(disk_path + '.png')
+            already_on_s3 = key in s3_synced
+
+            # Skip if both disk and S3 are done
+            if already_on_disk and already_on_s3:
+                return
+
+            # Read from disk if available, otherwise download from Dropbox
+            data = None
+            ct = None
+            if already_on_disk:
+                try:
+                    ext = '.jpg' if os.path.exists(disk_path + '.jpg') else '.png'
+                    with open(disk_path + ext, 'rb') as f:
+                        data = f.read()
+                    ct = 'image/jpeg' if ext == '.jpg' else 'image/png'
+                except Exception:
+                    pass
+
+            if not data:
+                data, ct = _download_dropbox_file(dropbox_path)
+                if data:
+                    ext = '.png' if 'png' in ct else '.jpg'
+                    try:
+                        with open(disk_path + ext, 'wb') as f:
+                            f.write(data)
+                        downloaded[0] += 1
+                    except Exception:
+                        failed[0] += 1
+                        return
+                else:
+                    failed[0] += 1
+                    return
+
+            # Upload to S3 if not already there
+            if not already_on_s3 and data:
+                if _upload_to_s3_sync(key, data, ct):
+                    s3_uploaded[0] += 1
+
+            # Progress update every 200 images
+            done = downloaded[0] + s3_uploaded[0]
+            if done % 200 == 0 and done > 0:
+                print(f"[Dropbox Pre-warm] Progress: {downloaded[0]} downloaded, {s3_uploaded[0]} synced to S3, {failed[0]} failed", flush=True)
+
+        # Process ALL keys — some may be on disk but not S3 yet
+        all_keys = list(_dropbox_photo_index.keys())
+
+        # Use gevent pool — only 3 concurrent to limit memory
+        try:
+            from gevent.pool import Pool
+            pool = Pool(size=3)
+            pool.map(_download_one, all_keys)
+        except ImportError:
+            for key in all_keys:
+                _download_one(key)
+
+        print(f"[Dropbox Pre-warm] ✓ Done! {downloaded[0]} new downloads, {s3_uploaded[0]} synced to S3, {failed[0]} failed", flush=True)
+    finally:
+        try:
+            os.unlink(lock_file)
+        except Exception:
+            pass
+
+
+def get_dropbox_thumbnail(image_code, tw=TARGET_W, th=TARGET_H):
+    """Get resized thumbnail from Dropbox for Excel exports."""
+    key = image_code.upper().replace('-', '_')
+
+    if key in _dropbox_thumb_cache:
+        return _dropbox_thumb_cache[key]
+
+    # Check index first (avoid unnecessary download)
+    if key not in _dropbox_photo_index:
+        return None
+
+    raw_bytes, ct = get_dropbox_image_bytes(image_code)
+    if not raw_bytes:
+        return None
+
+    try:
+        with PilImage.open(BytesIO(raw_bytes)) as im:
+            im = ImageOps.exif_transpose(im)
+            im.thumbnail((tw * 2, th * 2), PilImage.Resampling.LANCZOS)
+            if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+                fmt = "PNG"
+            else:
+                if im.mode != "RGB":
+                    im = im.convert("RGB")
+                fmt = "JPEG"
+            buf = BytesIO()
+            im.save(buf, format=fmt, quality=85, optimize=True)
+            raw = buf.getvalue()
+            ow, oh = im.size
+
+        wr = tw / ow
+        hr = th / oh
+        sf = min(wr, hr)
+        result = {
+            'raw_bytes': raw,
+            'x_scale': sf, 'y_scale': sf,
+            'x_offset': (tw - ow * sf) / 2,
+            'y_offset': (th - oh * sf) / 2,
+            'url': f'dropbox://{key}'
         }
-        const resp = await fetch(COLOR_MAP_URL);
-        if (!resp.ok) throw new Error("Status " + resp.status);
-        const data = await resp.arrayBuffer();
-        const wb = window.XLSX.read(data, { type: "array" });
-        const sheet = wb.Sheets["Color Map"] || wb.Sheets[wb.SheetNames[0]];
-        const rows = window.XLSX.utils.sheet_to_json(sheet);
-        const map = {};
-        rows.forEach(row => {
-          if (row.Key && row.Color_Description) map[row.Key] = row.Color_Description;
-        });
-        setColorMap(map);
-        console.log("✓ Color map loaded:", Object.keys(map).length, "entries");
-      } catch (e) { console.warn("Color map unavailable:", e.message); }
-    };
-    loadColorMap();
+        _dropbox_thumb_cache[key] = result
+        return result
+    except Exception:
+        return None
 
-    // Load allocation data (virtual warehouse)
-    const loadAllocations = async () => {
-      try {
-        const resp = await fetch(`${API_URL}/allocations`);
-        if (!resp.ok) return;
-        const json = await resp.json();
-        setAllocationData(json.allocations || []);
-        console.log("✓ Allocations loaded:", (json.allocations || []).length, "rows");
-      } catch (e) { console.warn("Allocations unavailable:", e.message); }
-    };
-    loadAllocations();
 
-    // Auto-refresh inventory every 5 minutes
-    const refreshInterval = setInterval(async () => {
-      try {
-        const resp = await fetch(`${API_URL}/sync`);
-        if (!resp.ok) return;
-        const result = await resp.json();
-        if (result.inventory?.length > 0) {
-          setInventory(result.inventory);
-          const t = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
-          setSyncStatus({ text: `⚡ Live · ${result.inventory.length} items · ${t}`, type: "success" });
-          try { localStorage.setItem("versa_inventory_v2", JSON.stringify(result.inventory)); } catch (e) {}
+def get_image_cached(item, s3_base_url):
+    """
+    Get image for an item, using cache keyed by base_style.
+    Priority: base64 override → STYLE+OVERRIDES → S3 DROPBOX_SYNC → Dropbox API → brand folder fallback.
+    All size variants of the same style share one cache entry.
+    """
+    sku = item.get('sku', '')
+    base_style = get_base_style(sku)
+
+    # Check cache first — all size variants share same image
+    with _img_lock:
+        if base_style in _img_cache:
+            c = _img_cache[base_style]
+            if c is None:
+                return None  # Previously failed — skip
+            return {
+                'image_data': BytesIO(c['raw_bytes']),
+                'x_scale': c['x_scale'], 'y_scale': c['y_scale'],
+                'x_offset': c['x_offset'], 'y_offset': c['y_offset'],
+                'object_position': 1, 'url': c['url']
+            }
+
+    result = None
+
+    # 1. Platform base64 override (highest priority)
+    override_data = _style_overrides.get(base_style)
+    if override_data and isinstance(override_data, dict) and override_data.get('image'):
+        try:
+            import base64
+            img_str = override_data['image']
+            # Strip data URI prefix if present
+            if ',' in img_str:
+                img_str = img_str.split(',', 1)[1]
+            raw = base64.b64decode(img_str)
+            with PilImage.open(BytesIO(raw)) as im:
+                im = ImageOps.exif_transpose(im)
+                tw, th = TARGET_W, TARGET_H
+                im.thumbnail((tw * 2, th * 2), PilImage.Resampling.LANCZOS)
+                if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+                    fmt = "PNG"
+                else:
+                    if im.mode != "RGB":
+                        im = im.convert("RGB")
+                    fmt = "JPEG"
+                buf = BytesIO()
+                im.save(buf, format=fmt, quality=85, optimize=True)
+                ow, oh = im.size
+            wr = tw / ow
+            hr = th / oh
+            sf = min(wr, hr)
+            result = {
+                'raw_bytes': buf.getvalue(),
+                'x_scale': sf, 'y_scale': sf,
+                'x_offset': (tw - ow * sf) / 2,
+                'y_offset': (th - oh * sf) / 2,
+                'url': f'override://{base_style}'
+            }
+        except Exception:
+            pass
+
+    # 2. Try STYLE+OVERRIDES on S3
+    if not result:
+        override_url = get_style_override_url(sku)
+        result = _process_image_from_url(override_url)
+
+    # Compute image_code once for remaining lookups
+    brand_abbr = item.get('brand_abbr', item.get('brand', ''))
+    image_code = extract_image_code(sku, brand_abbr)
+
+    # 2b. Try S3 DROPBOX_SYNC folder (images uploaded from Dropbox to S3)
+    if not result:
+        sync_url = f"{S3_DROPBOX_SYNC_URL}/{image_code}.jpg"
+        result = _process_image_from_url(sync_url)
+
+    # 3. Try Dropbox photos direct API (fallback)
+    if not result:
+        result = get_dropbox_thumbnail(image_code)
+
+    # 4. Fallback to S3 brand folder
+    if not result:
+        brand_url = get_image_url(item, s3_base_url)
+        result = _process_image_from_url(brand_url)
+
+    # Cache result (even None to avoid re-fetching failures)
+    with _img_lock:
+        _img_cache[base_style] = result
+
+    if result:
+        return {
+            'image_data': BytesIO(result['raw_bytes']),
+            'x_scale': result['x_scale'], 'y_scale': result['y_scale'],
+            'x_offset': result['x_offset'], 'y_offset': result['y_offset'],
+            'object_position': 1, 'url': result['url']
         }
-      } catch (e) { /* silent retry next interval */ }
-    }, 300000); // 5 min
+    return None
 
-    // Daily refresh for production data and color map
-    const dailyRefresh = setInterval(() => {
-      loadProduction();
-      loadColorMap();
-      console.log("🔄 Daily refresh: production + colors reloaded");
-    }, 86400000); // 24 hours
 
-    // Weekly refresh for allocation data (every 7 days)
-    const weeklyRefresh = setInterval(() => {
-      loadAllocations();
-      console.log("🔄 Weekly refresh: allocations reloaded");
-    }, 604800000); // 7 days
+def download_images_for_items(items, s3_base_url, use_cache=True):
+    """Download images for all items using thread pool. Deduplicates by base_style."""
+    results = {}
 
-    return () => { clearInterval(refreshInterval); clearInterval(dailyRefresh); clearInterval(weeklyRefresh); };
-  }, []);
+    # Deduplicate: only fetch once per unique base_style
+    style_to_indices = {}  # base_style → list of item indices
+    unique_items = {}      # base_style → first item with that style
+    for i, item in enumerate(items):
+        base_style = get_base_style(item.get('sku', ''))
+        if base_style not in style_to_indices:
+            style_to_indices[base_style] = []
+            unique_items[base_style] = item
+        style_to_indices[base_style].append(i)
 
-  // Rebuild brands when filterMode changes
-  useEffect(() => {
-    if (inventory.length > 0) {
-      setBrands(rebuildBrands(inventory, filterMode));
+    def _fetch(base_style_item):
+        base_style, item = base_style_item
+        return base_style, get_image_cached(item, s3_base_url)
+
+    unique_pairs = list(unique_items.items())
+    print(f"    Fetching images: {len(unique_pairs)} unique styles for {len(items)} items")
+
+    # Use gevent pool if available (gevent monkey-patches break ThreadPoolExecutor)
+    try:
+        import gevent.pool
+        pool = gevent.pool.Pool(size=20)
+        fetch_results = pool.map(_fetch, unique_pairs)
+        for result in fetch_results:
+            try:
+                base_style, img = result
+                if img:
+                    for idx in style_to_indices.get(base_style, []):
+                        cached = _img_cache.get(base_style)
+                        if cached:
+                            results[idx] = {
+                                'image_data': BytesIO(cached['raw_bytes']),
+                                'x_scale': cached['x_scale'], 'y_scale': cached['y_scale'],
+                                'x_offset': cached['x_offset'], 'y_offset': cached['y_offset'],
+                                'object_position': 1, 'url': cached['url']
+                            }
+            except Exception:
+                pass
+    except ImportError:
+        # Fallback to ThreadPoolExecutor if gevent not installed
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
+            futures = {pool.submit(_fetch, pair): pair[0] for pair in unique_pairs}
+            for f in concurrent.futures.as_completed(futures):
+                try:
+                    base_style, img = f.result()
+                    if img:
+                        for idx in style_to_indices.get(base_style, []):
+                            cached = _img_cache.get(base_style)
+                            if cached:
+                                results[idx] = {
+                                    'image_data': BytesIO(cached['raw_bytes']),
+                                    'x_scale': cached['x_scale'], 'y_scale': cached['y_scale'],
+                                    'x_offset': cached['x_offset'], 'y_offset': cached['y_offset'],
+                                    'object_position': 1, 'url': cached['url']
+                                }
+                except Exception:
+                    pass
+
+    return results
+
+
+def _setup_worksheet(workbook, worksheet, has_color=False, view_mode='all',
+                     is_order=False, incoming_only=False, catalog_mode=False):
+    fmt_header = workbook.add_format({
+        'bold': True, 'font_name': STYLE_CONFIG['font_name'], 'font_size': 11,
+        'bg_color': STYLE_CONFIG['header_bg'], 'font_color': STYLE_CONFIG['header_text'],
+        'border': 1, 'border_color': STYLE_CONFIG['border_color'],
+        'align': 'center', 'valign': 'vcenter'
+    })
+    base = {
+        'font_name': STYLE_CONFIG['font_name'], 'font_size': 10,
+        'text_wrap': True, 'valign': 'vcenter', 'align': 'center',
+        'border': 1, 'border_color': STYLE_CONFIG['border_color']
     }
-  }, [filterMode, inventory]);
-
-  // ─── Navigation with Browser History ────────────────────────
-  const goToBrands = useCallback(() => { 
-    setView("brands"); setCurrentBrand(null); setSelectedItem(null); setSearchQuery(""); setFitFilter([]); setFabricFilter([]); 
-    window.history.pushState({ view: "brands" }, "", "#brands");
-  }, []);
-  const goToInventory = useCallback((brandKey) => { 
-    setCurrentBrand(brandKey); 
-    setView("inventory"); 
-    setSelectedItem(null); 
-    setSearchQuery(""); 
-    setFitFilter([]); 
-    setFabricFilter([]); 
-    window.history.pushState({ view: "inventory", brand: brandKey }, "", `#brand-${brandKey}`);
-    // Preload images for this brand
-    const b = brands[brandKey];
-    if (b?.items) preloadImages(b.items);
-  }, [brands]);
-  const goToDetail = useCallback((item) => { 
-    setSelectedItem(item); 
-    window.history.pushState({ view: "detail", sku: item.sku }, "", `#sku-${item.sku}`);
-  }, []);
-
-  // ─── Browser Back Button Support ────────────────────────
-  useEffect(() => {
-    const handlePopState = (e) => {
-      const state = e.state;
-      if (!state || state.view === "brands") {
-        setView("brands"); setCurrentBrand(null); setSelectedItem(null); setSearchQuery(""); setFitFilter([]); setFabricFilter([]);
-      } else if (state.view === "inventory" && state.brand) {
-        setCurrentBrand(state.brand); setView("inventory"); setSelectedItem(null); setSearchQuery(""); setFitFilter([]); setFabricFilter([]);
-      } else if (state.view === "detail") {
-        // just close the modal, stay on inventory
-        setSelectedItem(null);
-      }
-    };
-    window.addEventListener("popstate", handlePopState);
-    // Set initial state
-    window.history.replaceState({ view: "brands" }, "", "#brands");
-    return () => window.removeEventListener("popstate", handlePopState);
-  }, []);
-
-  // ─── Backspace Key Navigation ────────────────────────
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      // Don't interfere if user is typing in an input/textarea
-      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
-      if (e.key === "Backspace") {
-        e.preventDefault();
-        if (selectedItem) {
-          setSelectedItem(null);
-          window.history.back();
-        } else if (showCart) {
-          setShowCart(false);
-        } else if (view === "inventory") {
-          goToBrands();
-        }
-      }
-      // Escape also closes modals
-      if (e.key === "Escape") {
-        if (selectedItem) { setSelectedItem(null); window.history.back(); }
-        else if (showCart) setShowCart(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedItem, showCart, view, goToBrands]);
-
-  // ─── Cart Actions ──────────────────────
-  const addToCart = useCallback((item) => {
-    setCart(prev => {
-      const existing = prev.findIndex(c => c.sku === item.sku);
-      if (existing >= 0) {
-        const updated = [...prev];
-        updated[existing] = { ...updated[existing], qty: updated[existing].qty + 1 };
-        return updated;
-      }
-      return [...prev, { ...item, qty: 1 }];
-    });
-    setToast({ message: `Added ${item.sku} to cart`, type: "success" });
-  }, []);
-
-  // ─── Filter Mode Toggle ────────────────
-  const cycleFilterMode = useCallback(() => {
-    setFilterMode(prev => {
-      const next = prev === "all" ? "incoming" : prev === "incoming" ? "ats" : "all";
-      // Reset sort if leaving overseas mode while on arrival sort
-      if (prev === "incoming" && (sortBy === "arrival-asc" || sortBy === "arrival-desc")) {
-        setSortBy("ats-desc");
-      }
-      return next;
-    });
-  }, [sortBy]);
-
-  // ─── Brand View Filtering ─────────────
-  const brandData = currentBrand ? brands[currentBrand] : null;
-  const filteredItems = useMemo(() => {
-    if (!brandData) return [];
-    let items = [...brandData.items];
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      items = items.filter(i => i.sku?.toLowerCase().includes(q));
+    fmts = {
+        'odd':  workbook.add_format({**base, 'bg_color': STYLE_CONFIG['row_bg_odd']}),
+        'even': workbook.add_format({**base, 'bg_color': STYLE_CONFIG['row_bg_even']}),
+        'num_odd':  workbook.add_format({**base, 'bg_color': STYLE_CONFIG['row_bg_odd'],  'num_format': '#,##0'}),
+        'num_even': workbook.add_format({**base, 'bg_color': STYLE_CONFIG['row_bg_even'], 'num_format': '#,##0'}),
     }
-    if (fitFilter.length > 0) {
-      items = items.filter(i => {
-        const f = getFitFromSKU(i.sku);
-        return fitFilter.some(ff => f.toLowerCase().includes(ff.toLowerCase()));
-      });
+
+    worksheet.hide_gridlines(2)
+    worksheet.freeze_panes(1, 0)
+
+    if catalog_mode:
+        # ── Catalog exports: no committed/allocated, simplified layout ──
+        if view_mode == 'incoming':
+            headers = ['IMAGE', 'SKU', 'Brand']
+            if has_color:
+                headers.append('Color')
+            headers.extend(['Fit', 'Fabrication'])
+            if is_order:
+                headers.append('Qty Selected')
+            headers.extend(['Incoming', 'Overseas ATS', 'Ex-Factory', 'Arrival'])
+        else:
+            # Warehouse / All view: show warehouse names column instead of per-WH quantities
+            headers = ['IMAGE', 'SKU', 'Brand']
+            if has_color:
+                headers.append('Color')
+            headers.extend(['Fit', 'Fabrication'])
+            if is_order:
+                headers.append('Qty Selected')
+            headers.extend(['Warehouse', 'Total ATS'])
+    elif view_mode == 'incoming':
+        # Admin overseas view: no warehouse columns, add dates
+        headers = ['IMAGE', 'SKU', 'Brand']
+        if has_color:
+            headers.append('Color')
+        headers.extend(['Fit', 'Fabrication'])
+        if is_order:
+            headers.append('Qty Selected')
+        headers.extend(['Incoming', 'Committed', 'Allocated', 'Overseas ATS',
+                        'Ex-Factory', 'Arrival'])
+    else:
+        # Admin standard / ATS / All view — full columns
+        headers = ['IMAGE', 'SKU', 'Brand']
+        if has_color:
+            headers.append('Color')
+        headers.extend(['Fit', 'Fabrication', 'Delivery'])
+        if is_order:
+            headers.append('Qty Selected')
+        if not incoming_only:
+            headers.extend(['JTW', 'TR', 'DCW', 'QA'])
+        headers.append('Incoming')
+        if not incoming_only:
+            headers.append('Total Warehouse')
+        headers.append('Total ATS')
+
+    worksheet.set_row(0, 25)
+    for c, h in enumerate(headers):
+        worksheet.write(0, c, h, fmt_header)
+
+    # Set column widths based on header names
+    col_widths = {
+        'IMAGE': COL_WIDTH_UNITS, 'SKU': 20, 'Brand': 20, 'Color': 18,
+        'Fit': 12, 'Fabrication': 35, 'Delivery': 14, 'Qty Selected': 14,
+        'JTW': 12, 'TR': 12, 'DCW': 12, 'QA': 12, 'Incoming': 12,
+        'Total Warehouse': 14, 'Total ATS': 12, 'Overseas ATS': 14,
+        'Committed': 12, 'Allocated': 12, 'Ex-Factory': 14, 'Arrival': 14,
+        'Warehouse': 18,
     }
-    if (fabricFilter.length > 0) {
-      items = items.filter(i => {
-        const f = getFabricFromSKU(i.sku);
-        return fabricFilter.includes(f.code);
-      });
+    for c, h in enumerate(headers):
+        worksheet.set_column(c, c, col_widths.get(h, 12))
+
+    worksheet.set_default_row(112.5)
+    return fmts, headers
+
+
+def _write_rows(workbook, worksheet, data, images, fmts, has_color=False,
+                view_mode='all', headers=None):
+    """Write data rows using headers list to determine column layout."""
+    if not headers:
+        headers = []
+
+    # Map header names to data field getters
+    FIELD_MAP = {
+        'IMAGE': lambda item: '',
+        'SKU': lambda item: item.get('sku', ''),
+        'Brand': lambda item: item.get('brand_full', ''),
+        'Color': lambda item: item.get('color', ''),
+        'Fit': lambda item: item.get('fit', 'N/A'),
+        'Fabrication': lambda item: item.get('fabrication', 'Standard Fabric'),
+        'Delivery': lambda item: item.get('delivery', 'ATS'),
+        'Qty Selected': lambda item: item.get('quantity_ordered', 0),
+        'JTW': lambda item: item.get('jtw', 0),
+        'TR': lambda item: item.get('tr', 0),
+        'DCW': lambda item: item.get('dcw', 0),
+        'QA': lambda item: item.get('qa', 0),
+        'Incoming': lambda item: item.get('incoming', 0),
+        'Total Warehouse': lambda item: item.get('total_warehouse', 0),
+        'Total ATS': lambda item: item.get('total_ats', 0),
+        'Overseas ATS': lambda item: item.get('total_ats', 0),
+        'Committed': lambda item: item.get('committed', 0),
+        'Allocated': lambda item: item.get('allocated', 0),
+        'Ex-Factory': lambda item: item.get('ex_factory', ''),
+        'Arrival': lambda item: item.get('arrival', ''),
+        'Warehouse': lambda item: item.get('warehouse', ''),
     }
-    // Sort
-    if (sortBy === "ats-desc") items.sort((a,b) => (b.total_ats||0)-(a.total_ats||0));
-    else if (sortBy === "ats-asc") items.sort((a,b) => (a.total_ats||0)-(b.total_ats||0));
-    else if (sortBy === "sku-asc") items.sort((a,b) => (a.sku||"").localeCompare(b.sku||""));
-    else if (sortBy === "sku-desc") items.sort((a,b) => (b.sku||"").localeCompare(a.sku||""));
-    else if (sortBy === "arrival-asc") items.sort((a,b) => {
-      const da = getEarliestDates(a.sku, productionData).arrival || new Date("2099");
-      const db = getEarliestDates(b.sku, productionData).arrival || new Date("2099");
-      return da - db;
-    });
-    else if (sortBy === "arrival-desc") items.sort((a,b) => {
-      const da = getEarliestDates(a.sku, productionData).arrival || new Date("1970");
-      const db = getEarliestDates(b.sku, productionData).arrival || new Date("1970");
-      return db - da;
-    });
-    return items;
-  }, [brandData, searchQuery, fitFilter, fabricFilter, sortBy, productionData]);
 
-  // Get unique fits/fabrics for filters
-  const availableFits = useMemo(() => {
-    if (!brandData) return [];
-    const fits = new Set(brandData.items.map(i => getFitFromSKU(i.sku)));
-    return [...fits].sort();
-  }, [brandData]);
+    # Determine which columns are numeric for formatting
+    NUMERIC_HEADERS = {
+        'Qty Selected', 'JTW', 'TR', 'DCW', 'QA', 'Incoming',
+        'Total Warehouse', 'Total ATS', 'Overseas ATS',
+        'Committed', 'Allocated'
+    }
 
-  const availableFabrics = useMemo(() => {
-    if (!brandData) return [];
-    const fabs = {};
-    brandData.items.forEach(i => { const f = getFabricFromSKU(i.sku); fabs[f.code] = f.description; });
-    return Object.entries(fabs).sort((a,b) => a[1].localeCompare(b[1]));
-  }, [brandData]);
+    for r, item in enumerate(data):
+        row = r + 1
+        even = r % 2 == 1
+        cf = fmts['even'] if even else fmts['odd']
+        nf = fmts['num_even'] if even else fmts['num_odd']
 
-  // ─── Sync Status Colors ────────────────
-  const statusColors = { loading:"#fef3c7", success:"#dcfce7", cached:"#dbeafe", error:"#fee2e2" };
-  const statusTextColors = { loading:"#a16207", success:"#166534", cached:"#1e40af", error:"#dc2626" };
+        for c, h in enumerate(headers):
+            getter = FIELD_MAP.get(h)
+            val = getter(item) if getter else ''
+            fmt = nf if h in NUMERIC_HEADERS else cf
+            worksheet.write(row, c, val, fmt)
 
-  // ═══════════════════════════════════════
-  // RENDER
-  // ═══════════════════════════════════════
-  return (
-    <div style={{ fontFamily:"'Outfit','DM Sans',-apple-system,BlinkMacSystemFont,sans-serif",background:"linear-gradient(140deg,#0f172a 0%,#1e293b 40%,#334155 100%)",minHeight:"100vh" }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=DM+Sans:wght@400;500;600;700&display=swap');
-        * { margin:0; padding:0; box-sizing:border-box; }
-        .brand-card { background:#fff; border-radius:14px; border:2px solid #e5e7eb; cursor:pointer; transition:all .25s ease; overflow:hidden; }
-        .brand-card:hover { transform:translateY(-6px); box-shadow:0 16px 40px rgba(99,102,241,.2); border-color:#818cf8; }
-        .product-card { transition:all .25s ease; cursor:pointer; }
-        .product-card:hover { transform:translateY(-4px); box-shadow:0 12px 28px rgba(0,0,0,.12); border-color:#818cf8 !important; }
-        .spinner { width:40px;height:40px;border:3px solid #334155;border-top:3px solid #818cf8;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto; }
-        @keyframes spin { to { transform:rotate(360deg); } }
-        @keyframes slideInRight { from { transform:translateX(300px); opacity:0; } to { transform:translateX(0); opacity:1; } }
-        input:focus, select:focus { outline:none; border-color:#818cf8 !important; box-shadow:0 0 0 3px rgba(129,140,248,.15); }
-        ::-webkit-scrollbar { width:6px; } ::-webkit-scrollbar-track { background:transparent; } ::-webkit-scrollbar-thumb { background:#475569; border-radius:3px; }
-        .filter-pill { padding:6px 14px; border-radius:99px; font-size:12px; font-weight:600; border:2px solid #334155; cursor:pointer; transition:all .15s; background:transparent; color:#94a3b8; }
-        .filter-pill:hover { border-color:#818cf8; color:#c7d2fe; }
-        .filter-pill.active { background:#818cf8; border-color:#818cf8; color:#fff; }
-      `}</style>
-
-      {/* ─── HEADER ────────────────────────── */}
-      <header style={{ background:"rgba(15,23,42,.85)",backdropFilter:"blur(12px)",borderBottom:"1px solid rgba(255,255,255,.06)",padding:"14px 24px",position:"sticky",top:0,zIndex:100 }}>
-        <div style={{ maxWidth:1280,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,flexWrap:"wrap" }}>
-          <div style={{ display:"flex",alignItems:"center",gap:14 }}>
-            <img src={APP_LOGO}
-              alt="Versa Group" style={{ height:38,borderRadius:6 }} onError={e => e.target.style.display="none"} />
-            <div>
-              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>Inventory Management</h1>
-              <div style={{ display:"flex",alignItems:"center",gap:8 }}>
-                <p style={{ fontSize:12,color:"#64748b" }}>Real-time inventory system</p>
-                <span style={{ fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:99,background:statusColors[syncStatus.type],color:statusTextColors[syncStatus.type] }}>
-                  {syncStatus.text}
-                </span>
-              </div>
-            </div>
-          </div>
-          <div style={{ display:"flex",alignItems:"center",gap:8 }}>
-            {/* Filter Mode */}
-            <button onClick={cycleFilterMode} style={{
-              background: filterMode === "all" ? "linear-gradient(135deg,#10b981,#059669)" : filterMode === "incoming" ? "linear-gradient(135deg,#f59e0b,#d97706)" : "linear-gradient(135deg,#3b82f6,#4f46e5)",
-              color:"#fff",border:"none",padding:"9px 16px",borderRadius:10,fontWeight:700,fontSize:13,cursor:"pointer",transition:"all .2s",whiteSpace:"nowrap"
-            }}>
-              {filterMode === "all" ? "📦 All Inventory" : filterMode === "incoming" ? "🚢 Overseas Only" : "🏭 Warehouse ATS"}
-            </button>
-            {/* Cart */}
-            <button onClick={() => setShowCart(true)} style={{ background:"rgba(255,255,255,.08)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,.1)",padding:"9px 16px",borderRadius:10,fontWeight:600,fontSize:13,cursor:"pointer",position:"relative" }}>
-              🛒 Cart
-              {cart.length > 0 && (
-                <span style={{ position:"absolute",top:-6,right:-6,background:"#ef4444",color:"#fff",fontSize:10,fontWeight:800,width:20,height:20,borderRadius:99,display:"flex",alignItems:"center",justifyContent:"center" }}>
-                  {cart.length}
-                </span>
-              )}
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* ─── CONTENT ───────────────────────── */}
-      <main style={{ maxWidth:1280,margin:"0 auto",padding:"24px 20px",minHeight:"calc(100vh - 68px)" }}>
-        
-        {/* LOADING */}
-        {view === "loading" && <LoadingSpinner text="Loading Inventory..." />}
-
-        {/* BRANDS VIEW */}
-        {view === "brands" && (
-          <>
-            <UniversalSearch items={allItems} onSelect={item => { goToInventory(item.brand_abbr || item.brand); setTimeout(() => goToDetail(item), 100); }} placeholder="🔍 Search any SKU across all brands..." />
-            
-            {/* Stats Bar */}
-            <div style={{ display:"flex",gap:12,marginBottom:24,flexWrap:"wrap" }}>
-              {[
-                { label:"Brands", value:Object.keys(brands).length, icon:"🏷️", bg:"linear-gradient(135deg,#818cf8,#6366f1)" },
-                { label:"Total SKUs", value:allItems.length.toLocaleString(), icon:"📦", bg:"linear-gradient(135deg,#34d399,#10b981)" },
-                { label:"Total ATS", value:allItems.reduce((s,i) => s+(i.total_ats||0),0).toLocaleString(), icon:"✅", bg:"linear-gradient(135deg,#fbbf24,#f59e0b)" },
-              ].map(s => (
-                <div key={s.label} style={{ flex:1,minWidth:160,background:s.bg,padding:"14px 18px",borderRadius:14,color:"#fff",display:"flex",alignItems:"center",gap:12 }}>
-                  <span style={{ fontSize:28 }}>{s.icon}</span>
-                  <div>
-                    <p style={{ fontSize:11,opacity:.8,fontWeight:600 }}>{s.label}</p>
-                    <p style={{ fontSize:24,fontWeight:800 }}>{s.value}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Brand Grid */}
-            <div style={{ background:"rgba(255,255,255,.04)",borderRadius:20,border:"1px solid rgba(255,255,255,.06)",padding:24 }}>
-              <h2 style={{ fontSize:18,fontWeight:700,color:"#e2e8f0",marginBottom:20 }}>
-                Select a Brand
-                <span style={{ fontSize:13,fontWeight:500,color:"#64748b",marginLeft:8 }}>
-                  {filterMode === "incoming" ? "🚢 Overseas" : filterMode === "ats" ? "🏭 Warehouse ATS" : "📦 All"}
-                </span>
-              </h2>
-              {Object.keys(brands).length === 0 ? (
-                <div style={{ textAlign:"center",padding:60,color:"#64748b" }}>
-                  <p style={{ fontSize:48,marginBottom:12 }}>📭</p>
-                  <p style={{ fontSize:16 }}>No inventory data available</p>
-                  <p style={{ fontSize:13,marginTop:8 }}>Backend may still be waking up — refresh in a moment</p>
-                </div>
-              ) : (
-                <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:16 }}>
-                  {sortBrands(Object.entries(brands)).map(([abbr, data]) => (
-                    <BrandCard key={abbr} abbr={abbr} data={data} onClick={() => goToInventory(abbr)} />
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
-        )}
-
-        {/* INVENTORY VIEW */}
-        {view === "inventory" && brandData && (
-          <>
-            {/* Header */}
-            <div style={{ display:"flex",alignItems:"center",gap:16,marginBottom:20,flexWrap:"wrap" }}>
-              <button onClick={goToBrands} style={{ background:"rgba(255,255,255,.08)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,.1)",padding:"9px 16px",borderRadius:10,fontWeight:600,fontSize:13,cursor:"pointer" }}>
-                ← All Brands
-              </button>
-              <div style={{ display:"flex",alignItems:"center",gap:12,flex:1 }}>
-                <img src={brandData.logo || DEFAULT_LOGO} alt={brandData.full_name} style={{ height:40,maxWidth:120,objectFit:"contain",filter:"brightness(0) invert(1)",opacity:.85 }} onError={e => e.target.style.display="none"} />
-                <div>
-                  <h2 style={{ fontSize:22,fontWeight:800,color:"#f1f5f9" }}>{brandData.full_name}</h2>
-                  <p style={{ fontSize:13,color:"#64748b" }}>{currentBrand} · {brandData.items.length} styles</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Search & Filters */}
-            <div style={{ background:"rgba(255,255,255,.04)",borderRadius:16,border:"1px solid rgba(255,255,255,.06)",padding:18,marginBottom:20 }}>
-              <div style={{ display:"flex",gap:12,flexWrap:"wrap",alignItems:"center",marginBottom:14 }}>
-                <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-                  placeholder={`🔍 Search ${brandData.full_name} styles...`}
-                  style={{ flex:1,minWidth:200,padding:"10px 16px",borderRadius:10,border:"2px solid #334155",background:"rgba(255,255,255,.04)",color:"#e2e8f0",fontSize:14 }}
-                />
-                <select value={sortBy} onChange={e => setSortBy(e.target.value)}
-                  style={{ padding:"10px 14px",borderRadius:10,border:"2px solid #334155",background:"#1e293b",color:"#e2e8f0",fontSize:13,fontWeight:600,cursor:"pointer" }}>
-                  <option value="ats-desc">ATS: High → Low</option>
-                  <option value="ats-asc">ATS: Low → High</option>
-                  <option value="sku-asc">SKU: A → Z</option>
-                  <option value="sku-desc">SKU: Z → A</option>
-                  {filterMode === "incoming" && <option value="arrival-asc">📅 Arriving Earliest</option>}
-                  {filterMode === "incoming" && <option value="arrival-desc">📅 Arriving Latest</option>}
-                </select>
-              </div>
+        img = images.get(r)
+        if img:
+            try:
+                worksheet.insert_image(row, 0, "img.png", {
+                    'image_data': img['image_data'],
+                    'x_scale': img['x_scale'], 'y_scale': img['y_scale'],
+                    'x_offset': img['x_offset'], 'y_offset': img['y_offset'],
+                    'object_position': 1, 'url': img.get('url', '')
+                })
+            except Exception:
+                worksheet.write(row, 0, "Error", cf)
+        else:
+            worksheet.write(row, 0, "No Image", cf)
+    return len(data)
 
 
+def _add_size_charts(workbook, worksheet, start):
+    t = workbook.add_format({'bold':True,'font_name':'Calibri','font_size':11,'bg_color':'#FFFFFF','border':0,'align':'left','valign':'vcenter'})
+    s = workbook.add_format({'bold':True,'font_name':'Calibri','font_size':10,'bg_color':'#FFFFFF','font_color':'#FF0000','border':0,'align':'center','valign':'vcenter'})
+    gh = workbook.add_format({'bold':True,'font_name':'Calibri','font_size':10,'border':1,'align':'center','valign':'vcenter','bg_color':'#FFFFFF'})
+    gd = workbook.add_format({'font_name':'Calibri','font_size':10,'border':1,'align':'center','valign':'vcenter','bg_color':'#FFFFFF'})
+    r = start
+    for i in range(5): worksheet.set_row(r+i, [20,18,25,25,25][i])
 
-              <p style={{ fontSize:12,color:"#64748b",marginTop:10,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
-                Showing <strong style={{ color:"#e2e8f0" }}>{filteredItems.length}</strong> of {brandData.items.length} styles
-                {filterMode !== "all" && (
-                  <span style={{
-                    display:"inline-flex",alignItems:"center",gap:4,
-                    background: filterMode === "incoming" ? "rgba(245,158,11,.15)" : "rgba(59,130,246,.15)",
-                    color: filterMode === "incoming" ? "#f59e0b" : "#60a5fa",
-                    padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,
-                    border: `1px solid ${filterMode === "incoming" ? "rgba(245,158,11,.3)" : "rgba(59,130,246,.3)"}`
-                  }}>
-                    {filterMode === "incoming" ? "🚢 Overseas Only" : "🏭 Warehouse ATS"}
-                  </span>
-                )}
-                {searchQuery && (
-                  <button onClick={() => setSearchQuery("")}
-                    style={{ fontSize:11,color:"#818cf8",background:"none",border:"none",cursor:"pointer",fontWeight:600 }}>Clear search</button>
-                )}
-              </p>
-            </div>
+    worksheet.write(r,0,'Slim Fit 9 pcs inner, 36 pcs / box (4 inners)',t)
+    worksheet.merge_range(r+1,0,r+1,4,'9 PC. Slim Fit SIZE SCALE TO USE',s)
+    for c,v in enumerate(['','14-14.5','15-15.5','16-16.5','17-17.5']): worksheet.write(r+2,c,v,gh)
+    worksheet.write(r+3,0,'32/33',gh)
+    for c,v in enumerate([1,2,1,''],1): worksheet.write(r+3,c,v,gd)
+    worksheet.write(r+4,0,'34/35',gh)
+    for c,v in enumerate(['',1,2,2],1): worksheet.write(r+4,c,v,gd)
 
-            {/* Product Grid */}
-            {filteredItems.length === 0 ? (
-              <div style={{ textAlign:"center",padding:60,color:"#64748b" }}>
-                <p style={{ fontSize:48,marginBottom:12 }}>🔍</p>
-                <p style={{ fontSize:16 }}>No products match your filters</p>
-              </div>
-            ) : (
-              <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16 }}>
-                {filteredItems.map(item => (
-                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} />
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </main>
+    worksheet.write(r,7,'Regular Fit 9 pcs inner, 36 pcs / box (4 inners)',t)
+    worksheet.merge_range(r+1,7,r+1,11,'9 PC. CLASSIC FIT & REGULAR FIT SIZE SCALE TO USE',s)
+    for c,v in enumerate(['','15-15.5','16-16.5','17-17.5','18-18.5']): worksheet.write(r+2,7+c,v,gh)
+    worksheet.write(r+3,7,'32/33',gh)
+    for c,v in enumerate([1,2,1,''],1): worksheet.write(r+3,7+c,v,gd)
+    worksheet.write(r+4,7,'34/35',gh)
+    for c,v in enumerate(['',1,2,2],1): worksheet.write(r+4,7+c,v,gd)
 
-      {/* ─── FLOATING BACK BUTTON (inventory view) ─── */}
-      {view === "inventory" && (
-        <button onClick={goToBrands} style={{
-          position:"fixed", bottom:24, left:24, zIndex:900,
-          background:"linear-gradient(135deg,#334155,#1e293b)", color:"#e2e8f0",
-          border:"1px solid rgba(255,255,255,.15)", padding:"12px 20px", borderRadius:14,
-          fontWeight:700, fontSize:14, cursor:"pointer",
-          boxShadow:"0 8px 24px rgba(0,0,0,.4)", display:"flex", alignItems:"center", gap:8,
-          transition:"all .2s"
-        }}
-        onMouseEnter={e => { e.currentTarget.style.background = "linear-gradient(135deg,#667eea,#764ba2)"; }}
-        onMouseLeave={e => { e.currentTarget.style.background = "linear-gradient(135deg,#334155,#1e293b)"; }}
-        >
-          ← All Brands
-        </button>
-      )}
 
-      {/* ─── MODALS ────────────────────────── */}
-      {selectedItem && (
-        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} colorMap={colorMap} allocationData={allocationData} />
-      )}
-      {showCart && (
-        <CartModal cart={cart} onClose={() => setShowCart(false)}
-          onRemove={i => setCart(prev => prev.filter((_,idx) => idx !== i))}
-          onClear={() => { setCart([]); setShowCart(false); }}
-          onUpdateQty={(i, qty) => setCart(prev => { const u = [...prev]; u[i] = {...u[i], qty}; return u; })}
-        />
-      )}
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-    </div>
-  );
-}
+def build_brand_excel(brand_name, items, s3_base_url, view_mode='all', is_order=False,
+                      catalog_mode=False):
+    has_color = any(item.get('color') for item in items)
+
+    # Auto-detect incoming_only: all items have zero warehouse stock
+    # (only applies to non-incoming view modes — incoming view already omits warehouse)
+    incoming_only = False
+    if view_mode != 'incoming' and items and not catalog_mode:
+        incoming_only = all(
+            item.get('total_warehouse', 0) == 0
+            for item in items
+        )
+
+    buf = BytesIO()
+    wb = xlsxwriter.Workbook(buf, {'in_memory': True})
+    wb.set_properties({'title': f'Versa - {brand_name}', 'author': 'Versa Inventory System'})
+    ws = wb.add_worksheet(brand_name[:31])
+    fmts, headers = _setup_worksheet(wb, ws, has_color=has_color, view_mode=view_mode,
+                                     is_order=is_order, incoming_only=incoming_only,
+                                     catalog_mode=catalog_mode)
+    imgs = download_images_for_items(items, s3_base_url, use_cache=True)
+    n = _write_rows(wb, ws, items, imgs, fmts, has_color=has_color,
+                    view_mode=view_mode, headers=headers)
+    _add_size_charts(wb, ws, n + 2)
+    wb.close()
+    return buf.getvalue()
+
+
+def build_multi_brand_excel(brands_list, s3_base_url, catalog_mode=False, view_mode='all'):
+    for b in brands_list:
+        sort_key = 'total_ats' if catalog_mode else 'total_warehouse'
+        b['items'] = sorted(b['items'], key=lambda x: x.get(sort_key, 0), reverse=True)
+
+    has_color = any(item.get('color') for b in brands_list for item in b['items'])
+
+    all_items = []
+    offsets = []
+    off = 0
+    for b in brands_list:
+        offsets.append((off, len(b['items'])))
+        all_items.extend(b['items'])
+        off += len(b['items'])
+
+    all_imgs = download_images_for_items(all_items, s3_base_url, use_cache=True)
+
+    buf = BytesIO()
+    wb = xlsxwriter.Workbook(buf, {'in_memory': True})
+    wb.set_properties({'title': 'Versa Multi-Brand Export', 'author': 'Versa Inventory System'})
+
+    for bi, brand in enumerate(brands_list):
+        safe = re.sub(r'[\\/*?\[\]:]', '', brand['brand_name'])[:31] or f"Brand_{bi+1}"
+        ws = wb.add_worksheet(safe)
+        fmts, headers = _setup_worksheet(wb, ws, has_color=has_color,
+                                         catalog_mode=catalog_mode, view_mode=view_mode)
+        start, count = offsets[bi]
+        local_imgs = {}
+        for li in range(count):
+            gi = start + li
+            if gi in all_imgs:
+                local_imgs[li] = all_imgs[gi]
+        n = _write_rows(wb, ws, brand['items'], local_imgs, fmts,
+                        has_color=has_color, headers=headers)
+        _add_size_charts(wb, ws, n + 2)
+
+    wb.close()
+    return buf.getvalue()
+
+
+def _col_val(row_dict, name):
+    if name in row_dict:
+        return row_dict[name]
+    lo = name.lower()
+    for k, v in row_dict.items():
+        if k.lower() == lo:
+            return v
+    return None
+
+
+def parse_inventory_excel(file_bytes):
+    wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+
+    rows_iter = ws.iter_rows(values_only=False)
+    header_row = next(rows_iter)
+    headers = [str(cell.value or '').strip() for cell in header_row]
+
+    items = []
+    for row in rows_iter:
+        rd = {headers[i]: row[i].value for i in range(min(len(headers), len(row)))}
+
+        sku = str(_col_val(rd, 'SKU') or '').strip()
+        brand = str(_col_val(rd, 'Brand') or '').strip().upper()
+        if not sku or sku == 'N/A' or not brand:
+            continue
+
+        jtw = int(_col_val(rd, 'JTW') or 0)
+        tr  = int(_col_val(rd, 'TR')  or 0)
+        dcw = int(_col_val(rd, 'DCW') or 0)
+        qa  = int(_col_val(rd, 'QA') or _col_val(rd, 'Q/A') or _col_val(rd, 'Quality') or 0)
+        committed = int(_col_val(rd, 'Committed') or 0)
+        allocated = int(_col_val(rd, 'Allocated') or 0)
+        incoming  = int(_col_val(rd, 'Incoming') or _col_val(rd, 'In Transit') or
+                        _col_val(rd, 'InTransit') or _col_val(rd, 'In-Transit') or
+                        _col_val(rd, 'On Order') or _col_val(rd, 'PO') or
+                        _col_val(rd, 'Incoming Qty') or 0)
+
+        total_ats_raw = _col_val(rd, 'Total ATS') or _col_val(rd, 'Total_ATS') or _col_val(rd, 'TotalATS') or 0
+        total_ats = int(total_ats_raw)
+
+        container = str(_col_val(rd, 'Container') or '').strip()
+        receive_date = str(_col_val(rd, 'Receive Date') or _col_val(rd, 'ReceiveDate') or '').strip()
+        lot_number = str(_col_val(rd, 'Lot Number') or _col_val(rd, 'LotNumber') or '').strip()
+
+        brand_full = BRAND_FULL_NAMES.get(brand, brand)
+
+        items.append({
+            'sku': sku,
+            'brand': brand,
+            'brand_abbr': brand,
+            'brand_full': brand_full,
+            'name': f"{brand} {sku}",
+            'jtw': jtw, 'tr': tr, 'dcw': dcw, 'qa': qa,
+            'incoming': incoming,
+            'committed': committed, 'allocated': allocated,
+            'total_ats': total_ats,
+            'total_warehouse': jtw + tr + dcw + qa,
+            'container': container,
+            'receive_date': receive_date,
+            'lot_number': lot_number,
+            'image': ''
+        })
+
+    wb.close()
+    return items
+
+
+def _group_by_brand(items):
+    brands = {}
+    for item in items:
+        abbr = item['brand']
+        if abbr not in brands:
+            brands[abbr] = {'name': item['brand_full'], 'items': []}
+        brands[abbr]['items'].append(item)
+    return brands
+
+
+# ============================================
+# DROPBOX SYNC — primary inventory source
+# ============================================
+def sync_from_dropbox():
+    """Fetch inventory directly from Dropbox shared link"""
+    if not DROPBOX_URL:
+        print("  No DROPBOX_URL configured, skipping Dropbox sync")
+        return False
+
+    # Convert any Dropbox URL format to direct download
+    url = DROPBOX_URL.strip()
+    # Remove st= param (session-specific, expires)
+    url = re.sub(r'[&?]st=[^&]*', '', url)
+    # Ensure dl=1 for direct download
+    url = re.sub(r'[&?]dl=\d', '', url)
+    url += ('&' if '?' in url else '?') + 'dl=1'
+
+    print(f"  📂 Fetching inventory from Dropbox...")
+    print(f"     URL: {url[:80]}...")
+    try:
+        # Use a session to follow redirects properly
+        session = http_requests.Session()
+        resp = session.get(url, timeout=60, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }, allow_redirects=True)
+
+        print(f"     HTTP {resp.status_code}, Content-Type: {resp.headers.get('Content-Type', 'unknown')}")
+        print(f"     Size: {len(resp.content)} bytes, Redirects: {len(resp.history)}")
+
+        if resp.status_code != 200:
+            print(f"  ⚠ Dropbox returned HTTP {resp.status_code}")
+            return False
+
+        # Verify we got an Excel file, not an HTML page
+        ct = resp.headers.get('Content-Type', '').lower()
+        if 'html' in ct:
+            print(f"  ⚠ Dropbox returned HTML instead of Excel (likely auth/redirect issue)")
+            print(f"     First 200 chars: {resp.text[:200]}")
+            return False
+
+        data = resp.content
+        if len(data) < 1000:
+            print(f"  ⚠ Dropbox file too small ({len(data)} bytes), likely error page")
+            return False
+
+        print(f"  📂 Downloaded {len(data):,} bytes from Dropbox")
+
+        items = parse_inventory_excel(data)
+        if not items:
+            print("  ⚠ No valid rows parsed from Dropbox file")
+            return False
+
+        brands = _group_by_brand(items)
+
+        with _inv_lock:
+            _inventory['items'] = items
+            _inventory['brands'] = brands
+            _inventory['etag'] = 'dropbox'
+            _inventory['last_sync'] = datetime.utcnow().isoformat() + 'Z'
+            _inventory['item_count'] = len(items)
+            _inventory['source'] = 'dropbox'
+
+        print(f"  ✓ Dropbox sync: {len(items)} items across {len(brands)} brands")
+        return True
+
+    except Exception as e:
+        print(f"  ⚠ Dropbox sync failed: {type(e).__name__}: {e}")
+        return False
+
+
+# ============================================
+# S3 SYNC — fallback inventory source
+# ============================================
+def s3_read_inventory():
+    try:
+        s3 = get_s3()
+        resp = s3.get_object(Bucket=S3_BUCKET, Key=S3_INVENTORY_KEY)
+        data = resp['Body'].read()
+        etag = resp.get('ETag', '')
+        print(f"  Downloaded s3://{S3_BUCKET}/{S3_INVENTORY_KEY} ({len(data)} bytes)")
+        return data, etag
+    except ClientError as e:
+        print(f"  S3 read failed: {e.response['Error']['Code']}")
+        return None, None
+    except NoCredentialsError:
+        print("  S3 read failed: no AWS credentials configured")
+        return None, None
+    except Exception as e:
+        print(f"  S3 read failed: {e}")
+        return None, None
+
+
+def s3_check_etag():
+    try:
+        s3 = get_s3()
+        resp = s3.head_object(Bucket=S3_BUCKET, Key=S3_INVENTORY_KEY)
+        return resp.get('ETag', '')
+    except Exception:
+        return None
+
+
+def s3_upload_export(key, file_bytes):
+    try:
+        s3 = get_s3()
+        s3.put_object(
+            Bucket=S3_BUCKET, Key=key, Body=file_bytes,
+            ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        print(f"    Uploaded s3://{S3_BUCKET}/{key}")
+        return True
+    except Exception as e:
+        print(f"    Upload failed for {key}: {e}")
+        return False
+
+
+def sync_inventory():
+    """Sync inventory: try Dropbox first, then S3 fallback"""
+    # Try Dropbox first
+    if DROPBOX_URL:
+        if sync_from_dropbox():
+            return True
+        print("  Dropbox failed, falling back to S3...")
+
+    # S3 fallback
+    new_etag = s3_check_etag()
+    with _inv_lock:
+        if new_etag and new_etag == _inventory['etag'] and _inventory['items']:
+            print("  Inventory unchanged (same ETag)")
+            return False
+
+    data, etag = s3_read_inventory()
+    if data is None:
+        return False
+
+    try:
+        items = parse_inventory_excel(data)
+    except Exception as e:
+        print(f"  Failed to parse inventory: {e}")
+        return False
+
+    brands = _group_by_brand(items)
+
+    with _inv_lock:
+        _inventory['items'] = items
+        _inventory['brands'] = brands
+        _inventory['etag'] = etag
+        _inventory['last_sync'] = datetime.utcnow().isoformat() + 'Z'
+        _inventory['item_count'] = len(items)
+        _inventory['source'] = 's3'
+
+    print(f"  Parsed {len(items)} items across {len(brands)} brands")
+    return True
+
+
+def generate_all_exports():
+    with _export_lock:
+        if _exports['generating']:
+            return
+        _exports['generating'] = True
+        _exports['progress'] = 'starting...'
+
+    try:
+        with _inv_lock:
+            brands = dict(_inventory['brands'])
+
+        if not brands:
+            print("  No inventory data for export generation")
+            return
+
+        date_str = datetime.utcnow().strftime('%Y-%m-%d')
+        total = len(brands)
+
+        print(f"\n{'='*60}")
+        print(f"  Generating exports for {total} brands...")
+        print(f"  Image strategy: STYLE+OVERRIDES first → brand folder fallback")
+        print(f"{'='*60}")
+
+        # Pre-cache images for ALL items (deduplicates by base_style)
+        all_items = []
+        for abbr, brand in brands.items():
+            all_items.extend(brand['items'])
+
+        print(f"  Pre-caching images for {len(all_items)} items...")
+        download_images_for_items(all_items, S3_PHOTOS_URL, use_cache=True)
+        with _img_lock:
+            cached_count = sum(1 for v in _img_cache.values() if v is not None)
+            failed_count = sum(1 for v in _img_cache.values() if v is None)
+        print(f"  Image cache: {cached_count} found, {failed_count} not found\n")
+
+        brands_list_for_multi = []
+        done = 0
+
+        sorted_brands = sorted(brands.items(),
+            key=lambda x: sum(i.get('total_warehouse', 0) for i in x[1]['items']),
+            reverse=True)
+
+        for abbr, brand in sorted_brands:
+            done += 1
+            name = brand['name']
+            with _export_lock:
+                _exports['progress'] = f"{done}/{total}: {name}"
+
+            print(f"  [{done}/{total}] {name} ({len(brand['items'])} items)")
+
+            sorted_items = sorted(brand['items'], key=lambda x: x.get('total_warehouse', 0), reverse=True)
+
+            try:
+                xl_bytes = build_brand_excel(name, sorted_items, S3_PHOTOS_URL)
+
+                with _export_lock:
+                    _exports['brands'][abbr] = {
+                        'bytes': xl_bytes,
+                        'generated_at': datetime.utcnow().isoformat() + 'Z',
+                        'name': name,
+                        'items_count': len(sorted_items),
+                        'size_bytes': len(xl_bytes),
+                    }
+
+                s3_key = f"{S3_EXPORT_PREFIX}{name.replace(' ', '_')}_{date_str}.xlsx"
+                s3_upload_export(s3_key, xl_bytes)
+
+                brands_list_for_multi.append({
+                    'brand_name': name,
+                    'items': sorted_items
+                })
+            except Exception as e:
+                print(f"    Failed: {e}")
+
+        if brands_list_for_multi:
+            print(f"\n  [ALL] Multi-tab ({len(brands_list_for_multi)} brands)...")
+            try:
+                multi_bytes = build_multi_brand_excel(brands_list_for_multi, S3_PHOTOS_URL)
+                with _export_lock:
+                    _exports['all_brands'] = {
+                        'bytes': multi_bytes,
+                        'generated_at': datetime.utcnow().isoformat() + 'Z',
+                        'brands_count': len(brands_list_for_multi),
+                        'items_count': sum(len(b['items']) for b in brands_list_for_multi),
+                        'size_bytes': len(multi_bytes),
+                    }
+                s3_upload_export(f"{S3_EXPORT_PREFIX}All_Brands_{date_str}.xlsx", multi_bytes)
+            except Exception as e:
+                print(f"    Failed: {e}")
+
+        with _export_lock:
+            _exports['generating'] = False
+            _exports['progress'] = 'done'
+            _exports['last_generated'] = datetime.utcnow().isoformat() + 'Z'
+
+        print(f"\n{'='*60}")
+        print(f"  Export generation complete! {done} brands")
+        with _img_lock:
+            print(f"  Image cache: {len(_img_cache)} unique styles cached")
+        print(f"{'='*60}\n")
+
+    except Exception as e:
+        print(f"  Export generation error: {e}")
+        with _export_lock:
+            _exports['generating'] = False
+            _exports['progress'] = f'error: {e}'
+
+
+def trigger_background_generation():
+    t = threading.Thread(target=generate_all_exports, daemon=True)
+    t.start()
+
+
+# ============================================
+# ROUTES
+# ============================================
+
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        "service": "Versa Inventory Export API v3",
+        "status": "running",
+    })
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    with _inv_lock:
+        inv_count = _inventory['item_count']
+        last_sync = _inventory['last_sync']
+        source = _inventory['source']
+    with _export_lock:
+        gen = _exports['generating']
+        brands_ready = len(_exports['brands'])
+        progress = _exports['progress']
+    with _img_lock:
+        img_count = len(_img_cache)
+        img_found = sum(1 for v in _img_cache.values() if v is not None)
+
+    return jsonify({
+        "status": "healthy",
+        "inventory_items": inv_count,
+        "inventory_source": source,
+        "last_sync": last_sync,
+        "exports_generating": gen,
+        "exports_ready": brands_ready,
+        "generation_progress": progress,
+        "images_cached": img_count,
+        "images_found": img_found,
+        "dropbox_photos_indexed": len(_dropbox_photo_index),
+        "dropbox_photos_cached": len([f for f in os.listdir(DROPBOX_DISK_CACHE) if f.endswith(('.jpg', '.png'))]) if os.path.exists(DROPBOX_DISK_CACHE) else 0,
+        "dropbox_photos_last_sync": _dropbox_photos_last_sync,
+    })
+
+
+@app.route('/sync', methods=['GET', 'OPTIONS'])
+def sync():
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    updated = sync_inventory()
+
+    with _inv_lock:
+        items = list(_inventory['items'])
+        last_sync = _inventory['last_sync']
+        brand_count = len(_inventory['brands'])
+
+    with _export_lock:
+        has_exports = bool(_exports['brands'])
+        is_generating = _exports['generating']
+
+    if (updated or not has_exports) and not is_generating:
+        print("  Triggering background export generation...")
+        trigger_background_generation()
+
+    return jsonify({
+        "status": "ok",
+        "updated": updated,
+        "last_sync": last_sync,
+        "item_count": len(items),
+        "brand_count": brand_count,
+        "inventory": items,
+    })
+
+
+@app.route('/inventory', methods=['GET', 'OPTIONS'])
+def inventory():
+    if request.method == 'OPTIONS':
+        return '', 204
+    with _inv_lock:
+        return jsonify({
+            "status": "ok",
+            "last_sync": _inventory['last_sync'],
+            "item_count": _inventory['item_count'],
+            "inventory": list(_inventory['items']),
+        })
+
+
+@app.route('/exports', methods=['GET', 'OPTIONS'])
+def exports_manifest():
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    with _export_lock:
+        brands = {}
+        for abbr, info in _exports['brands'].items():
+            brands[abbr] = {
+                'name': info['name'],
+                'items_count': info['items_count'],
+                'size_bytes': info['size_bytes'],
+                'generated_at': info['generated_at'],
+            }
+        all_b = None
+        if _exports['all_brands']:
+            a = _exports['all_brands']
+            all_b = {
+                'brands_count': a['brands_count'],
+                'items_count': a['items_count'],
+                'size_bytes': a['size_bytes'],
+                'generated_at': a['generated_at'],
+            }
+
+        return jsonify({
+            "generating": _exports['generating'],
+            "progress": _exports['progress'],
+            "last_generated": _exports['last_generated'],
+            "brands": brands,
+            "all_brands": all_b,
+        })
+
+
+@app.route('/download/brand/<abbr>', methods=['GET'])
+def download_brand(abbr):
+    abbr = abbr.upper()
+    with _export_lock:
+        info = _exports['brands'].get(abbr)
+    if not info:
+        return jsonify({"error": f"No pre-generated export for '{abbr}'"}), 404
+
+    date_str = datetime.utcnow().strftime('%Y-%m-%d')
+    filename = f"{info['name'].replace(' ', '_')}_{date_str}.xlsx"
+
+    return send_file(
+        BytesIO(info['bytes']),
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=filename
+    )
+
+
+@app.route('/download/all', methods=['GET'])
+def download_all():
+    with _export_lock:
+        info = _exports['all_brands']
+    if not info:
+        return jsonify({"error": "No pre-generated all-brands export"}), 404
+
+    date_str = datetime.utcnow().strftime('%Y-%m-%d')
+    return send_file(
+        BytesIO(info['bytes']),
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=f"All_Brands_{date_str}.xlsx"
+    )
+
+
+@app.route('/download/multi', methods=['GET'])
+def download_multi_selected():
+    brands_param = request.args.get('brands', '')
+    if not brands_param:
+        return jsonify({"error": "Missing 'brands' param"}), 400
+
+    abbrs = [b.strip().upper() for b in brands_param.split(',') if b.strip()]
+    if not abbrs:
+        return jsonify({"error": "No valid brands"}), 400
+
+    with _inv_lock:
+        all_brands = dict(_inventory['brands'])
+
+    brands_list = []
+    for abbr in abbrs:
+        if abbr in all_brands:
+            sorted_items = sorted(all_brands[abbr]['items'],
+                key=lambda x: x.get('total_warehouse', 0), reverse=True)
+            brands_list.append({
+                'brand_name': all_brands[abbr]['name'],
+                'items': sorted_items
+            })
+
+    if not brands_list:
+        return jsonify({"error": "No matching brands in inventory"}), 404
+
+    brands_list.sort(
+        key=lambda b: sum(i.get('total_warehouse', 0) for i in b['items']),
+        reverse=True)
+
+    xl_bytes = build_multi_brand_excel(brands_list, S3_PHOTOS_URL)
+    date_str = datetime.utcnow().strftime('%Y-%m-%d')
+
+    return send_file(
+        BytesIO(xl_bytes),
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=f"Versa_{len(brands_list)}_Brands_{date_str}.xlsx"
+    )
+
+
+@app.route('/upload', methods=['POST', 'OPTIONS'])
+def upload_inventory():
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    if 'file' not in request.files:
+        return jsonify({"error": "No file. Use multipart form with 'file' field."}), 400
+
+    file = request.files['file']
+    data = file.read()
+    if not data:
+        return jsonify({"error": "Empty file"}), 400
+
+    try:
+        s3 = get_s3()
+        s3.put_object(Bucket=S3_BUCKET, Key=S3_INVENTORY_KEY, Body=data,
+                       ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        return jsonify({"error": f"S3 upload failed: {e}"}), 500
+
+    sync_inventory()
+    with _inv_lock:
+        count = _inventory['item_count']
+
+    trigger_background_generation()
+
+    return jsonify({"status": "ok", "message": f"Uploaded and synced. {count} items.", "item_count": count})
+
+
+@app.route('/export', methods=['POST', 'OPTIONS'])
+def export_single():
+    if request.method == 'OPTIONS':
+        return '', 204
+    try:
+        req = request.get_json()
+        if not req or 'data' not in req:
+            return jsonify({"error": "Missing 'data'"}), 400
+        data = req['data']
+        s3_url = req.get('s3_base_url', S3_PHOTOS_URL)
+        fname = req.get('filename', 'Export')
+        view_mode = req.get('view_mode', 'all')
+        is_order = req.get('is_order', False)
+        catalog_mode = req.get('catalog_mode', False)
+        if not data:
+            return jsonify({"error": "Empty data"}), 400
+
+        xl_bytes = build_brand_excel(fname, data, s3_url, view_mode=view_mode,
+                                     is_order=is_order, catalog_mode=catalog_mode)
+        ts = datetime.now().strftime('%Y-%m-%d')
+        return send_file(BytesIO(xl_bytes),
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True, download_name=f"{fname}_{ts}.xlsx")
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+@app.route('/export-multi', methods=['POST', 'OPTIONS'])
+def export_multi():
+    if request.method == 'OPTIONS':
+        return '', 204
+    try:
+        req = request.get_json()
+        if not req or 'brands' not in req:
+            return jsonify({"error": "Missing 'brands'"}), 400
+        brands_data = req['brands']
+        s3_url = req.get('s3_base_url', S3_PHOTOS_URL)
+        fname = req.get('filename', 'Multi_Brand')
+        catalog_mode = req.get('catalog_mode', False)
+        view_mode = req.get('view_mode', 'all')
+        if not brands_data:
+            return jsonify({"error": "Empty brands"}), 400
+
+        xl_bytes = build_multi_brand_excel(brands_data, s3_url,
+                                           catalog_mode=catalog_mode, view_mode=view_mode)
+        ts = datetime.now().strftime('%Y-%m-%d')
+        return send_file(BytesIO(xl_bytes),
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True, download_name=f"{fname}_{ts}.xlsx")
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+# ── Style Overrides ────────────────────────────────
+@app.route('/overrides', methods=['GET', 'OPTIONS'])
+def get_overrides():
+    if request.method == 'OPTIONS':
+        return '', 204
+    with _overrides_lock:
+        return jsonify({"overrides": _style_overrides})
+
+@app.route('/overrides', methods=['POST'])
+def save_overrides():
+    try:
+        req = request.get_json()
+        if not req or 'overrides' not in req:
+            return jsonify({"error": "Missing 'overrides' in request body"}), 400
+
+        overrides = req['overrides']
+        if not isinstance(overrides, dict):
+            return jsonify({"error": "'overrides' must be an object"}), 400
+
+        with _overrides_lock:
+            global _style_overrides
+            _style_overrides = overrides
+
+        success = save_overrides_to_s3()
+
+        if success:
+            return jsonify({"success": True, "count": len(overrides)})
+        else:
+            return jsonify({"error": "Failed to save to S3"}), 500
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+@app.route('/allocations', methods=['GET', 'OPTIONS'])
+def get_allocations():
+    if request.method == 'OPTIONS':
+        return '', 204
+    data = load_allocation_from_s3()
+    return jsonify({"allocations": data})
+
+
+@app.route('/production', methods=['GET', 'OPTIONS'])
+def get_production():
+    if request.method == 'OPTIONS':
+        return '', 204
+    data = load_production_from_s3()
+    return jsonify({"production": data})
+
+
+@app.route('/regenerate', methods=['POST', 'OPTIONS'])
+def regenerate_exports():
+    """Force re-sync inventory and regenerate all exports"""
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    with _export_lock:
+        if _exports['generating']:
+            return jsonify({"status": "already_generating", "progress": _exports['progress']})
+
+    # Clear image cache to force re-download
+    with _img_lock:
+        _img_cache.clear()
+    with _web_img_lock:
+        _web_img_cache.clear()
+    _dropbox_thumb_cache.clear()
+    _dropbox_img_cache.clear()
+
+    updated = sync_inventory()
+    trigger_background_generation()
+
+    with _inv_lock:
+        count = _inventory['item_count']
+        source = _inventory['source']
+
+    return jsonify({
+        "status": "regenerating",
+        "inventory_source": source,
+        "item_count": count,
+        "message": f"Re-synced {count} items from {source}, regenerating exports..."
+    })
+
+
+###############################################################################
+# IMAGE PROXY — Serve product images through the API
+# Solves S3 browser-access issues (CORS, bucket policies, etc.)
+# Serves original-resolution images (not resized like Excel thumbnails)
+###############################################################################
+
+_web_img_cache = {}   # base_style → (content_bytes, content_type)
+_web_img_lock = threading.Lock()
+
+
+def _fetch_raw_image(base_style, brand_abbr):
+    """Download raw image bytes: base64 override → S3 override → S3 Dropbox sync → Dropbox API → S3 brand folder"""
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    image_code = extract_image_code(base_style, brand_abbr)
+
+    # 0. Platform base64 override (highest priority)
+    override_data = _style_overrides.get(base_style)
+    if override_data and isinstance(override_data, dict) and override_data.get('image'):
+        try:
+            import base64
+            img_str = override_data['image']
+            if ',' in img_str:
+                img_str = img_str.split(',', 1)[1]
+            raw = base64.b64decode(img_str)
+            # Detect content type
+            ct = 'image/png' if raw[:4] == b'\x89PNG' else 'image/jpeg'
+            return raw, ct
+        except Exception:
+            pass
+
+    # 1. Try STYLE+OVERRIDES on S3 first
+    override_base = f"{S3_OVERRIDES_IMG_URL}/{base_style}"
+    for ext in ['.jpg', '.png', '.jpeg']:
+        try:
+            url = override_base + ext
+            resp = http_requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                ct = resp.headers.get('Content-Type', '').lower()
+                if 'image' in ct:
+                    return resp.content, ct
+        except Exception:
+            continue
+
+    # 2. Try S3 DROPBOX_SYNC folder (images uploaded from Dropbox to S3)
+    sync_base = f"{S3_DROPBOX_SYNC_URL}/{image_code}"
+    for ext in ['.jpg', '.png', '.jpeg']:
+        try:
+            url = sync_base + ext
+            resp = http_requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                ct = resp.headers.get('Content-Type', '').lower()
+                if 'image' in ct:
+                    return resp.content, ct
+        except Exception:
+            continue
+
+    # 3. Try Dropbox photos direct API (fallback if S3 sync hasn't run yet)
+    dbx_bytes, dbx_ct = get_dropbox_image_bytes(image_code)
+    if dbx_bytes:
+        return dbx_bytes, dbx_ct
+
+    # 4. Fallback to S3 brand folder
+    folder_name = FOLDER_MAPPING.get(brand_abbr, brand_abbr)
+    brand_base = f"{S3_PHOTOS_URL}/{folder_name}/{image_code}"
+    for ext in ['.jpg', '.png', '.jpeg']:
+        try:
+            url = brand_base + ext
+            resp = http_requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                ct = resp.headers.get('Content-Type', '').lower()
+                if 'image' in ct:
+                    return resp.content, ct
+        except Exception:
+            continue
+    return None, None
+
+
+@app.route('/image/<base_style>', methods=['GET', 'OPTIONS'])
+def proxy_image(base_style):
+    """Serve a product image by base style code, with server-side S3 caching."""
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    base_style = base_style.upper().split('.')[0]  # strip extension if present
+
+    # Check web image cache first
+    with _web_img_lock:
+        cached = _web_img_cache.get(base_style, 'MISS')
+    if cached is None:
+        return '', 404  # Previously failed — skip
+    if cached != 'MISS':
+        resp = make_response(cached[0])
+        resp.headers['Content-Type'] = cached[1]
+        resp.headers['Cache-Control'] = 'public, max-age=86400'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+
+    # Get brand from query param or look up from inventory
+    brand_abbr = request.args.get('brand', '').upper()
+    if not brand_abbr:
+        with _inv_lock:
+            for item in (_inventory.get('items') or []):
+                if item.get('sku', '').split('-')[0].upper() == base_style:
+                    brand_abbr = item.get('brand_abbr', item.get('brand', ''))
+                    break
+
+    # Fetch raw image from S3
+    raw_bytes, content_type = _fetch_raw_image(base_style, brand_abbr)
+
+    if raw_bytes:
+        # Cache for future requests (limit cache to ~500 images to control memory)
+        with _web_img_lock:
+            if len(_web_img_cache) > 500:
+                # Evict oldest ~100 entries
+                keys = list(_web_img_cache.keys())[:100]
+                for k in keys:
+                    del _web_img_cache[k]
+            _web_img_cache[base_style] = (raw_bytes, content_type)
+
+        resp = make_response(raw_bytes)
+        resp.headers['Content-Type'] = content_type
+        resp.headers['Cache-Control'] = 'public, max-age=86400'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+
+    # Cache the miss too (avoid re-fetching failures)
+    with _web_img_lock:
+        _web_img_cache[base_style] = None
+
+    return '', 404
+
+
+@app.route('/dropbox-photos', methods=['GET', 'OPTIONS'])
+def dropbox_photo_list():
+    """Return list of available Dropbox image codes for frontend."""
+    if request.method == 'OPTIONS':
+        return '', 204
+    return jsonify({
+        'codes': list(_dropbox_photo_index.keys()),
+        'count': len(_dropbox_photo_index),
+        'last_sync': _dropbox_photos_last_sync,
+        's3_sync_url': S3_DROPBOX_SYNC_URL
+    })
+
+
+@app.route('/dropbox-photos/sync', methods=['POST', 'OPTIONS'])
+def trigger_dropbox_photo_sync():
+    """Manually trigger Dropbox photo sync + pre-warm."""
+    if request.method == 'OPTIONS':
+        return '', 204
+    def _sync_and_warm():
+        sync_dropbox_photos()
+        prewarm_dropbox_cache()
+    threading.Thread(target=_sync_and_warm, daemon=True).start()
+    return jsonify({'status': 'sync_started', 'current_count': len(_dropbox_photo_index)})
+
+
+DROPBOX_RESYNC_INTERVAL = int(os.environ.get('DROPBOX_RESYNC_HOURS', 1)) * 3600  # Default: 1 hour
+
+_worker_initialized = False
+
+@app.before_request
+def ensure_worker_initialized():
+    """Trigger startup sync on the first request to this worker process.
+    This is the only reliable way to initialize with gunicorn's fork model."""
+    global _worker_initialized
+    if not _worker_initialized:
+        _worker_initialized = True
+        print("\n  [before_request] First request — triggering startup sync...")
+        threading.Thread(target=startup_sync, daemon=True).start()
+
+
+def hourly_resync():
+    """Background loop: re-sync from Dropbox and regenerate exports every hour"""
+    while True:
+        time.sleep(DROPBOX_RESYNC_INTERVAL)
+        print(f"\n  ⏰ Hourly re-sync triggered...")
+
+        # Periodic Dropbox photo sync + S3 upload
+        if DROPBOX_PHOTOS_TOKEN and (time.time() - _dropbox_photos_last_sync > DROPBOX_PHOTOS_SYNC_HOURS * 3600):
+            print(f"  📷 Dropbox photos sync due (every {DROPBOX_PHOTOS_SYNC_HOURS}h)...")
+            try:
+                sync_dropbox_photos()
+                prewarm_dropbox_cache()  # Downloads new images + uploads to S3
+            except Exception as e:
+                print(f"  ⚠ Dropbox photos sync failed: {e}")
+
+        with _export_lock:
+            if _exports['generating']:
+                print("  ⏭ Skipping — export generation already in progress")
+                continue
+
+        try:
+            updated = sync_inventory()
+            if updated:
+                with _inv_lock:
+                    count = _inventory['item_count']
+                    source = _inventory['source']
+                print(f"  ✓ Re-synced {count} items from {source}, regenerating exports...")
+                trigger_background_generation()
+            else:
+                print("  No changes detected, skipping export regeneration")
+        except Exception as e:
+            print(f"  ⚠ Hourly re-sync failed: {e}")
+
+
+def startup_sync():
+    print("\n" + "="*60)
+    print("  VERSA INVENTORY EXPORT API v3 — Startup")
+    print(f"  Dropbox URL configured: {'YES' if DROPBOX_URL else 'NO'}")
+    print(f"  Dropbox Photos Token configured: {'YES' if DROPBOX_PHOTOS_TOKEN else 'NO'}")
+    if DROPBOX_PHOTOS_TOKEN:
+        print(f"  Dropbox Photos Token length: {len(DROPBOX_PHOTOS_TOKEN)}, starts: {DROPBOX_PHOTOS_TOKEN[:10]}..., ends: ...{DROPBOX_PHOTOS_TOKEN[-10:]}")
+    print("="*60)
+
+    load_overrides_from_s3()
+
+    # Sync Dropbox photos index (before inventory so images are ready for export generation)
+    if DROPBOX_PHOTOS_TOKEN:
+        print("  → Syncing Dropbox photos index...", flush=True)
+        sync_dropbox_photos()
+        # Start background pre-warm of all images to disk
+        if _dropbox_photo_index:
+            import threading as _th
+            _th.Thread(target=prewarm_dropbox_cache, daemon=True).start()
+
+    # Sync inventory: Dropbox first, then S3 fallback
+    try:
+        updated = sync_inventory()
+        with _inv_lock:
+            count = _inventory['item_count']
+            source = _inventory['source']
+        if count > 0:
+            print(f"  ✓ Startup: {count} items loaded from {source}")
+            print(f"  → Generating exports (images + Excel)...")
+            trigger_background_generation()
+        else:
+            print("  ⚠ Startup: no inventory data")
+    except Exception as e:
+        print(f"  Startup sync failed: {e}")
+
+    # Start hourly re-sync loop
+    if DROPBOX_URL:
+        print(f"  ⏰ Hourly Dropbox re-sync enabled (every {DROPBOX_RESYNC_INTERVAL//3600}h)")
+        hourly_resync()  # This runs forever in the same thread
+
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
+
