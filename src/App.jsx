@@ -379,6 +379,190 @@ function FullscreenImage({ src, alt, onClose }) {
   );
 }
 
+// ─── Export Panel ────────────────
+function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL }) {
+  const [manifest, setManifest] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [downloading, setDownloading] = useState(null);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenProgress, setRegenProgress] = useState("");
+
+  useEffect(() => {
+    fetchManifest();
+    const handleKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, []);
+
+  const fetchManifest = async () => {
+    try {
+      const resp = await fetch(`${API_URL}/exports`);
+      if (resp.ok) { setManifest(await resp.json()); }
+    } catch (e) { console.warn("Export manifest error:", e); }
+    setLoading(false);
+  };
+
+  const handleDownloadBrand = async (abbr, name) => {
+    setDownloading(abbr);
+    try {
+      const resp = await fetch(`${API_URL}/download/brand/${abbr}`);
+      if (!resp.ok) throw new Error("Not available");
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url;
+      a.download = `${name.replace(/\s/g,"_")}_${new Date().toISOString().slice(0,10)}.xlsx`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch (e) { alert(`Export not ready for ${name}. Try regenerating first.`); }
+    setDownloading(null);
+  };
+
+  const handleDownloadAll = async () => {
+    setDownloading("ALL");
+    try {
+      const resp = await fetch(`${API_URL}/download/all`);
+      if (!resp.ok) throw new Error("Not available");
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url;
+      a.download = `All_Brands_${new Date().toISOString().slice(0,10)}.xlsx`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch (e) { alert("All-brands export not ready. Try regenerating first."); }
+    setDownloading(null);
+  };
+
+  const handleRegenerate = async () => {
+    setRegenerating(true); setRegenProgress("Starting...");
+    try {
+      await fetch(`${API_URL}/regenerate`, { method: "POST" });
+      setRegenProgress("Generating exports...");
+      // Poll for progress
+      const poll = setInterval(async () => {
+        try {
+          const resp = await fetch(`${API_URL}/exports`);
+          if (resp.ok) {
+            const m = await resp.json();
+            if (m.generating) {
+              setRegenProgress(m.progress || "Working...");
+            } else {
+              clearInterval(poll);
+              setManifest(m);
+              setRegenerating(false);
+              setRegenProgress("");
+            }
+          }
+        } catch (_) {}
+      }, 3000);
+    } catch (e) {
+      setRegenerating(false); setRegenProgress("Error: " + e.message);
+    }
+  };
+
+  const formatSize = (bytes) => {
+    if (!bytes) return "—";
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / 1048576).toFixed(1) + " MB";
+  };
+
+  const formatTime = (ts) => {
+    if (!ts) return "never";
+    const d = new Date(ts);
+    return d.toLocaleDateString("en-US", { month:"short", day:"numeric" }) + " " + d.toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit" });
+  };
+
+  // Sort brands: current brand first, then alphabetical
+  const sortedBrands = Object.entries(brands).sort((a, b) => {
+    if (currentBrand && a[0] === currentBrand) return -1;
+    if (currentBrand && b[0] === currentBrand) return 1;
+    return a[1].name.localeCompare(b[1].name);
+  });
+
+  return (
+    <div onClick={onClose} style={{ position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(6px)",zIndex:1050,display:"flex",alignItems:"center",justifyContent:"center",padding:16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background:"#1e293b",borderRadius:16,border:"1px solid rgba(255,255,255,.1)",maxWidth:520,width:"100%",maxHeight:"85vh",display:"flex",flexDirection:"column",overflow:"hidden" }}>
+        {/* Header */}
+        <div style={{ padding:"16px 20px",borderBottom:"1px solid rgba(255,255,255,.08)",display:"flex",justifyContent:"space-between",alignItems:"center" }}>
+          <div>
+            <h2 style={{ color:"#f1f5f9",fontSize:18,fontWeight:800 }}>📊 Excel Exports</h2>
+            <p style={{ color:"#64748b",fontSize:12,marginTop:2 }}>
+              {manifest?.last_generated ? `Last generated: ${formatTime(manifest.last_generated)}` : "Pre-built exports with images"}
+            </p>
+          </div>
+          <button onClick={onClose} style={{ background:"rgba(255,255,255,.08)",border:"none",color:"#94a3b8",fontSize:18,width:36,height:36,borderRadius:10,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center" }}>✕</button>
+        </div>
+
+        {/* Content */}
+        <div style={{ flex:1,overflowY:"auto",padding:"12px 20px" }}>
+          {loading ? (
+            <div style={{ textAlign:"center",padding:40,color:"#64748b" }}>Loading exports...</div>
+          ) : (
+            <>
+              {/* All Brands download */}
+              <button onClick={handleDownloadAll} disabled={downloading === "ALL"} style={{
+                width:"100%",background:"linear-gradient(135deg,#818cf8,#6366f1)",color:"#fff",border:"none",
+                padding:"14px 16px",borderRadius:12,cursor:"pointer",marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",
+                opacity: downloading === "ALL" ? 0.6 : 1, transition:"all .2s"
+              }}>
+                <div style={{ textAlign:"left" }}>
+                  <span style={{ fontWeight:800,fontSize:14 }}>📥 Download All Brands</span>
+                  <p style={{ fontSize:11,opacity:0.8,marginTop:2 }}>
+                    {manifest?.all_brands ? `${manifest.all_brands.items_count} items · ${formatSize(manifest.all_brands.size_bytes)}` : "Complete inventory with images"}
+                  </p>
+                </div>
+                <span style={{ fontSize:13,fontWeight:600 }}>{downloading === "ALL" ? "⏳" : ".xlsx"}</span>
+              </button>
+
+              {/* Individual brands */}
+              <p style={{ color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,marginBottom:8 }}>By Brand</p>
+              <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
+                {sortedBrands.map(([abbr, info]) => {
+                  const mBrand = manifest?.brands?.[abbr];
+                  const isCurrent = currentBrand && abbr === currentBrand;
+                  return (
+                    <button key={abbr} onClick={() => handleDownloadBrand(abbr, info.name)} disabled={downloading === abbr}
+                      style={{
+                        display:"flex",alignItems:"center",justifyContent:"space-between",
+                        background: isCurrent ? "rgba(129,140,248,.12)" : "rgba(255,255,255,.04)",
+                        border: isCurrent ? "1px solid rgba(129,140,248,.3)" : "1px solid rgba(255,255,255,.06)",
+                        borderRadius:10,padding:"10px 14px",cursor:"pointer",transition:"all .15s",
+                        opacity: downloading === abbr ? 0.6 : 1,
+                        color:"#e2e8f0"
+                      }}>
+                      <div style={{ textAlign:"left" }}>
+                        <span style={{ fontWeight:700,fontSize:13 }}>{info.name}</span>
+                        {isCurrent && <span style={{ fontSize:9,background:"#818cf8",color:"#fff",padding:"2px 6px",borderRadius:4,marginLeft:8,fontWeight:700 }}>CURRENT</span>}
+                        <p style={{ fontSize:11,color:"#64748b",marginTop:1 }}>
+                          {(info.items||[]).length} SKUs{mBrand ? ` · ${formatSize(mBrand.size_bytes)}` : ""}
+                        </p>
+                      </div>
+                      <span style={{ fontSize:12,color:"#818cf8",fontWeight:600 }}>{downloading === abbr ? "⏳" : "📥"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Footer - Regenerate */}
+        <div style={{ padding:"12px 20px",borderTop:"1px solid rgba(255,255,255,.08)",display:"flex",alignItems:"center",justifyContent:"space-between" }}>
+          <p style={{ color:"#64748b",fontSize:11 }}>
+            {regenerating ? regenProgress : "Exports include product images"}
+          </p>
+          <button onClick={handleRegenerate} disabled={regenerating}
+            style={{
+              background: regenerating ? "rgba(255,255,255,.06)" : "rgba(255,255,255,.08)",
+              color: regenerating ? "#64748b" : "#e2e8f0",
+              border:"1px solid rgba(255,255,255,.1)",padding:"8px 16px",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600
+            }}>
+            {regenerating ? "⏳ Generating..." : "🔄 Regenerate All"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Product Detail Modal ────────────────
 function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, colorMap, allocationData }) {
   if (!item) return null;
@@ -763,6 +947,7 @@ export default function VersaInventoryApp() {
   const [productionData, setProductionData] = useState([]);
   const [colorMap, setColorMap] = useState({});
   const [allocationData, setAllocationData] = useState([]);
+  const [showExport, setShowExport] = useState(false);
 
   const allItems = useMemo(() => {
     return Object.values(brands).flatMap(b => b.items || []);
@@ -972,13 +1157,14 @@ export default function VersaInventoryApp() {
       }
       // Escape also closes modals
       if (e.key === "Escape") {
-        if (selectedItem) { setSelectedItem(null); window.history.back(); }
+        if (showExport) setShowExport(false);
+        else if (selectedItem) { setSelectedItem(null); window.history.back(); }
         else if (showCart) setShowCart(false);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedItem, showCart, view, goToBrands]);
+  }, [selectedItem, showCart, showExport, view, goToBrands]);
 
   // ─── Cart Actions ──────────────────────
   const addToCart = useCallback((item) => {
@@ -1123,6 +1309,10 @@ export default function VersaInventoryApp() {
               color:"#fff",border:"none",padding:"9px 16px",borderRadius:10,fontWeight:700,fontSize:13,cursor:"pointer",transition:"all .2s",whiteSpace:"nowrap"
             }}>
               {filterMode === "all" ? "📦 All Inventory" : filterMode === "incoming" ? "🚢 Overseas Only" : "🏭 Warehouse ATS"}
+            </button>
+            {/* Export */}
+            <button onClick={() => setShowExport(true)} style={{ background:"rgba(255,255,255,.08)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,.1)",padding:"9px 16px",borderRadius:10,fontWeight:600,fontSize:13,cursor:"pointer" }}>
+              📊 Export
             </button>
             {/* Cart */}
             <button onClick={() => setShowCart(true)} style={{ background:"rgba(255,255,255,.08)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,.1)",padding:"9px 16px",borderRadius:10,fontWeight:600,fontSize:13,cursor:"pointer",position:"relative" }}>
@@ -1291,6 +1481,9 @@ export default function VersaInventoryApp() {
           onClear={() => { setCart([]); setShowCart(false); }}
           onUpdateQty={(i, qty) => setCart(prev => { const u = [...prev]; u[i] = {...u[i], qty}; return u; })}
         />
+      )}
+      {showExport && (
+        <ExportPanel onClose={() => setShowExport(false)} brands={brands} currentBrand={currentBrand} filterMode={filterMode} API_URL={API_URL} />
       )}
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
