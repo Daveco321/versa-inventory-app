@@ -402,12 +402,12 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
     setLoading(false);
   };
 
-  // Build export-ready items with production dates for overseas
+  // Build export-ready items with production dates attached
   const buildExportItems = (items) => {
     return items.map(item => {
       const out = { ...item };
-      // Attach production dates for overseas view
-      if (filterMode === "incoming" && productionData?.length > 0) {
+      // Always attach production dates if available
+      if (productionData?.length > 0) {
         const dates = getEarliestDates(item.sku, productionData);
         if (dates.ex_factory) out.ex_factory = dates.ex_factory instanceof Date ? dates.ex_factory.toISOString().slice(0,10) : String(dates.ex_factory);
         if (dates.arrival) out.arrival = dates.arrival instanceof Date ? dates.arrival.toISOString().slice(0,10) : String(dates.arrival);
@@ -529,11 +529,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
   const currentBrandName = currentBrand ? (brands[currentBrand]?.full_name || currentBrand) : "";
 
   // Sort brands: current brand first, then alphabetical
-  const sortedBrands = Object.entries(brands).sort((a, b) => {
-    if (currentBrand && a[0] === currentBrand) return -1;
-    if (currentBrand && b[0] === currentBrand) return 1;
-    return (a[1].full_name || a[0]).localeCompare(b[1].full_name || b[0]);
-  });
+  const sortedBrands = sortBrands(Object.entries(brands));
 
   return (
     <div onClick={onClose} style={{ position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(6px)",zIndex:1050,display:"flex",alignItems:"center",justifyContent:"center",padding:16 }}>
@@ -605,17 +601,8 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
                   const mBrand = manifest?.brands?.[abbr];
                   const isCurrent = currentBrand && abbr === currentBrand;
                   const itemCount = (info.items||[]).length;
-                  // For all mode, use pre-built download; for filtered modes, POST with filter data
-                  const handleClick = filterMode === "all"
-                    ? () => {
-                        setDownloading(abbr);
-                        fetch(`${API_URL}/download/brand/${abbr}`)
-                          .then(r => { if (!r.ok) throw new Error(); return r.blob(); })
-                          .then(blob => { const u = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = u; a.download = `${(info.full_name||abbr).replace(/\s/g,"_")}_${new Date().toISOString().slice(0,10)}.xlsx`; a.click(); URL.revokeObjectURL(u); })
-                          .catch(() => alert(`Export not ready for ${info.full_name||abbr}. Try regenerating.`))
-                          .finally(() => setDownloading(null));
-                      }
-                    : () => handleExportBrandFiltered(abbr);
+                  // Always use POST export so production dates are included
+                  const handleClick = () => handleExportBrandFiltered(abbr);
                   return (
                     <button key={abbr} onClick={handleClick} disabled={downloading === abbr || itemCount === 0}
                       style={{
