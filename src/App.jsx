@@ -474,7 +474,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL }) {
   const sortedBrands = Object.entries(brands).sort((a, b) => {
     if (currentBrand && a[0] === currentBrand) return -1;
     if (currentBrand && b[0] === currentBrand) return 1;
-    return (a[1].name || a[0]).localeCompare(b[1].name || b[0]);
+    return (a[1].full_name || a[0]).localeCompare(b[1].full_name || b[0]);
   });
 
   return (
@@ -519,7 +519,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL }) {
                   const mBrand = manifest?.brands?.[abbr];
                   const isCurrent = currentBrand && abbr === currentBrand;
                   return (
-                    <button key={abbr} onClick={() => handleDownloadBrand(abbr, info.name)} disabled={downloading === abbr}
+                    <button key={abbr} onClick={() => handleDownloadBrand(abbr, info.full_name || abbr)} disabled={downloading === abbr}
                       style={{
                         display:"flex",alignItems:"center",justifyContent:"space-between",
                         background: isCurrent ? "rgba(129,140,248,.12)" : "rgba(255,255,255,.04)",
@@ -529,7 +529,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL }) {
                         color:"#e2e8f0"
                       }}>
                       <div style={{ textAlign:"left" }}>
-                        <span style={{ fontWeight:700,fontSize:13 }}>{info.name}</span>
+                        <span style={{ fontWeight:700,fontSize:13 }}>{info.full_name || abbr}</span>
                         {isCurrent && <span style={{ fontSize:9,background:"#818cf8",color:"#fff",padding:"2px 6px",borderRadius:4,marginLeft:8,fontWeight:700 }}>CURRENT</span>}
                         <p style={{ fontSize:11,color:"#64748b",marginTop:1 }}>
                           {(info.items||[]).length} SKUs{mBrand ? ` · ${formatSize(mBrand.size_bytes)}` : ""}
