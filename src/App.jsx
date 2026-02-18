@@ -6,7 +6,6 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 const API_URL = "https://versa-inventory-api.onrender.com";
 const S3_LOGO_BASE = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/";
 const DEFAULT_LOGO = "https://versamens.com/wp-content/uploads/2025/02/ac65455c-6152-4e4a-91f8-534f08254f81.png";
-const APP_LOGO = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Versa+App+logo.png";
 
 const BRAND_IMAGE_PREFIX = {NAUTICA:"NA",DKNY:"DK",EB:"EB",REEBOK:"RB",VINCE:"VC",BEN:"BE",USPA:"US",CHAPS:"CH",LUCKY:"LB",JNY:"JN",BEENE:"GB",NICOLE:"NM",SHAQ:"SH",TAYION:"TA",STRAHAN:"MS",VD:"VD",VERSA:"VR",CHEROKEE:"CK",AMERICA:"AC",BLO:"BL",DN:"D9",KL:"KL",NE:"NE"};
 
@@ -1090,8 +1089,23 @@ export default function VersaInventoryApp() {
       <header style={{ background:"rgba(15,23,42,.85)",backdropFilter:"blur(12px)",borderBottom:"1px solid rgba(255,255,255,.06)",padding:"14px 24px",position:"sticky",top:0,zIndex:100 }}>
         <div style={{ maxWidth:1280,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,flexWrap:"wrap" }}>
           <div style={{ display:"flex",alignItems:"center",gap:14 }}>
-            <img src={APP_LOGO}
-              alt="Versa Group" style={{ height:38,borderRadius:6 }} onError={e => e.target.style.display="none"} />
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" style={{ width:38,height:38,flexShrink:0 }}>
+              <defs>
+                <linearGradient id="vl1" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#818cf8"/><stop offset="50%" stopColor="#667eea"/><stop offset="100%" stopColor="#764ba2"/></linearGradient>
+                <linearGradient id="vl2" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#c4b5fd"/><stop offset="100%" stopColor="#a78bfa"/></linearGradient>
+                <linearGradient id="vl3" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#0f172a"/><stop offset="60%" stopColor="#1e293b"/><stop offset="100%" stopColor="#334155"/></linearGradient>
+              </defs>
+              <rect width="200" height="200" rx="42" fill="url(#vl3)"/>
+              <circle cx="100" cy="95" r="64" fill="none" stroke="url(#vl1)" strokeWidth="2" opacity="0.15"/>
+              <path d="M52,50 L100,130" stroke="url(#vl1)" strokeWidth="16" strokeLinecap="round" fill="none"/>
+              <path d="M148,50 L100,130" stroke="url(#vl2)" strokeWidth="16" strokeLinecap="round" fill="none"/>
+              <g transform="translate(100,132)" opacity="0.8"><polygon points="0,-6 5,0 0,6 -5,0" fill="#c4b5fd"/></g>
+              <g transform="translate(100,168)" opacity="0.45">
+                <rect x="-22" y="0" width="10" height="10" rx="2.5" fill="#818cf8"/>
+                <rect x="-5" y="0" width="10" height="10" rx="2.5" fill="#667eea"/>
+                <rect x="12" y="0" width="10" height="10" rx="2.5" fill="#764ba2"/>
+              </g>
+            </svg>
             <div>
               <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>Inventory Management</h1>
               <div style={{ display:"flex",alignItems:"center",gap:8 }}>
