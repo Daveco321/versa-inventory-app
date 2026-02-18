@@ -380,7 +380,7 @@ function FullscreenImage({ src, alt, onClose }) {
 }
 
 // ─── Export Panel ────────────────
-function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL }) {
+function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filteredItems, productionData, viewMode }) {
   const [manifest, setManifest] = useState(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(null);
@@ -402,17 +402,71 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL }) {
     setLoading(false);
   };
 
-  const handleDownloadBrand = async (abbr, name) => {
-    setDownloading(abbr);
+  // Build export-ready items with production dates for overseas
+  const buildExportItems = (items) => {
+    return items.map(item => {
+      const out = { ...item };
+      // Attach production dates for overseas view
+      if (filterMode === "incoming" && productionData?.length > 0) {
+        const dates = getEarliestDates(item.sku, productionData);
+        if (dates.ex_factory) out.ex_factory = dates.ex_factory instanceof Date ? dates.ex_factory.toISOString().slice(0,10) : String(dates.ex_factory);
+        if (dates.arrival) out.arrival = dates.arrival instanceof Date ? dates.arrival.toISOString().slice(0,10) : String(dates.arrival);
+      }
+      return out;
+    });
+  };
+
+  const handleExportCurrentView = async () => {
+    if (!filteredItems?.length) return;
+    const brandName = currentBrand ? (brands[currentBrand]?.full_name || currentBrand) : "Inventory";
+    const modeLabel = filterMode === "incoming" ? "Overseas" : filterMode === "ats" ? "Warehouse" : "All";
+    const filename = `${brandName}_${modeLabel}`;
+    setDownloading("CURRENT");
     try {
-      const resp = await fetch(`${API_URL}/download/brand/${abbr}`);
-      if (!resp.ok) throw new Error("Not available");
+      const exportItems = buildExportItems(filteredItems);
+      const resp = await fetch(`${API_URL}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          data: exportItems,
+          filename,
+          view_mode: filterMode === "incoming" ? "incoming" : filterMode === "ats" ? "ats" : "all"
+        })
+      });
+      if (!resp.ok) throw new Error("Export failed");
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a"); a.href = url;
-      a.download = `${name.replace(/\s/g,"_")}_${new Date().toISOString().slice(0,10)}.xlsx`;
+      a.download = `${filename.replace(/\s/g,"_")}_${new Date().toISOString().slice(0,10)}.xlsx`;
       a.click(); URL.revokeObjectURL(url);
-    } catch (e) { alert(`Export not ready for ${name}. Try regenerating first.`); }
+    } catch (e) { alert("Export failed: " + e.message); }
+    setDownloading(null);
+  };
+
+  const handleExportBrandFiltered = async (abbr) => {
+    const brandInfo = brands[abbr];
+    if (!brandInfo?.items?.length) return;
+    const brandName = brandInfo.full_name || abbr;
+    const modeLabel = filterMode === "incoming" ? "Overseas" : filterMode === "ats" ? "Warehouse" : "All";
+    setDownloading(abbr);
+    try {
+      const exportItems = buildExportItems(brandInfo.items);
+      const resp = await fetch(`${API_URL}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          data: exportItems,
+          filename: `${brandName}_${modeLabel}`,
+          view_mode: filterMode === "incoming" ? "incoming" : filterMode === "ats" ? "ats" : "all"
+        })
+      });
+      if (!resp.ok) throw new Error("Export failed");
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url;
+      a.download = `${brandName.replace(/\s/g,"_")}_${modeLabel}_${new Date().toISOString().slice(0,10)}.xlsx`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch (e) { alert(`Export failed for ${brandName}: ${e.message}`); }
     setDownloading(null);
   };
 
@@ -435,7 +489,6 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL }) {
     try {
       await fetch(`${API_URL}/regenerate`, { method: "POST" });
       setRegenProgress("Generating exports...");
-      // Poll for progress
       const poll = setInterval(async () => {
         try {
           const resp = await fetch(`${API_URL}/exports`);
@@ -470,6 +523,11 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL }) {
     return d.toLocaleDateString("en-US", { month:"short", day:"numeric" }) + " " + d.toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit" });
   };
 
+  const filterLabel = filterMode === "incoming" ? "🚢 Overseas" : filterMode === "ats" ? "🏭 Warehouse" : "📦 All Inventory";
+  const filterColor = filterMode === "incoming" ? "#f59e0b" : filterMode === "ats" ? "#3b82f6" : "#10b981";
+  const isInBrand = viewMode === "inventory" && currentBrand;
+  const currentBrandName = currentBrand ? (brands[currentBrand]?.full_name || currentBrand) : "";
+
   // Sort brands: current brand first, then alphabetical
   const sortedBrands = Object.entries(brands).sort((a, b) => {
     if (currentBrand && a[0] === currentBrand) return -1;
@@ -485,7 +543,8 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL }) {
           <div>
             <h2 style={{ color:"#f1f5f9",fontSize:18,fontWeight:800 }}>📊 Excel Exports</h2>
             <p style={{ color:"#64748b",fontSize:12,marginTop:2 }}>
-              {manifest?.last_generated ? `Last generated: ${formatTime(manifest.last_generated)}` : "Pre-built exports with images"}
+              <span style={{ color:filterColor,fontWeight:600 }}>{filterLabel}</span>
+              {isInBrand && <span> · {currentBrandName}</span>}
             </p>
           </div>
           <button onClick={onClose} style={{ background:"rgba(255,255,255,.08)",border:"none",color:"#94a3b8",fontSize:18,width:36,height:36,borderRadius:10,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center" }}>✕</button>
@@ -497,45 +556,85 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL }) {
             <div style={{ textAlign:"center",padding:40,color:"#64748b" }}>Loading exports...</div>
           ) : (
             <>
-              {/* All Brands download */}
-              <button onClick={handleDownloadAll} disabled={downloading === "ALL"} style={{
-                width:"100%",background:"linear-gradient(135deg,#818cf8,#6366f1)",color:"#fff",border:"none",
-                padding:"14px 16px",borderRadius:12,cursor:"pointer",marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",
-                opacity: downloading === "ALL" ? 0.6 : 1, transition:"all .2s"
-              }}>
-                <div style={{ textAlign:"left" }}>
-                  <span style={{ fontWeight:800,fontSize:14 }}>📥 Download All Brands</span>
-                  <p style={{ fontSize:11,opacity:0.8,marginTop:2 }}>
-                    {manifest?.all_brands ? `${manifest.all_brands.items_count} items · ${formatSize(manifest.all_brands.size_bytes)}` : "Complete inventory with images"}
-                  </p>
+              {/* Current View Export - shown when inside a brand */}
+              {isInBrand && filteredItems?.length > 0 && (
+                <div style={{ marginBottom:16 }}>
+                  <p style={{ color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,marginBottom:8 }}>Current View</p>
+                  <button onClick={handleExportCurrentView} disabled={downloading === "CURRENT"} style={{
+                    width:"100%",background:`linear-gradient(135deg,${filterColor},${filterColor}cc)`,color:"#fff",border:"none",
+                    padding:"14px 16px",borderRadius:12,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",
+                    opacity: downloading === "CURRENT" ? 0.6 : 1, transition:"all .2s"
+                  }}>
+                    <div style={{ textAlign:"left" }}>
+                      <span style={{ fontWeight:800,fontSize:14 }}>📥 Export {currentBrandName}</span>
+                      <p style={{ fontSize:11,opacity:0.85,marginTop:2 }}>
+                        {filteredItems.length} styles · {filterLabel}
+                        {filterMode === "incoming" && " · Includes Ex-Factory & Arrival dates"}
+                      </p>
+                    </div>
+                    <span style={{ fontSize:13,fontWeight:600 }}>{downloading === "CURRENT" ? "⏳" : ".xlsx"}</span>
+                  </button>
                 </div>
-                <span style={{ fontSize:13,fontWeight:600 }}>{downloading === "ALL" ? "⏳" : ".xlsx"}</span>
-              </button>
+              )}
+
+              {/* All brands by filter */}
+              <p style={{ color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,marginBottom:8 }}>
+                {filterMode === "all" ? "Pre-built Exports" : "Export by Brand"} ({filterLabel})
+              </p>
+
+              {/* Download All - only show for "all" filter mode with pre-built exports */}
+              {filterMode === "all" && (
+                <button onClick={handleDownloadAll} disabled={downloading === "ALL"} style={{
+                  width:"100%",background:"linear-gradient(135deg,#818cf8,#6366f1)",color:"#fff",border:"none",
+                  padding:"14px 16px",borderRadius:12,cursor:"pointer",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",
+                  opacity: downloading === "ALL" ? 0.6 : 1, transition:"all .2s"
+                }}>
+                  <div style={{ textAlign:"left" }}>
+                    <span style={{ fontWeight:800,fontSize:14 }}>📥 Download All Brands</span>
+                    <p style={{ fontSize:11,opacity:0.8,marginTop:2 }}>
+                      {manifest?.all_brands ? `${manifest.all_brands.items_count} items · ${formatSize(manifest.all_brands.size_bytes)}` : "Complete inventory with images"}
+                    </p>
+                  </div>
+                  <span style={{ fontSize:13,fontWeight:600 }}>{downloading === "ALL" ? "⏳" : ".xlsx"}</span>
+                </button>
+              )}
 
               {/* Individual brands */}
-              <p style={{ color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,marginBottom:8 }}>By Brand</p>
               <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
                 {sortedBrands.map(([abbr, info]) => {
                   const mBrand = manifest?.brands?.[abbr];
                   const isCurrent = currentBrand && abbr === currentBrand;
+                  const itemCount = (info.items||[]).length;
+                  // For all mode, use pre-built download; for filtered modes, POST with filter data
+                  const handleClick = filterMode === "all"
+                    ? () => {
+                        setDownloading(abbr);
+                        fetch(`${API_URL}/download/brand/${abbr}`)
+                          .then(r => { if (!r.ok) throw new Error(); return r.blob(); })
+                          .then(blob => { const u = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = u; a.download = `${(info.full_name||abbr).replace(/\s/g,"_")}_${new Date().toISOString().slice(0,10)}.xlsx`; a.click(); URL.revokeObjectURL(u); })
+                          .catch(() => alert(`Export not ready for ${info.full_name||abbr}. Try regenerating.`))
+                          .finally(() => setDownloading(null));
+                      }
+                    : () => handleExportBrandFiltered(abbr);
                   return (
-                    <button key={abbr} onClick={() => handleDownloadBrand(abbr, info.full_name || abbr)} disabled={downloading === abbr}
+                    <button key={abbr} onClick={handleClick} disabled={downloading === abbr || itemCount === 0}
                       style={{
                         display:"flex",alignItems:"center",justifyContent:"space-between",
                         background: isCurrent ? "rgba(129,140,248,.12)" : "rgba(255,255,255,.04)",
                         border: isCurrent ? "1px solid rgba(129,140,248,.3)" : "1px solid rgba(255,255,255,.06)",
-                        borderRadius:10,padding:"10px 14px",cursor:"pointer",transition:"all .15s",
-                        opacity: downloading === abbr ? 0.6 : 1,
+                        borderRadius:10,padding:"10px 14px",cursor: itemCount > 0 ? "pointer" : "default",transition:"all .15s",
+                        opacity: downloading === abbr ? 0.6 : itemCount === 0 ? 0.4 : 1,
                         color:"#e2e8f0"
                       }}>
                       <div style={{ textAlign:"left" }}>
                         <span style={{ fontWeight:700,fontSize:13 }}>{info.full_name || abbr}</span>
                         {isCurrent && <span style={{ fontSize:9,background:"#818cf8",color:"#fff",padding:"2px 6px",borderRadius:4,marginLeft:8,fontWeight:700 }}>CURRENT</span>}
                         <p style={{ fontSize:11,color:"#64748b",marginTop:1 }}>
-                          {(info.items||[]).length} SKUs{mBrand ? ` · ${formatSize(mBrand.size_bytes)}` : ""}
+                          {itemCount} styles{filterMode === "all" && mBrand ? ` · ${formatSize(mBrand.size_bytes)}` : ""}
+                          {filterMode !== "all" && itemCount > 0 ? ` · ${filterLabel}` : ""}
                         </p>
                       </div>
-                      <span style={{ fontSize:12,color:"#818cf8",fontWeight:600 }}>{downloading === abbr ? "⏳" : "📥"}</span>
+                      <span style={{ fontSize:12,color:"#818cf8",fontWeight:600 }}>{downloading === abbr ? "⏳" : itemCount > 0 ? "📥" : "—"}</span>
                     </button>
                   );
                 })}
@@ -544,10 +643,10 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL }) {
           )}
         </div>
 
-        {/* Footer - Regenerate */}
+        {/* Footer */}
         <div style={{ padding:"12px 20px",borderTop:"1px solid rgba(255,255,255,.08)",display:"flex",alignItems:"center",justifyContent:"space-between" }}>
           <p style={{ color:"#64748b",fontSize:11 }}>
-            {regenerating ? regenProgress : "Exports include product images"}
+            {regenerating ? regenProgress : filterMode === "incoming" ? "Overseas exports include shipment dates" : "Exports include product images"}
           </p>
           <button onClick={handleRegenerate} disabled={regenerating}
             style={{
@@ -1483,7 +1582,7 @@ export default function VersaInventoryApp() {
         />
       )}
       {showExport && (
-        <ExportPanel onClose={() => setShowExport(false)} brands={brands} currentBrand={currentBrand} filterMode={filterMode} API_URL={API_URL} />
+        <ExportPanel onClose={() => setShowExport(false)} brands={brands} currentBrand={currentBrand} filterMode={filterMode} API_URL={API_URL} filteredItems={filteredItems} productionData={productionData} viewMode={view} />
       )}
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
