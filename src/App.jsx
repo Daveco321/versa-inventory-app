@@ -474,7 +474,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL }) {
   const sortedBrands = Object.entries(brands).sort((a, b) => {
     if (currentBrand && a[0] === currentBrand) return -1;
     if (currentBrand && b[0] === currentBrand) return 1;
-    return a[1].name.localeCompare(b[1].name);
+    return (a[1].name || a[0]).localeCompare(b[1].name || b[0]);
   });
 
   return (
