@@ -261,12 +261,12 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode }) {
 
   const modeLabel = filterMode === "incoming" ? "Overseas" : filterMode === "ats" ? "Warehouse ATS" : "Total";
 
-  const row = (label, val, color) => val > 0 ? (
-    <div style={{ display:"flex",justifyContent:"space-between",padding:"4px 8px",background:"#f8fafc",borderRadius:5,fontSize:12 }}>
+  const cell = (label, val) => (
+    <div style={{ display:"flex",justifyContent:"space-between",padding:"3px 6px",background:"#f8fafc",borderRadius:4,fontSize:11 }}>
       <span style={{ color:"#64748b" }}>{label}</span>
       <span style={{ fontWeight:700,color:"#1e293b" }}>{val.toLocaleString()}</span>
     </div>
-  ) : null;
+  );
 
   return (
     <div style={{ background:"rgba(255,255,255,.97)",borderRadius:14,padding:"16px 20px",marginBottom:16,border:"1px solid #e2e8f0",boxShadow:"0 4px 16px rgba(0,0,0,.08)" }}>
@@ -278,7 +278,7 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode }) {
       </div>
 
       {/* Stacked bar */}
-      <div style={{ display:"flex",height:8,borderRadius:4,overflow:"hidden",marginBottom:14,background:"#f1f5f9" }}>
+      <div style={{ display:"flex",height:6,borderRadius:3,overflow:"hidden",marginBottom:8,background:"#f1f5f9" }}>
         {bW > 0 && <div style={{ width:`${bW}%`,background:"#e2e8f0" }} />}
         {bB > 0 && <div style={{ width:`${bB}%`,background:"#1e293b" }} />}
         {bN > 0 && <div style={{ width:`${bN}%`,background:"#1e3a5f" }} />}
@@ -286,25 +286,23 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode }) {
         {bF > 0 && <div style={{ width:`${bF}%`,background:"linear-gradient(90deg,#f59e0b,#ec4899)" }} />}
       </div>
 
-      {/* 2-col grid exactly matching main catalog */}
-      <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:4 }}>
-        {row("White Solid", cWhite)}
-        {row("Black Solid", cBlack)}
-        {row("Navy Solid", cNavy)}
-        {row("Other Solids", cOther)}
-        {cFancy > 0 && (
-          <div style={{ display:"flex",justifyContent:"space-between",padding:"4px 8px",background:"#f8fafc",borderRadius:5,fontSize:12,gridColumn:"span 2" }}>
-            <span style={{ color:"#64748b" }}>Fancies</span>
-            <span style={{ fontWeight:700,color:"#1e293b" }}>{cFancy.toLocaleString()}</span>
-          </div>
-        )}
+      {/* 2-col grid — all 5 rows always shown, matching main catalog exactly */}
+      <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,fontSize:11 }}>
+        {cell("White Solid", cWhite)}
+        {cell("Black Solid", cBlack)}
+        {cell("Navy Solid", cNavy)}
+        {cell("Other Solids", cOther)}
+        <div style={{ display:"flex",justifyContent:"space-between",padding:"3px 6px",background:"#f8fafc",borderRadius:4,gridColumn:"span 2" }}>
+          <span style={{ color:"#64748b" }}>Fancies</span>
+          <span style={{ fontWeight:700,color:"#1e293b" }}>{cFancy.toLocaleString()}</span>
+        </div>
       </div>
 
-      {/* Legend dots */}
+      {/* Legend */}
       <div style={{ display:"flex",gap:12,marginTop:10,flexWrap:"wrap" }}>
-        {[["#e2e8f0","White","#64748b"],["#1e293b","Black","#64748b"],["#1e3a5f","Navy","#64748b"],
-          ["linear-gradient(90deg,#3b82f6,#8b5cf6)","Other Solids","#64748b"],
-          ["linear-gradient(90deg,#f59e0b,#ec4899)","Fancies","#64748b"]].map(([bg, label]) => (
+        {[["#e2e8f0","White"],["#1e293b","Black"],["#1e3a5f","Navy"],
+          ["linear-gradient(90deg,#3b82f6,#8b5cf6)","Other Solids"],
+          ["linear-gradient(90deg,#f59e0b,#ec4899)","Fancies"]].map(([bg, label]) => (
           <div key={label} style={{ display:"flex",alignItems:"center",gap:4,fontSize:10,color:"#64748b" }}>
             <span style={{ width:8,height:8,borderRadius:2,background:bg,flexShrink:0,border:"1px solid #e2e8f0",display:"inline-block" }} />
             {label}
