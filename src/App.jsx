@@ -218,31 +218,38 @@ function getDetailedCategory(sku, brandAbbr) {
 function classifyColor(colorDisplay, brandAbbr) {
   if (!colorDisplay) return "fancies";
   const c = colorDisplay.trim().toLowerCase();
+  // Disqualifiers: print/prnt/grnd/stripe → always fancies
+  const _hasPrint = /\bprint\b|\bprnt\b|\bgrnd\b|\bstripe\b|\bstripes\b/.test(c);
+  // Navy: "navy solid" as adjacent words anywhere (e.g. "New Navy Solid" counts)
+  if (!_hasPrint && /\bnavy\s+solid\b/.test(c)) return "navy";
+  // White/Black: must be exactly "[color] solid"
   const exactMatch = c.match(/^(\S+)\s+solid$/);
-  if (exactMatch) {
+  if (exactMatch && !_hasPrint) {
     const base = exactMatch[1];
     if (base === "white") return "white";
     if (base === "black") return "black";
-    if (base === "navy") return "navy";
     return "other_solids";
   }
-  // USPA: "[color] solid" prefix counts even with extra text
-  if (brandAbbr === "USPA") {
+  // USPA: "[color] solid" at the start counts even with trailing text
+  if ((brandAbbr || "").toUpperCase() === "USPA" && !_hasPrint) {
     const uspaMatch = c.match(/^(\S+)\s+solid/);
     if (uspaMatch) {
       const base = uspaMatch[1];
       if (base === "white" || base === "ivory" || base === "cream") return "white";
       if (base === "black") return "black";
-      if (base === "navy") return "navy";
       return "other_solids";
     }
   }
+  // Other Solids: anything containing "solid" but not print/stripe
+  if (!_hasPrint && /\bsolid\b/.test(c)) return "other_solids";
   return "fancies";
 }
 
 // ─── Color Summary Panel ──────────────────────────────────────
-function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode }) {
+function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColorFilter, onColorFilter }) {
+  // Compute counts + build per-category SKU sets for click-to-filter
   let cWhite = 0, cBlack = 0, cNavy = 0, cOther = 0, cFancy = 0;
+  const skuSets = { white: new Set(), black: new Set(), navy: new Set(), other_solids: new Set(), fancies: new Set() };
   items.forEach(item => {
     const qty = item.total_ats || 0;
     if (qty <= 0) return;
@@ -253,62 +260,168 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode }) {
     else if (cat === "navy") cNavy += qty;
     else if (cat === "other_solids") cOther += qty;
     else cFancy += qty;
+    if (skuSets[cat]) skuSets[cat].add(item.sku.toUpperCase());
   });
 
   const barTotal = cWhite + cBlack + cNavy + cOther + cFancy;
   const pct = v => barTotal ? Math.round(v / barTotal * 100) : 0;
   const bW = pct(cWhite), bB = pct(cBlack), bN = pct(cNavy), bO = pct(cOther), bF = pct(cFancy);
-
   const modeLabel = filterMode === "incoming" ? "Overseas" : filterMode === "ats" ? "Warehouse ATS" : "Total";
 
-  const cell = (label, val) => (
-    <div style={{ display:"flex",justifyContent:"space-between",padding:"3px 6px",background:"#f8fafc",borderRadius:4,fontSize:11 }}>
-      <span style={{ color:"#64748b" }}>{label}</span>
-      <span style={{ fontWeight:700,color:"#1e293b" }}>{val.toLocaleString()}</span>
-    </div>
-  );
+  const LABEL_MAP = { white:"White Solid", black:"Black Solid", navy:"Navy Solid", other_solids:"Other Solids", fancies:"Fancies" };
+
+  const handleClick = (cat) => {
+    if (!skuSets[cat] || skuSets[cat].size === 0) return;
+    if (activeColorFilter && activeColorFilter.cat === cat) {
+      onColorFilter(null); // toggle off
+    } else {
+      onColorFilter({ cat, label: LABEL_MAP[cat], skus: skuSets[cat] });
+    }
+  };
+
+  const rowStyle = (cat, span2) => ({
+    display:"flex", justifyContent:"space-between", alignItems:"center",
+    padding:"7px 10px", borderRadius:6, cursor:"pointer", transition:"background 0.15s",
+    border: `1px solid ${activeColorFilter?.cat === cat ? "#93c5fd" : "#e2e8f0"}`,
+    background: activeColorFilter?.cat === cat ? "#dbeafe" : "#f8fafc",
+    ...(span2 ? { gridColumn:"span 2" } : {})
+  });
+
+  const barSegStyle = (bg, w, cat) => ({
+    width:`${w}%`, background:bg, cursor:"pointer",
+    outline: activeColorFilter?.cat === cat ? "2px solid #6366f1" : "none"
+  });
 
   return (
-    <div style={{ background:"rgba(255,255,255,.97)",borderRadius:14,padding:"16px 20px",marginBottom:16,border:"1px solid #e2e8f0",boxShadow:"0 4px 16px rgba(0,0,0,.08)" }}>
-      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12 }}>
-        <span style={{ fontWeight:700,fontSize:14,color:"#1e293b" }}>📊 Color Summary <span style={{ fontSize:11,fontWeight:500,color:"#64748b" }}>— {modeLabel} ATS</span></span>
+    <div style={{ background:"white",borderRadius:12,padding:"20px",marginBottom:16,border:"1px solid #e2e8f0",boxShadow:"0 2px 8px rgba(0,0,0,.06)" }}>
+      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8 }}>
+        <div style={{ display:"flex",alignItems:"center",gap:10,flexWrap:"wrap" }}>
+          <span style={{ fontWeight:700,fontSize:15,color:"#0f172a" }}>📊 Color Summary <span style={{ fontSize:11,fontWeight:500,color:"#64748b" }}>— {modeLabel} ATS</span></span>
+          {activeColorFilter && (
+            <span style={{ background:"#dbeafe",color:"#1d4ed8",border:"1px solid #93c5fd",borderRadius:12,padding:"2px 10px",fontSize:11,fontWeight:700,display:"flex",alignItems:"center",gap:4 }}>
+              Filtering: {activeColorFilter.label}
+              <span onClick={() => onColorFilter(null)} style={{ cursor:"pointer",color:"#6b7280",marginLeft:2 }}>✕</span>
+            </span>
+          )}
+        </div>
         <span style={{ fontSize:11,color:"#6366f1",background:"#eef2ff",padding:"3px 10px",borderRadius:99,fontWeight:600 }}>
           {barTotal.toLocaleString()} total units
         </span>
       </div>
 
-      {/* Stacked bar */}
-      <div style={{ display:"flex",height:6,borderRadius:3,overflow:"hidden",marginBottom:8,background:"#f1f5f9" }}>
-        {bW > 0 && <div style={{ width:`${bW}%`,background:"#e2e8f0" }} />}
-        {bB > 0 && <div style={{ width:`${bB}%`,background:"#1e293b" }} />}
-        {bN > 0 && <div style={{ width:`${bN}%`,background:"#1e3a5f" }} />}
-        {bO > 0 && <div style={{ width:`${bO}%`,background:"linear-gradient(90deg,#3b82f6,#8b5cf6)" }} />}
-        {bF > 0 && <div style={{ width:`${bF}%`,background:"linear-gradient(90deg,#f59e0b,#ec4899)" }} />}
+      {/* Stacked bar — segments are clickable */}
+      <div style={{ display:"flex",height:8,borderRadius:4,overflow:"hidden",marginBottom:14,background:"#f1f5f9" }}>
+        {bW > 0 && <div style={barSegStyle("#e2e8f0", bW, "white")} onClick={() => handleClick("white")} title={`White Solid ${bW}%`} />}
+        {bB > 0 && <div style={barSegStyle("#1e293b", bB, "black")} onClick={() => handleClick("black")} title={`Black Solid ${bB}%`} />}
+        {bN > 0 && <div style={barSegStyle("#1e3a5f", bN, "navy")} onClick={() => handleClick("navy")} title={`Navy Solid ${bN}%`} />}
+        {bO > 0 && <div style={barSegStyle("linear-gradient(90deg,#3b82f6,#8b5cf6)", bO, "other_solids")} onClick={() => handleClick("other_solids")} title={`Other Solids ${bO}%`} />}
+        {bF > 0 && <div style={barSegStyle("linear-gradient(90deg,#f59e0b,#ec4899)", bF, "fancies")} onClick={() => handleClick("fancies")} title={`Fancies ${bF}%`} />}
       </div>
 
-      {/* 2-col grid — all 5 rows always shown, matching main catalog exactly */}
-      <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,fontSize:11 }}>
-        {cell("White Solid", cWhite)}
-        {cell("Black Solid", cBlack)}
-        {cell("Navy Solid", cNavy)}
-        {cell("Other Solids", cOther)}
-        <div style={{ display:"flex",justifyContent:"space-between",padding:"3px 6px",background:"#f8fafc",borderRadius:4,gridColumn:"span 2" }}>
-          <span style={{ color:"#64748b" }}>Fancies</span>
-          <span style={{ fontWeight:700,color:"#1e293b" }}>{cFancy.toLocaleString()}</span>
-        </div>
-      </div>
-
-      {/* Legend */}
-      <div style={{ display:"flex",gap:12,marginTop:10,flexWrap:"wrap" }}>
-        {[["#e2e8f0","White"],["#1e293b","Black"],["#1e3a5f","Navy"],
-          ["linear-gradient(90deg,#3b82f6,#8b5cf6)","Other Solids"],
-          ["linear-gradient(90deg,#f59e0b,#ec4899)","Fancies"]].map(([bg, label]) => (
-          <div key={label} style={{ display:"flex",alignItems:"center",gap:4,fontSize:10,color:"#64748b" }}>
-            <span style={{ width:8,height:8,borderRadius:2,background:bg,flexShrink:0,border:"1px solid #e2e8f0",display:"inline-block" }} />
-            {label}
+      {/* Clickable grid — all 5 rows always shown */}
+      <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:13 }}>
+        {[["white","⬜ White Solid",cWhite],["black","⬛ Black Solid",cBlack],["navy","🟦 Navy Solid",cNavy],["other_solids","🎨 Other Solids",cOther]].map(([cat, label, val]) => (
+          <div key={cat} onClick={() => handleClick(cat)} style={rowStyle(cat)}>
+            <span style={{ color:"#64748b" }}>{label}</span>
+            <span style={{ fontWeight:700,color:"#1e293b" }}>{val.toLocaleString()}</span>
           </div>
         ))}
+        <div onClick={() => handleClick("fancies")} style={rowStyle("fancies", true)}>
+          <span style={{ color:"#64748b" }}>✨ Fancies</span>
+          <span style={{ fontWeight:700,color:"#1e293b" }}>{cFancy.toLocaleString()}</span>
+        </div>
+        <div style={{ display:"flex",justifyContent:"space-between",padding:"7px 10px",background:"#e0f2fe",borderRadius:6,border:"1px solid #bae6fd",gridColumn:"span 2" }}>
+          <span style={{ color:"#0369a1",fontWeight:600 }}>Total ATS</span>
+          <span style={{ fontWeight:800,color:"#0369a1" }}>{barTotal.toLocaleString()}</span>
+        </div>
       </div>
+      <p style={{ fontSize:11,color:"#94a3b8",margin:"8px 0 0",textAlign:"center" }}>Click any row to filter the inventory below · Click again to clear</p>
+    </div>
+  );
+}
+
+// ─── Fabric Summary Panel ─────────────────────────────────────
+function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFilter }) {
+  // Build fabric map — same logic as main catalog's showAdminFabricSummary
+  const fabricMap = {};
+  items.forEach(item => {
+    const qty = item.total_ats || 0;
+    const f = getFabricFromSKU(item.sku);
+    const key = f.code.toUpperCase();
+    if (!fabricMap[key]) fabricMap[key] = { code: f.code, description: f.description, ats: 0, skus: new Set(), allSkus: new Set() };
+    fabricMap[key].ats += qty;
+    fabricMap[key].skus.add(item.sku.split("-")[0].toUpperCase()); // base style count
+    fabricMap[key].allSkus.add(item.sku.toUpperCase()); // full SKU set for filtering
+  });
+
+  const rows = Object.values(fabricMap).sort((a, b) => b.ats - a.ats);
+  const totalAts = rows.reduce((s, r) => s + r.ats, 0);
+  const modeLabel = filterMode === "incoming" ? "Overseas" : filterMode === "ats" ? "Warehouse ATS" : "Total";
+
+  const handleClick = (code) => {
+    const row = fabricMap[code];
+    if (!row) return;
+    if (activeFabricFilter && activeFabricFilter.code === code) {
+      onFabricFilter(null); // toggle off
+    } else {
+      onFabricFilter({ code, label: code, skus: row.allSkus });
+    }
+  };
+
+  return (
+    <div style={{ background:"white",borderRadius:12,padding:"20px",marginBottom:16,border:"1px solid #e2e8f0",boxShadow:"0 2px 8px rgba(0,0,0,.06)" }}>
+      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexWrap:"wrap",gap:8 }}>
+        <div style={{ display:"flex",alignItems:"center",gap:10,flexWrap:"wrap" }}>
+          <span style={{ fontWeight:700,fontSize:15,color:"#0f172a" }}>🧵 Fabric Summary <span style={{ fontSize:11,fontWeight:500,color:"#64748b" }}>— {modeLabel} ATS</span></span>
+          {activeFabricFilter && (
+            <span style={{ background:"#dcfce7",color:"#15803d",border:"1px solid #86efac",borderRadius:12,padding:"2px 10px",fontSize:11,fontWeight:700,display:"flex",alignItems:"center",gap:4 }}>
+              Filtering: {activeFabricFilter.label}
+              <span onClick={() => onFabricFilter(null)} style={{ cursor:"pointer",color:"#6b7280",marginLeft:2 }}>✕</span>
+            </span>
+          )}
+        </div>
+      </div>
+      <div style={{ overflowX:"auto" }}>
+        <table style={{ width:"100%",borderCollapse:"collapse",fontSize:13,borderRadius:8,overflow:"hidden" }}>
+          <thead>
+            <tr style={{ background:"#1e293b",color:"white" }}>
+              {["Code","Fabrication","Styles","ATS Units","%"].map((h, i) => (
+                <th key={h} style={{ padding:"9px 14px",textAlign: i >= 2 ? "right" : "left",fontSize:11,fontWeight:700,letterSpacing:".05em",textTransform:"uppercase",
+                  ...(i===1?{textAlign:"left"}:{}), ...(i===2?{textAlign:"center"}:{}) }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => {
+              const isActive = activeFabricFilter?.code === r.code.toUpperCase();
+              const pct = totalAts ? Math.round(r.ats / totalAts * 100) : 0;
+              const barW = rows[0]?.ats ? Math.round(r.ats / rows[0].ats * 100) : 0;
+              return (
+                <tr key={r.code} onClick={() => handleClick(r.code.toUpperCase())}
+                  style={{ borderBottom:"1px solid #f1f5f9",cursor:"pointer",background: isActive ? "#f0fdf4" : "white",transition:"background .15s" }}
+                  onMouseOver={e => e.currentTarget.style.background = "#f8fafc"}
+                  onMouseOut={e => e.currentTarget.style.background = isActive ? "#f0fdf4" : "white"}>
+                  <td style={{ padding:"8px 14px",whiteSpace:"nowrap" }}>
+                    <span style={{ display:"inline-block",background: isActive ? "#dcfce7" : "#f1f5f9",color: isActive ? "#15803d" : "#374151",border:`1px solid ${isActive ? "#86efac" : "#e2e8f0"}`,borderRadius:5,padding:"2px 8px",fontFamily:"monospace",fontSize:12,fontWeight:800 }}>{r.code}</span>
+                  </td>
+                  <td style={{ padding:"8px 14px",color:"#374151" }}>{r.description}</td>
+                  <td style={{ padding:"8px 14px",textAlign:"center",color:"#64748b" }}>{r.skus.size}</td>
+                  <td style={{ padding:"8px 14px",textAlign:"right",fontWeight:700,color:"#0f172a" }}>{r.ats.toLocaleString()}</td>
+                  <td style={{ padding:"8px 14px",textAlign:"right",color:"#94a3b8" }}>{pct}%</td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr style={{ background:"#f8fafc",borderTop:"2px solid #e2e8f0" }}>
+              <td colSpan={3} style={{ padding:"9px 14px",fontSize:13,fontWeight:700,color:"#0369a1" }}>Total</td>
+              <td style={{ padding:"9px 14px",textAlign:"right",fontSize:13,fontWeight:800,color:"#0369a1" }}>{totalAts.toLocaleString()}</td>
+              <td style={{ padding:"9px 14px",textAlign:"right",fontSize:13,fontWeight:800,color:"#0369a1" }}>100%</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <p style={{ fontSize:11,color:"#94a3b8",margin:"10px 0 0",textAlign:"center" }}>Click any row to filter the inventory below · Click again to clear</p>
     </div>
   );
 }
@@ -1344,6 +1457,9 @@ export default function VersaInventoryApp() {
   const [apoData, setApoData] = useState([]);
   const [openOrdersData, setOpenOrdersData] = useState([]);
   const [showColorSummary, setShowColorSummary] = useState(false);
+  const [showFabricSummary, setShowFabricSummary] = useState(false);
+  const [colorCategoryFilter, setColorCategoryFilter] = useState(null); // { cat, label, skus: Set }
+  const [fabricCodeFilter, setFabricCodeFilter] = useState(null);       // { code, label, skus: Set }
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [showExport, setShowExport] = useState(false);
 
@@ -1533,6 +1649,9 @@ export default function VersaInventoryApp() {
     setFitFilter([]); 
     setFabricFilter([]);
     setShowColorSummary(false);
+    setShowFabricSummary(false);
+    setColorCategoryFilter(null);
+    setFabricCodeFilter(null);
     setCategoryFilter("all");
     window.history.pushState({ view: "inventory", brand: brandKey }, "", `#brand-${brandKey}`);
     // Preload images for this brand
@@ -1625,6 +1744,14 @@ export default function VersaInventoryApp() {
     if (categoryFilter !== "all") {
       items = items.filter(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand) === categoryFilter);
     }
+    // Color category filter (from Color Summary panel click)
+    if (colorCategoryFilter) {
+      items = items.filter(i => colorCategoryFilter.skus.has(i.sku.toUpperCase()));
+    }
+    // Fabric code filter (from Fabric Summary panel click)
+    if (fabricCodeFilter) {
+      items = items.filter(i => fabricCodeFilter.skus.has(i.sku.toUpperCase()));
+    }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       items = items.filter(i => i.sku?.toLowerCase().includes(q));
@@ -1657,7 +1784,7 @@ export default function VersaInventoryApp() {
       return db - da;
     });
     return items;
-  }, [brandData, categoryFilter, searchQuery, fitFilter, fabricFilter, sortBy, productionData]);
+  }, [brandData, categoryFilter, colorCategoryFilter, fabricCodeFilter, searchQuery, fitFilter, fabricFilter, sortBy, productionData]);
 
   // Get unique fits/fabrics for filters
   const availableFits = useMemo(() => {
@@ -1824,16 +1951,28 @@ export default function VersaInventoryApp() {
                 </div>
               </div>
               <button
-                onClick={() => setShowColorSummary(p => !p)}
+                onClick={() => { setShowColorSummary(p => !p); if (showFabricSummary) setShowFabricSummary(false); }}
                 style={{
-                  background: showColorSummary ? "linear-gradient(135deg,#6366f1,#4f46e5)" : "rgba(255,255,255,.08)",
+                  background: showColorSummary ? "linear-gradient(135deg,#0ea5e9,#0284c7)" : "rgba(255,255,255,.08)",
                   color: showColorSummary ? "#fff" : "#c7d2fe",
-                  border: showColorSummary ? "1px solid #4f46e5" : "1px solid rgba(255,255,255,.1)",
+                  border: showColorSummary ? "1px solid #0284c7" : "1px solid rgba(255,255,255,.1)",
                   padding:"9px 18px",borderRadius:10,fontWeight:700,fontSize:13,cursor:"pointer",
                   transition:"all .2s",whiteSpace:"nowrap",flexShrink:0
                 }}
               >
-                📊 {showColorSummary ? "Hide Summary" : "Show Summary"}
+                🎨 {showColorSummary ? "✕ Hide Summary (Colors)" : "Show Summary (Colors)"}
+              </button>
+              <button
+                onClick={() => { setShowFabricSummary(p => !p); if (showColorSummary) setShowColorSummary(false); }}
+                style={{
+                  background: showFabricSummary ? "linear-gradient(135deg,#10b981,#059669)" : "rgba(255,255,255,.08)",
+                  color: showFabricSummary ? "#fff" : "#c7d2fe",
+                  border: showFabricSummary ? "1px solid #059669" : "1px solid rgba(255,255,255,.1)",
+                  padding:"9px 18px",borderRadius:10,fontWeight:700,fontSize:13,cursor:"pointer",
+                  transition:"all .2s",whiteSpace:"nowrap",flexShrink:0
+                }}
+              >
+                🧵 {showFabricSummary ? "✕ Hide Summary (Fabrics)" : "Show Summary (Fabrics)"}
               </button>
             </div>
 
@@ -1875,6 +2014,18 @@ export default function VersaInventoryApp() {
                     <button onClick={() => setCategoryFilter("all")} style={{ background:"none",border:"none",color:"#818cf8",cursor:"pointer",fontSize:12,padding:0,lineHeight:1,marginLeft:2 }}>✕</button>
                   </span>
                 )}
+                {colorCategoryFilter && (
+                  <span style={{ display:"inline-flex",alignItems:"center",gap:4,background:"rgba(14,165,233,.15)",color:"#38bdf8",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,border:"1px solid rgba(14,165,233,.3)" }}>
+                    🎨 {colorCategoryFilter.label}
+                    <button onClick={() => setColorCategoryFilter(null)} style={{ background:"none",border:"none",color:"#38bdf8",cursor:"pointer",fontSize:12,padding:0,lineHeight:1,marginLeft:2 }}>✕</button>
+                  </span>
+                )}
+                {fabricCodeFilter && (
+                  <span style={{ display:"inline-flex",alignItems:"center",gap:4,background:"rgba(16,185,129,.15)",color:"#34d399",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,border:"1px solid rgba(16,185,129,.3)" }}>
+                    🧵 {fabricCodeFilter.label}
+                    <button onClick={() => setFabricCodeFilter(null)} style={{ background:"none",border:"none",color:"#34d399",cursor:"pointer",fontSize:12,padding:0,lineHeight:1,marginLeft:2 }}>✕</button>
+                  </span>
+                )}
                 {filterMode !== "all" && (
                   <span style={{
                     display:"inline-flex",alignItems:"center",gap:4,
@@ -1900,6 +2051,18 @@ export default function VersaInventoryApp() {
                 colorMap={colorMap}
                 brandAbbr={currentBrand}
                 filterMode={filterMode}
+                activeColorFilter={colorCategoryFilter}
+                onColorFilter={setColorCategoryFilter}
+              />
+            )}
+
+            {/* Fabric Summary Panel */}
+            {showFabricSummary && (
+              <FabricSummaryPanel
+                items={brandData.items}
+                filterMode={filterMode}
+                activeFabricFilter={fabricCodeFilter}
+                onFabricFilter={setFabricCodeFilter}
               />
             )}
 
