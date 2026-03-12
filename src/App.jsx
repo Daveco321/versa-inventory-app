@@ -174,9 +174,108 @@ function rebuildBrands(inventory, filterMode = "all") {
   return brands;
 }
 
-// ═══════════════════════════════════════════
-// COMPONENTS
-// ═══════════════════════════════════════════
+// ─── Color Classification (mirrors main catalog) ──────────────
+function classifyColor(colorDisplay, brandAbbr) {
+  if (!colorDisplay) return "fancies";
+  const c = colorDisplay.trim().toLowerCase();
+  const exactMatch = c.match(/^(\S+)\s+solid$/);
+  if (exactMatch) {
+    const base = exactMatch[1];
+    if (base === "white") return "white";
+    if (base === "black") return "black";
+    if (base === "navy") return "navy";
+    return "other_solids";
+  }
+  // USPA: "[color] solid" prefix counts even with extra text
+  if (brandAbbr === "USPA") {
+    const uspaMatch = c.match(/^(\S+)\s+solid/);
+    if (uspaMatch) {
+      const base = uspaMatch[1];
+      if (base === "white" || base === "ivory" || base === "cream") return "white";
+      if (base === "black") return "black";
+      if (base === "navy") return "navy";
+      return "other_solids";
+    }
+  }
+  return "fancies";
+}
+
+// ─── Color Summary Panel ──────────────────────────────────────
+function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode }) {
+  let cWhite = 0, cBlack = 0, cNavy = 0, cOther = 0, cFancy = 0;
+  items.forEach(item => {
+    const qty = item.total_ats || 0;
+    if (qty <= 0) return;
+    const ci = getStyleColorInfo(item.sku, brandAbbr, colorMap);
+    const cat = classifyColor(ci ? ci.display : "", brandAbbr);
+    if (cat === "white") cWhite += qty;
+    else if (cat === "black") cBlack += qty;
+    else if (cat === "navy") cNavy += qty;
+    else if (cat === "other_solids") cOther += qty;
+    else cFancy += qty;
+  });
+
+  const barTotal = cWhite + cBlack + cNavy + cOther + cFancy;
+  const pct = v => barTotal ? Math.round(v / barTotal * 100) : 0;
+  const bW = pct(cWhite), bB = pct(cBlack), bN = pct(cNavy), bO = pct(cOther), bF = pct(cFancy);
+
+  const modeLabel = filterMode === "incoming" ? "Overseas" : filterMode === "ats" ? "Warehouse ATS" : "Total";
+
+  const row = (label, val, color) => val > 0 ? (
+    <div style={{ display:"flex",justifyContent:"space-between",padding:"4px 8px",background:"#f8fafc",borderRadius:5,fontSize:12 }}>
+      <span style={{ color:"#64748b" }}>{label}</span>
+      <span style={{ fontWeight:700,color:"#1e293b" }}>{val.toLocaleString()}</span>
+    </div>
+  ) : null;
+
+  return (
+    <div style={{ background:"rgba(255,255,255,.97)",borderRadius:14,padding:"16px 20px",marginBottom:16,border:"1px solid #e2e8f0",boxShadow:"0 4px 16px rgba(0,0,0,.08)" }}>
+      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12 }}>
+        <span style={{ fontWeight:700,fontSize:14,color:"#1e293b" }}>📊 Color Summary <span style={{ fontSize:11,fontWeight:500,color:"#64748b" }}>— {modeLabel} ATS</span></span>
+        <span style={{ fontSize:11,color:"#6366f1",background:"#eef2ff",padding:"3px 10px",borderRadius:99,fontWeight:600 }}>
+          {barTotal.toLocaleString()} total units
+        </span>
+      </div>
+
+      {/* Stacked bar */}
+      <div style={{ display:"flex",height:8,borderRadius:4,overflow:"hidden",marginBottom:14,background:"#f1f5f9" }}>
+        {bW > 0 && <div style={{ width:`${bW}%`,background:"#e2e8f0" }} />}
+        {bB > 0 && <div style={{ width:`${bB}%`,background:"#1e293b" }} />}
+        {bN > 0 && <div style={{ width:`${bN}%`,background:"#1e3a5f" }} />}
+        {bO > 0 && <div style={{ width:`${bO}%`,background:"linear-gradient(90deg,#3b82f6,#8b5cf6)" }} />}
+        {bF > 0 && <div style={{ width:`${bF}%`,background:"linear-gradient(90deg,#f59e0b,#ec4899)" }} />}
+      </div>
+
+      {/* 2-col grid exactly matching main catalog */}
+      <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:4 }}>
+        {row("White Solid", cWhite)}
+        {row("Black Solid", cBlack)}
+        {row("Navy Solid", cNavy)}
+        {row("Other Solids", cOther)}
+        {cFancy > 0 && (
+          <div style={{ display:"flex",justifyContent:"space-between",padding:"4px 8px",background:"#f8fafc",borderRadius:5,fontSize:12,gridColumn:"span 2" }}>
+            <span style={{ color:"#64748b" }}>Fancies</span>
+            <span style={{ fontWeight:700,color:"#1e293b" }}>{cFancy.toLocaleString()}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Legend dots */}
+      <div style={{ display:"flex",gap:12,marginTop:10,flexWrap:"wrap" }}>
+        {[["#e2e8f0","White","#64748b"],["#1e293b","Black","#64748b"],["#1e3a5f","Navy","#64748b"],
+          ["linear-gradient(90deg,#3b82f6,#8b5cf6)","Other Solids","#64748b"],
+          ["linear-gradient(90deg,#f59e0b,#ec4899)","Fancies","#64748b"]].map(([bg, label]) => (
+          <div key={label} style={{ display:"flex",alignItems:"center",gap:4,fontSize:10,color:"#64748b" }}>
+            <span style={{ width:8,height:8,borderRadius:2,background:bg,flexShrink:0,border:"1px solid #e2e8f0",display:"inline-block" }} />
+            {label}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
 
 function Toast({ message, type, onClose }) {
   useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, [onClose]);
@@ -1168,6 +1267,7 @@ export default function VersaInventoryApp() {
   const [allocationData, setAllocationData] = useState([]);
   const [apoData, setApoData] = useState([]);
   const [openOrdersData, setOpenOrdersData] = useState([]);
+  const [showColorSummary, setShowColorSummary] = useState(false);
   const [showExport, setShowExport] = useState(false);
 
   const allItems = useMemo(() => {
@@ -1354,7 +1454,8 @@ export default function VersaInventoryApp() {
     setSelectedItem(null); 
     setSearchQuery(""); 
     setFitFilter([]); 
-    setFabricFilter([]); 
+    setFabricFilter([]);
+    setShowColorSummary(false);
     window.history.pushState({ view: "inventory", brand: brandKey }, "", `#brand-${brandKey}`);
     // Preload images for this brand
     const b = brands[brandKey];
@@ -1640,6 +1741,18 @@ export default function VersaInventoryApp() {
                   <p style={{ fontSize:13,color:"#64748b" }}>{currentBrand} · {brandData.items.length} styles</p>
                 </div>
               </div>
+              <button
+                onClick={() => setShowColorSummary(p => !p)}
+                style={{
+                  background: showColorSummary ? "linear-gradient(135deg,#6366f1,#4f46e5)" : "rgba(255,255,255,.08)",
+                  color: showColorSummary ? "#fff" : "#c7d2fe",
+                  border: showColorSummary ? "1px solid #4f46e5" : "1px solid rgba(255,255,255,.1)",
+                  padding:"9px 18px",borderRadius:10,fontWeight:700,fontSize:13,cursor:"pointer",
+                  transition:"all .2s",whiteSpace:"nowrap",flexShrink:0
+                }}
+              >
+                📊 {showColorSummary ? "Hide Summary" : "Show Summary"}
+              </button>
             </div>
 
             {/* Search & Filters */}
@@ -1681,6 +1794,16 @@ export default function VersaInventoryApp() {
                 )}
               </p>
             </div>
+
+            {/* Color Summary Panel */}
+            {showColorSummary && (
+              <ColorSummaryPanel
+                items={brandData.items}
+                colorMap={colorMap}
+                brandAbbr={currentBrand}
+                filterMode={filterMode}
+              />
+            )}
 
             {/* Product Grid */}
             {filteredItems.length === 0 ? (
