@@ -4,8 +4,11 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 // CONSTANTS & CONFIG
 // ═══════════════════════════════════════════
 const API_URL = "https://versa-inventory-api.onrender.com";
+const ORDERS_API_URL = "https://open-orders-api.onrender.com";
 const S3_LOGO_BASE = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/";
 const DEFAULT_LOGO = "https://versamens.com/wp-content/uploads/2025/02/ac65455c-6152-4e4a-91f8-534f08254f81.png";
+
+const CUSTOMER_CODES = {"AF":"AAFES","BK":"BELK","BJ":"BJS","BL":"BLOOMINGDALE","BO":"BOSCOV","BU":"BURLINGTON","CC":"COSTCO CANADA","CU":"COSTCO USA","CM":"COSTCO MEXICO","CT":"COSTCO TAIWAN","FM":"FORMAN MILLS","HA":"HAMRICKS","JC":"JC PENNY","MB":"MACYS BACKSTAGE","MC":"MACYS.COM","MA":"MACYS","MW":"MENS WEARHOUSE","NO":"NORDSTROM","RO":"ROSS","SK":"SAKS","TJ":"TJX","VE":"VETERANS","WN":"WINNERS","KH":"KOHLS","WA":"WALMART (PEERLESS)","NC":"NAUTICA.COM","CY":"CENTURY 21","TK":"TKX","TG":"TARGET","WM":"WALMART","AM":"AMAZON","SE":"SEARS & KMART","PH":"PETER HARRIS","TM":"TJX (with size UPC)","VG":"VERSA GROUP","PS":"PRICE SMART","BF":"Beall's Florida","BI":"Beall's Inc (Outlet)","PB":"Porta Bella","DD":"DD'S Discount","HP":"HALF PRICE","TT":"TIKTOK","VW":"Big Lots/Variety","VP":"Versa Group (Purchase)","PR":"PRATO","MS":"ME SALVE","BR":"BRANDS for LESS","PM":"PROMODA","CI":"CITI TRENDS","CB":"Centric Brands","RM":"ROSS (with size UPC)","JT":"JC PENNY (SHIRT-TIE set)"};
 
 const BRAND_IMAGE_PREFIX = {NAUTICA:"NA",DKNY:"DK",EB:"EB",REEBOK:"RB",VINCE:"VC",BEN:"BE",USPA:"US",CHAPS:"CH",LUCKY:"LB",JNY:"JN",BEENE:"GB",NICOLE:"NM",SHAQ:"SH",TAYION:"TA",STRAHAN:"MS",VD:"VD",VERSA:"VR",CHEROKEE:"CK",AMERICA:"AC",BLO:"BL",DN:"D9",KL:"KL",NE:"NE"};
 
@@ -663,7 +666,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
 }
 
 // ─── Product Detail Modal ────────────────
-function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, colorMap, allocationData }) {
+function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, colorMap, allocationData, apoData, openOrdersData }) {
   if (!item) return null;
   const fabric = getFabricFromSKU(item.sku);
   const fit = getFitFromSKU(item.sku);
@@ -676,8 +679,30 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
   const dates = getEarliestDates(item.sku, prodData);
   const prods = dates.productions;
   const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap);
-  const allocations = (allocationData || []).filter(a => a.sku === (item.sku || "").toUpperCase());
-  const allocTotal = allocations.reduce((s, a) => s + a.qty, 0);
+
+  // Manual holds from /allocations — exact SKU match
+  const manualHolds = (allocationData || []).filter(a => a.sku === (item.sku || "").toUpperCase());
+
+  // APO allocations from /apo — base style match, grouped by customer
+  const baseStyle = (item.sku || "").toUpperCase().split("-")[0];
+  const apoRows = (apoData || []).filter(r => (r.style || "").toUpperCase().split("-")[0] === baseStyle);
+  const apoByCustomer = {};
+  apoRows.forEach(r => {
+    const c = r.customer || "—";
+    apoByCustomer[c] = (apoByCustomer[c] || 0) + (parseInt(r.qty) || 0);
+  });
+  const apoTotal = apoRows.reduce((s, r) => s + (parseInt(r.qty) || 0), 0);
+
+  // Open orders from orders API — base style match
+  const openOrders = (openOrdersData || []).filter(o => {
+    const oBase = (o.style || o.baseStyle || "").toUpperCase().split("-")[0];
+    return oBase === baseStyle;
+  });
+  const openOrdersTotal = openOrders.reduce((s, o) => s + (parseInt(o.openQty) || 0), 0);
+
+  const committed = Math.abs(item.committed || 0);
+  const allocated = Math.abs(item.allocated || 0);
+  const hasDeductions = committed > 0 || allocated > 0 || apoTotal > 0 || manualHolds.length > 0;
 
   return (
     <>
@@ -760,10 +785,10 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
               <p style={{ fontSize:10,color:"#a16207",fontWeight:600 }}>
                 Committed & Allocated <span style={{ fontSize:9,color:"#d97706" }}>{showAllocations ? "▲" : "▼"} details</span>
               </p>
-              <p style={{ fontSize:16,fontWeight:800 }}>{(Math.abs(item.committed||0)+Math.abs(item.allocated||0)).toLocaleString()}</p>
-              {item.committed !== 0 && item.allocated !== 0 && (
+              <p style={{ fontSize:16,fontWeight:800 }}>{(committed + allocated).toLocaleString()}</p>
+              {committed > 0 && allocated > 0 && (
                 <p style={{ fontSize:9,color:"#92400e",marginTop:2 }}>
-                  Committed: {Math.abs(item.committed||0).toLocaleString()} · Allocated: {Math.abs(item.allocated||0).toLocaleString()}
+                  Committed: {committed.toLocaleString()} · Allocated: {allocated.toLocaleString()}
                 </p>
               )}
             </div>
@@ -779,34 +804,85 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
               {/* Header */}
               <div style={{ background:"#92400e",color:"#fff",padding:"8px 12px",display:"flex",justifyContent:"space-between",alignItems:"center" }}>
                 <span style={{ fontWeight:700,fontSize:12 }}>📋 Deductions Breakdown</span>
-                <span style={{ fontSize:11,opacity:.8 }}>Total: {(Math.abs(item.committed||0)+Math.abs(item.allocated||0)).toLocaleString()} units</span>
+                <span style={{ fontSize:11,opacity:.8 }}>Total: {(committed + allocated).toLocaleString()} units</span>
               </div>
 
-              {/* APO / Virtual Warehouse Allocations */}
-              {allocations.length > 0 ? (
+              {/* ── COMMITTED: A2000 open orders breakdown ── */}
+              <div style={{ background:"#fffbeb",padding:"5px 10px",fontSize:10,fontWeight:700,color:"#92400e",borderBottom:"1px solid #fde68a",display:"flex",justifyContent:"space-between" }}>
+                <span>📋 Committed — A2000 Open Orders</span>
+                <span style={{ fontFamily:"monospace" }}>{committed.toLocaleString()}</span>
+              </div>
+              {openOrders.length > 0 ? (
                 <>
-                  <div style={{ background:"#fffbeb",padding:"5px 10px",fontSize:10,fontWeight:700,color:"#92400e",borderBottom:"1px solid #fde68a" }}>
-                    🏭 APO Allocations ({allocations.length} record{allocations.length > 1 ? "s" : ""})
-                  </div>
                   <div style={{ background:"#fefce8",padding:"3px 10px 2px",display:"grid",gridTemplateColumns:"1fr auto auto",fontSize:10,fontWeight:600,color:"#a16207",gap:0 }}>
-                    <span>Customer</span><span style={{ textAlign:"right" }}>Qty</span><span style={{ textAlign:"right",paddingLeft:12 }}>PO #</span>
+                    <span>Customer</span><span style={{ textAlign:"right" }}>Order #</span><span style={{ textAlign:"right",paddingLeft:12 }}>Open Qty</span>
                   </div>
-                  {allocations.map((a, i) => (
-                    <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr auto auto",padding:"5px 10px",fontSize:11,borderTop:"1px solid #fef3c7",background:i%2===0?"#fff":"#fffbeb",gap:0 }}>
-                      <span style={{ fontWeight:600,color:"#1f2937" }}>{a.customer || a.customer_code || "—"}</span>
-                      <span style={{ textAlign:"right",fontWeight:700,fontFamily:"monospace" }}>{(a.qty||0).toLocaleString()}</span>
-                      <span style={{ textAlign:"right",color:"#6b7280",fontFamily:"monospace",paddingLeft:12,fontSize:10 }}>{a.po || a.po_number || "—"}</span>
-                    </div>
-                  ))}
+                  {openOrders.map((o, i) => {
+                    const rawCust = (o.customer || "").toUpperCase().trim();
+                    const custCode = rawCust.length <= 4 ? rawCust : rawCust.substring(0, 2);
+                    const custFull = CUSTOMER_CODES[custCode] || o.customerFull || custCode || "—";
+                    return (
+                      <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr auto auto",padding:"5px 10px",fontSize:11,borderTop:"1px solid #fef3c7",background:i%2===0?"#fff":"#fffbeb",gap:0 }}>
+                        <span style={{ fontWeight:600,color:"#1f2937" }}>{custFull}</span>
+                        <span style={{ textAlign:"right",color:"#6b7280",fontFamily:"monospace",fontSize:10 }}>{o.orderNo || o.ctrlNo || "—"}</span>
+                        <span style={{ textAlign:"right",fontWeight:700,fontFamily:"monospace",paddingLeft:12 }}>{(parseInt(o.openQty)||0).toLocaleString()}</span>
+                      </div>
+                    );
+                  })}
                   <div style={{ display:"grid",gridTemplateColumns:"1fr auto",padding:"5px 10px",fontSize:11,borderTop:"2px solid #fde68a",background:"#fefce8",fontWeight:700 }}>
-                    <span>APO Total</span>
-                    <span style={{ textAlign:"right",fontFamily:"monospace" }}>{allocTotal.toLocaleString()}</span>
+                    <span>A2000 Total</span>
+                    <span style={{ textAlign:"right",fontFamily:"monospace" }}>{openOrdersTotal.toLocaleString()}</span>
                   </div>
                 </>
               ) : (
-                <div style={{ padding:"8px 12px",fontSize:11,color:"#92400e",background:"#fffbeb",borderBottom:"1px solid #fde68a" }}>
-                  <span style={{ opacity:.7 }}>No APO allocation records — deductions sourced from A2000 (committed/allocated fields)</span>
+                <div style={{ padding:"7px 12px",fontSize:11,color:"#92400e",background:"#fffbeb",borderBottom:"1px solid #fde68a",fontStyle:"italic",opacity:.7 }}>
+                  {openOrdersData.length === 0 ? "Loading open orders…" : "No open orders found for this style"}
                 </div>
+              )}
+
+              {/* ── ALLOCATED: APO virtual warehouse ── */}
+              <div style={{ background:"#f5f3ff",padding:"5px 10px",fontSize:10,fontWeight:700,color:"#6d28d9",borderTop:"2px solid #fde68a",borderBottom:"1px solid #ede9fe",display:"flex",justifyContent:"space-between" }}>
+                <span>🏭 Allocated — Virtual Warehouse (APO)</span>
+                <span style={{ fontFamily:"monospace" }}>{allocated.toLocaleString()}</span>
+              </div>
+              {apoRows.length > 0 ? (
+                <>
+                  <div style={{ background:"#f5f3ff",padding:"3px 10px 2px",display:"grid",gridTemplateColumns:"1fr auto",fontSize:10,fontWeight:600,color:"#6d28d9",gap:0 }}>
+                    <span>Customer</span><span style={{ textAlign:"right" }}>Qty</span>
+                  </div>
+                  {Object.entries(apoByCustomer).map(([cust, qty], i) => (
+                    <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr auto",padding:"5px 10px",fontSize:11,borderTop:"1px solid #ede9fe",background:i%2===0?"#fff":"#f5f3ff",gap:0 }}>
+                      <span style={{ fontWeight:600,color:"#1f2937" }}>{CUSTOMER_CODES[cust] || cust}</span>
+                      <span style={{ textAlign:"right",fontWeight:700,fontFamily:"monospace",color:"#7c3aed" }}>-{qty.toLocaleString()}</span>
+                    </div>
+                  ))}
+                  {apoRows.length > 1 && (
+                    <div style={{ display:"grid",gridTemplateColumns:"1fr auto",padding:"5px 10px",fontSize:11,borderTop:"2px solid #ede9fe",background:"#f5f3ff",fontWeight:700 }}>
+                      <span style={{ color:"#6d28d9" }}>VW Total</span>
+                      <span style={{ textAlign:"right",fontFamily:"monospace",color:"#6d28d9" }}>-{apoTotal.toLocaleString()}</span>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ padding:"7px 12px",fontSize:11,color:"#6d28d9",background:"#f5f3ff",borderBottom:"1px solid #ede9fe",fontStyle:"italic",opacity:.7 }}>
+                  {apoData.length === 0 ? "Loading APO data…" : "No virtual warehouse allocations for this style"}
+                </div>
+              )}
+
+              {/* Manual holds */}
+              {manualHolds.length > 0 && (
+                <>
+                  <div style={{ background:"#fff7ed",padding:"5px 10px",fontSize:10,fontWeight:700,color:"#92400e",borderTop:"2px solid #fde68a",borderBottom:"1px solid #fed7aa" }}>
+                    🔒 Manual Holds
+                  </div>
+                  {manualHolds.map((a, i) => (
+                    <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr auto auto",padding:"5px 10px",fontSize:11,borderTop:"1px solid #fed7aa",background:i%2===0?"#fff":"#fff7ed",gap:0 }}>
+                      <span style={{ fontWeight:600,color:"#1f2937" }}>{a.customer || a.customer_code || "—"}</span>
+                      <span style={{ textAlign:"right",color:"#6b7280",fontFamily:"monospace",fontSize:10 }}>{a.po || a.po_number || "—"}</span>
+                      <span style={{ textAlign:"right",fontWeight:700,fontFamily:"monospace",paddingLeft:12 }}>{(a.qty||0).toLocaleString()}</span>
+                    </div>
+                  ))}
+                </>
               )}
 
               {/* Production Orders waterfall — shows per-PO deduction same as main catalog */}
@@ -1090,6 +1166,8 @@ export default function VersaInventoryApp() {
   const [productionData, setProductionData] = useState([]);
   const [colorMap, setColorMap] = useState({});
   const [allocationData, setAllocationData] = useState([]);
+  const [apoData, setApoData] = useState([]);
+  const [openOrdersData, setOpenOrdersData] = useState([]);
   const [showExport, setShowExport] = useState(false);
 
   const allItems = useMemo(() => {
@@ -1191,7 +1269,7 @@ export default function VersaInventoryApp() {
     };
     loadColorMap();
 
-    // Load allocation data (virtual warehouse)
+    // Load allocation data (virtual warehouse manual holds)
     const loadAllocations = async () => {
       try {
         const resp = await fetch(`${API_URL}/allocations`);
@@ -1202,6 +1280,30 @@ export default function VersaInventoryApp() {
       } catch (e) { console.warn("Allocations unavailable:", e.message); }
     };
     loadAllocations();
+
+    // Load APO data (virtual warehouse customer allocations)
+    const loadApo = async () => {
+      try {
+        const resp = await fetch(`${API_URL}/apo`);
+        if (!resp.ok) return;
+        const json = await resp.json();
+        setApoData(json.apo || []);
+        console.log("✓ APO data loaded:", (json.apo || []).length, "rows");
+      } catch (e) { console.warn("APO data unavailable:", e.message); }
+    };
+    loadApo();
+
+    // Load open orders (A2000 committed PO breakdown)
+    const loadOpenOrders = async () => {
+      try {
+        const resp = await fetch(`${ORDERS_API_URL}/api/orders`, { signal: AbortSignal.timeout(12000) });
+        if (!resp.ok) return;
+        const json = await resp.json();
+        setOpenOrdersData(json.orders || []);
+        console.log("✓ Open orders loaded:", (json.orders || []).length, "rows");
+      } catch (e) { console.warn("Open orders unavailable:", e.message); }
+    };
+    loadOpenOrders();
 
     // Auto-refresh inventory every 5 minutes
     const refreshInterval = setInterval(async () => {
@@ -1616,7 +1718,7 @@ export default function VersaInventoryApp() {
 
       {/* ─── MODALS ────────────────────────── */}
       {selectedItem && (
-        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} colorMap={colorMap} allocationData={allocationData} />
+        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} colorMap={colorMap} allocationData={allocationData} apoData={apoData} openOrdersData={openOrdersData} />
       )}
       {showCart && (
         <CartModal cart={cart} onClose={() => setShowCart(false)}
