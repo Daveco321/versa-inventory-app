@@ -957,7 +957,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
             <div onClick={() => setShowAllocations(!showAllocations)}
               style={{ background:"#fefce8",padding:8,borderRadius:8,cursor:"pointer",border:showAllocations ? "2px solid #f59e0b" : "2px solid transparent",transition:"border .15s" }}>
               <p style={{ fontSize:10,color:"#a16207",fontWeight:600 }}>
-                Committed & Allocated <span style={{ fontSize:9,color:"#d97706" }}>{showAllocations ? "▲" : "▼"} details</span>
+                Deductions & Production <span style={{ fontSize:9,color:"#d97706" }}>{showAllocations ? "▲" : "▼"} details</span>
               </p>
               <p style={{ fontSize:16,fontWeight:800 }}>{(committed + allocated).toLocaleString()}</p>
               {committed > 0 && allocated > 0 && (
@@ -1304,8 +1304,9 @@ function formatDateShort(d) {
 
 function getProductionForSku(sku, prodData) {
   if (!sku || !prodData || prodData.length === 0) return [];
-  const skuUpper = sku.toUpperCase();
-  return prodData.filter(p => p.style === skuUpper);
+  // Strip size suffix (e.g. TMNAPY201SLB-15-15.5/32-33 → TMNAPY201SLB), then uppercase — mirrors main catalog exactly
+  const skuUpper = sku.split("-")[0].toUpperCase();
+  return prodData.filter(p => (p.style || "").split("-")[0].toUpperCase() === skuUpper);
 }
 
 function getEarliestDates(sku, prodData) {
