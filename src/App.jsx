@@ -218,21 +218,21 @@ function getDetailedCategory(sku, brandAbbr) {
 function classifyColor(colorDisplay, brandAbbr) {
   if (!colorDisplay) return "fancies";
   const c = colorDisplay.trim().toLowerCase();
-  // Disqualifiers: print/prnt/grnd/stripe → always fancies
-  const _hasPrint = /\bprint\b|\bprnt\b|\bgrnd\b|\bstripe\b|\bstripes\b/.test(c);
-  // Navy: "navy solid" as adjacent words anywhere (e.g. "New Navy Solid" counts)
-  if (!_hasPrint && /\bnavy\s+solid\b/.test(c)) return "navy";
-  // White/Black: must be exactly "[color] solid"
-  const exactMatch = c.match(/^(\S+)\s+solid$/);
+  // Disqualifiers: presence of any of these forces fancies regardless of solid/sld
+  const _hasPrint = /\bprint\b|\bprnt\b|\bgrnd\b|\bstripe\b|\bstripes\b|\bgeo\b|\bcheck\b/.test(c);
+  // Navy: "navy solid" or "navy sld" as adjacent words anywhere
+  if (!_hasPrint && /\bnavy\s+s(?:olid|ld)\b/.test(c)) return "navy";
+  // White/Black exact: "[color] solid" or "[color] sld" — nothing before or after
+  const exactMatch = c.match(/^(\S+)\s+s(?:olid|ld)$/);
   if (exactMatch && !_hasPrint) {
     const base = exactMatch[1];
     if (base === "white") return "white";
     if (base === "black") return "black";
     return "other_solids";
   }
-  // USPA: "[color] solid" at the start counts even with trailing text
+  // USPA: "[color] solid/sld" at the start counts even with trailing text
   if ((brandAbbr || "").toUpperCase() === "USPA" && !_hasPrint) {
-    const uspaMatch = c.match(/^(\S+)\s+solid/);
+    const uspaMatch = c.match(/^(\S+)\s+s(?:olid|ld)/);
     if (uspaMatch) {
       const base = uspaMatch[1];
       if (base === "white" || base === "ivory" || base === "cream") return "white";
@@ -240,8 +240,8 @@ function classifyColor(colorDisplay, brandAbbr) {
       return "other_solids";
     }
   }
-  // Other Solids: anything containing "solid" but not print/stripe
-  if (!_hasPrint && /\bsolid\b/.test(c)) return "other_solids";
+  // Other Solids: contains "solid" or "sld" anywhere, no disqualifiers
+  if (!_hasPrint && /\bs(?:olid|ld)\b/.test(c)) return "other_solids";
   return "fancies";
 }
 
