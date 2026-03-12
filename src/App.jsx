@@ -174,6 +174,46 @@ function rebuildBrands(inventory, filterMode = "all") {
   return brands;
 }
 
+// ─── Product Category Helpers (mirrors main catalog) ─────────
+const SPORTSWEAR_COLLARS = new Set(["Z","U","M","N","O","R"]);
+const SHORT_SLEEVE_FIT_CODES = new Set(["SS","SR","SB","ST"]);
+const BT_FIT_CODES = new Set(["BT","BB","TT","SB","ST"]);
+
+function isBigAndTall(sku) {
+  if (!sku) return false;
+  const base = sku.split("-")[0].toUpperCase();
+  if (base.length < 11) return false;
+  return BT_FIT_CODES.has(base.substring(9, 11));
+}
+
+function isShortSleeve(sku) {
+  if (!sku) return false;
+  const base = sku.split("-")[0].toUpperCase();
+  if (base.length < 11) return false;
+  return SHORT_SLEEVE_FIT_CODES.has(base.substring(9, 11));
+}
+
+function getItemCategory(sku, brandAbbr) {
+  if (!sku) return "shirts";
+  const base = sku.split("-")[0].toUpperCase();
+  // Pants: position 6 is 'P' followed by 2 digits, position 9 is a letter
+  if (base.length >= 10 && base[6] === "P" && /\d/.test(base[7]) && /\d/.test(base[8]) && /[A-Z]/.test(base[9])) return "pants";
+  if (base.length >= 11 && SPORTSWEAR_COLLARS.has(base.slice(-1))) return "sportswear";
+  const brand = (brandAbbr || "").toUpperCase();
+  if (brand === "CHAPS" && base.startsWith("CTH")) return "accessories";
+  if (brand === "SHAQ" && base.length >= 3 && /T/.test(base.slice(0, 3))) return "accessories";
+  return "shirts";
+}
+
+function getDetailedCategory(sku, brandAbbr) {
+  const base = getItemCategory(sku, brandAbbr);
+  if (base === "pants") return "pants";
+  if (base === "sportswear") return "sportswear";
+  if (base === "accessories") return "accessories";
+  if (isBigAndTall(sku)) return "big_tall";
+  return isShortSleeve(sku) ? "short_sleeve" : "long_sleeve";
+}
+
 // ─── Color Classification (mirrors main catalog) ──────────────
 function classifyColor(colorDisplay, brandAbbr) {
   if (!colorDisplay) return "fancies";
@@ -409,15 +449,35 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap }) {
   const fit = getFitFromSKU(item.sku);
   const ats = item.total_ats || 0;
   const isOverseas = filterMode === "incoming";
-  const dates = isOverseas ? getEarliestDates(item.sku, prodData) : null;
   const atsLabel = isOverseas ? "Overseas ATS" : filterMode === "ats" ? "WH ATS" : "ATS";
   const atsColor = ats > 0 ? (isOverseas ? "#d97706" : "#16a34a") : "#dc2626";
   const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap);
+  const [prodOpen, setProdOpen] = useState(false);
+
+  // Production data
+  const prods = getEarliestDates(item.sku, prodData).productions;
+  const hasProd = prods.length > 0;
+  const totalProdUnits = prods.reduce((s, p) => s + (p.units || 0), 0);
+  const nearestArrival = prods.length > 0 ? prods[0].arrival : null; // already sorted soonest first
+
+  // Category badges
+  const itemCat = getItemCategory(item.sku, item.brand_abbr || item.brand);
+  const isSS = isShortSleeve(item.sku) && !isBigAndTall(item.sku);
+  const isBT = isBigAndTall(item.sku);
+
   return (
     <div onClick={onClick} className="product-card" style={{ background:"#fff",borderRadius:14,overflow:"hidden",border: isOverseas ? "2px solid #fcd34d" : "2px solid #e5e7eb" }}>
       <div style={{ position:"relative",overflow:"hidden" }}>
         <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ width:"100%",height:220,objectFit:"cover",background:"#f3f4f6" }} />
         {isOverseas && <span style={{ position:"absolute",top:8,right:8,background:"rgba(217,119,6,.9)",color:"#fff",padding:"3px 8px",borderRadius:8,fontSize:10,fontWeight:700 }}>🚢 Overseas</span>}
+        {/* Category badges — bottom of image */}
+        {isSS && <span style={{ position:"absolute",bottom:8,left:8,background:"rgba(14,165,233,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>SHORT SLEEVE</span>}
+        {isBT && <span style={{ position:"absolute",bottom: isSS ? 30 : 8,left:8,background:"rgba(124,58,237,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>BIG & TALL</span>}
+        {itemCat === "pants" && <span style={{ position:"absolute",bottom:8,right:8,background:"rgba(107,114,128,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>PANTS</span>}
+        {itemCat === "sportswear" && <span style={{ position:"absolute",bottom:8,right:8,background:"rgba(234,88,12,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>SPORTSWEAR</span>}
+        {itemCat === "accessories" && <span style={{ position:"absolute",bottom:8,right:8,background:"rgba(168,85,247,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>
+          {(item.brand_abbr||item.brand||"").toUpperCase() === "SHAQ" ? "TIE & SHIRT" : "TIE & HANKY"}
+        </span>}
       </div>
       <div style={{ padding:"12px 14px" }}>
         <h3 style={{ fontSize:15,fontWeight:700,color:"#1f2937",marginBottom:2 }}>{item.sku}</h3>
@@ -432,19 +492,36 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap }) {
           </p>
         )}
         <p style={{ fontSize:11,color:"#9ca3af",marginBottom:8 }}>{fit} · {fabric.description.length > 30 ? fabric.description.substring(0,28)+"..." : fabric.description}</p>
-        {/* Dates row for overseas */}
-        {isOverseas && dates && (dates.ex_factory || dates.arrival) && (
-          <div style={{ display:"flex",gap:6,marginBottom:8 }}>
-            <div style={{ flex:1,background:"#fffbeb",padding:"5px 8px",borderRadius:6,textAlign:"center" }}>
-              <p style={{ fontSize:9,color:"#92400e",fontWeight:600 }}>Ex-Factory</p>
-              <p style={{ fontSize:11,fontWeight:700,color:"#78350f" }}>{formatDateShort(dates.ex_factory)}</p>
+
+        {/* Production badge — matches main catalog */}
+        {hasProd && (
+          <div style={{ marginBottom:8 }} onClick={e => { e.stopPropagation(); setProdOpen(o => !o); }}>
+            <div style={{ display:"flex",alignItems:"center",gap:6,background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:prodOpen ? "8px 8px 0 0" : 8,padding:"5px 10px",cursor:"pointer",fontSize:11,color:"#166534",transition:"all .2s" }}>
+              <span>🏭</span>
+              <span style={{ fontWeight:700 }}>In Production</span>
+              <span style={{ color:"#16a34a",fontWeight:600 }}>{nearestArrival ? formatDateShort(nearestArrival) : "—"}</span>
+              <span style={{ marginLeft:"auto",fontWeight:700,color:"#15803d" }}>{totalProdUnits.toLocaleString()} units</span>
+              <span style={{ fontSize:10,transition:"transform .2s",transform: prodOpen ? "rotate(180deg)" : "none" }}>▼</span>
             </div>
-            <div style={{ flex:1,background:"#ecfeff",padding:"5px 8px",borderRadius:6,textAlign:"center" }}>
-              <p style={{ fontSize:9,color:"#0e7490",fontWeight:600 }}>Est. Arrival</p>
-              <p style={{ fontSize:11,fontWeight:700,color:"#164e63" }}>{formatDateShort(dates.arrival)}</p>
-            </div>
+            {prodOpen && (
+              <div style={{ background:"#f9fffe",border:"1px solid #bbf7d0",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"8px 10px",fontSize:11 }}>
+                {prods.map((p, i) => (
+                  <div key={i} style={{ ...(i > 0 ? { borderTop:"1px solid #dcfce7",paddingTop:7,marginTop:7 } : {}) }}>
+                    <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4 }}>
+                      <span style={{ fontWeight:700,color:"#15803d",fontSize:12 }}>{(p.units||0).toLocaleString()} units</span>
+                    </div>
+                    <div style={{ display:"flex",alignItems:"center",gap:5,fontSize:10,color:"#6b7280" }}>
+                      <span style={{ background:"#dcfce7",color:"#166534",fontWeight:600,padding:"1px 6px",borderRadius:99 }}>Ex-Factory {formatDateShort(p.etd) || "—"}</span>
+                      <span style={{ color:"#9ca3af" }}>→</span>
+                      <span style={{ background:"#dcfce7",color:"#166534",fontWeight:600,padding:"1px 6px",borderRadius:99 }}>Arrival {formatDateShort(p.arrival) || "—"}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
+
         <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center" }}>
           <span style={{ fontSize:13,fontWeight:700,color:atsColor }}>
             {ats > 0 ? `${ats.toLocaleString()} ${atsLabel}` : "Out of Stock"}
@@ -1268,6 +1345,7 @@ export default function VersaInventoryApp() {
   const [apoData, setApoData] = useState([]);
   const [openOrdersData, setOpenOrdersData] = useState([]);
   const [showColorSummary, setShowColorSummary] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState("all");
   const [showExport, setShowExport] = useState(false);
 
   const allItems = useMemo(() => {
@@ -1456,6 +1534,7 @@ export default function VersaInventoryApp() {
     setFitFilter([]); 
     setFabricFilter([]);
     setShowColorSummary(false);
+    setCategoryFilter("all");
     window.history.pushState({ view: "inventory", brand: brandKey }, "", `#brand-${brandKey}`);
     // Preload images for this brand
     const b = brands[brandKey];
@@ -1543,6 +1622,10 @@ export default function VersaInventoryApp() {
   const filteredItems = useMemo(() => {
     if (!brandData) return [];
     let items = [...brandData.items];
+    // Category filter
+    if (categoryFilter !== "all") {
+      items = items.filter(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand) === categoryFilter);
+    }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       items = items.filter(i => i.sku?.toLowerCase().includes(q));
@@ -1575,7 +1658,7 @@ export default function VersaInventoryApp() {
       return db - da;
     });
     return items;
-  }, [brandData, searchQuery, fitFilter, fabricFilter, sortBy, productionData]);
+  }, [brandData, categoryFilter, searchQuery, fitFilter, fabricFilter, sortBy, productionData]);
 
   // Get unique fits/fabrics for filters
   const availableFits = useMemo(() => {
@@ -1771,12 +1854,28 @@ export default function VersaInventoryApp() {
                   {filterMode === "incoming" && <option value="arrival-asc">📅 Arriving Earliest</option>}
                   {filterMode === "incoming" && <option value="arrival-desc">📅 Arriving Latest</option>}
                 </select>
+                <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
+                  style={{ padding:"10px 14px",borderRadius:10,border:"2px solid #334155",background:"#1e293b",color:"#e2e8f0",fontSize:13,fontWeight:600,cursor:"pointer" }}>
+                  <option value="all">All Products</option>
+                  <option value="long_sleeve">👔 Long Sleeve Shirts</option>
+                  <option value="short_sleeve">👕 Short Sleeve Shirts</option>
+                  <option value="big_tall">🧢 Big &amp; Tall</option>
+                  <option value="pants">👖 Dress Pants</option>
+                  <option value="sportswear">🏋️ Sportswear</option>
+                  <option value="accessories">🎀 Ties &amp; Accessories</option>
+                </select>
               </div>
 
 
 
               <p style={{ fontSize:12,color:"#64748b",marginTop:10,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
                 Showing <strong style={{ color:"#e2e8f0" }}>{filteredItems.length}</strong> of {brandData.items.length} styles
+                {categoryFilter !== "all" && (
+                  <span style={{ display:"inline-flex",alignItems:"center",gap:4,background:"rgba(99,102,241,.15)",color:"#818cf8",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,border:"1px solid rgba(99,102,241,.3)" }}>
+                    {{ long_sleeve:"👔 Long Sleeve",short_sleeve:"👕 Short Sleeve",big_tall:"🧢 Big & Tall",pants:"👖 Pants",sportswear:"🏋️ Sportswear",accessories:"🎀 Accessories" }[categoryFilter]}
+                    <button onClick={() => setCategoryFilter("all")} style={{ background:"none",border:"none",color:"#818cf8",cursor:"pointer",fontSize:12,padding:0,lineHeight:1,marginLeft:2 }}>✕</button>
+                  </span>
+                )}
                 {filterMode !== "all" && (
                   <span style={{
                     display:"inline-flex",alignItems:"center",gap:4,
