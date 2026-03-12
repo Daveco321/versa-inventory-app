@@ -136,13 +136,26 @@ function rebuildBrands(inventory, filterMode = "all") {
       if (sell <= 0) return null;
       return { ...item, total_ats: sell, total_warehouse: wh, incoming: 0, _display_mode:"ats" };
     }).filter(Boolean);
+  } else {
+    // "all" mode: recalculate total_ats client-side (matches main catalog formula)
+    // warehouse + incoming - committed - allocated (allows negative for over-allocated)
+    source = source.map(item => {
+      const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+      const incoming = item.incoming || 0;
+      const committed = Math.abs(item.committed||0);
+      const allocated = Math.abs(item.allocated||0);
+      const total_ats = wh + incoming - committed - allocated;
+      return { ...item, total_ats, total_warehouse: wh };
+    });
   }
 
   source.forEach(item => {
     if (!item.sku) return;
     let brand = item.brand || "UNKNOWN";
     const skuUp = item.sku.toUpperCase();
-    if (skuUp.startsWith("LUCK")) brand = "LUCKY";
+    // VP prefix = Versa Group Purchase — always VERSA (matches main catalog)
+    if (skuUp.startsWith("VP")) brand = "VERSA";
+    else if (skuUp.startsWith("LUCK")) brand = "LUCKY";
     else if (item.sku.length >= 4) {
       const code = item.sku.substring(2,4).toUpperCase();
       if (SKU_BRAND_CODE_MAP[code]) brand = SKU_BRAND_CODE_MAP[code];
@@ -740,14 +753,19 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
             ))}
           </div>
 
-          {/* Committed & Incoming */}
+          {/* Committed & Incoming row */}
           <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12 }}>
-            <div onClick={() => allocations.length > 0 && setShowAllocations(!showAllocations)}
-              style={{ background:"#fefce8",padding:8,borderRadius:8,cursor:allocations.length > 0 ? "pointer" : "default",border:showAllocations ? "2px solid #f59e0b" : "2px solid transparent",transition:"border .15s" }}>
+            <div onClick={() => setShowAllocations(!showAllocations)}
+              style={{ background:"#fefce8",padding:8,borderRadius:8,cursor:"pointer",border:showAllocations ? "2px solid #f59e0b" : "2px solid transparent",transition:"border .15s" }}>
               <p style={{ fontSize:10,color:"#a16207",fontWeight:600 }}>
-                Committed & Allocated {allocations.length > 0 && <span style={{ fontSize:9,color:"#d97706" }}>▼ tap</span>}
+                Committed & Allocated <span style={{ fontSize:9,color:"#d97706" }}>{showAllocations ? "▲" : "▼"} details</span>
               </p>
-              <p style={{ fontSize:16,fontWeight:800 }}>{((item.committed||0)+(item.allocated||0)).toLocaleString()}</p>
+              <p style={{ fontSize:16,fontWeight:800 }}>{(Math.abs(item.committed||0)+Math.abs(item.allocated||0)).toLocaleString()}</p>
+              {item.committed !== 0 && item.allocated !== 0 && (
+                <p style={{ fontSize:9,color:"#92400e",marginTop:2 }}>
+                  Committed: {Math.abs(item.committed||0).toLocaleString()} · Allocated: {Math.abs(item.allocated||0).toLocaleString()}
+                </p>
+              )}
             </div>
             <div style={{ background:"#ecfeff",padding:8,borderRadius:8 }}>
               <p style={{ fontSize:10,color:"#0e7490",fontWeight:600 }}>Incoming</p>
@@ -755,33 +773,100 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
             </div>
           </div>
 
-          {/* Allocation Breakdown (expandable) */}
-          {showAllocations && allocations.length > 0 && (
-            <div style={{ marginBottom:12 }}>
-              <div style={{ background:"#92400e",color:"#fff",padding:6,borderRadius:"8px 8px 0 0",textAlign:"center",fontWeight:700,fontSize:11 }}>
-                Allocation Breakdown ({allocations.length} record{allocations.length > 1 ? "s" : ""})
+          {/* ── DEDUCTIONS BREAKDOWN ── expanded view matching main catalog */}
+          {showAllocations && (
+            <div style={{ marginBottom:12,border:"1px solid #fde68a",borderRadius:10,overflow:"hidden" }}>
+              {/* Header */}
+              <div style={{ background:"#92400e",color:"#fff",padding:"8px 12px",display:"flex",justifyContent:"space-between",alignItems:"center" }}>
+                <span style={{ fontWeight:700,fontSize:12 }}>📋 Deductions Breakdown</span>
+                <span style={{ fontSize:11,opacity:.8 }}>Total: {(Math.abs(item.committed||0)+Math.abs(item.allocated||0)).toLocaleString()} units</span>
               </div>
-              <div style={{ border:"1px solid #fde68a",borderTop:"none",borderRadius:"0 0 8px 8px",overflow:"hidden" }}>
-                <div style={{ display:"grid",gridTemplateColumns:"1fr auto auto",gap:0,background:"#fefce8",padding:"4px 8px",fontSize:10,fontWeight:600,color:"#92400e" }}>
-                  <span>Customer</span><span style={{ textAlign:"right" }}>Qty</span><span style={{ textAlign:"right",paddingLeft:8 }}>PO #</span>
-                </div>
-                {allocations.map((a, i) => (
-                  <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr auto auto",gap:0,padding:"5px 8px",fontSize:11,borderTop:"1px solid #fef3c7",background:i%2===0?"#fff":"#fffbeb" }}>
-                    <span style={{ fontWeight:600,color:"#1f2937" }}>{a.customer}</span>
-                    <span style={{ textAlign:"right",fontWeight:700,fontFamily:"monospace" }}>{a.qty.toLocaleString()}</span>
-                    <span style={{ textAlign:"right",color:"#6b7280",fontFamily:"monospace",paddingLeft:8 }}>{a.po}</span>
+
+              {/* APO / Virtual Warehouse Allocations */}
+              {allocations.length > 0 ? (
+                <>
+                  <div style={{ background:"#fffbeb",padding:"5px 10px",fontSize:10,fontWeight:700,color:"#92400e",borderBottom:"1px solid #fde68a" }}>
+                    🏭 APO Allocations ({allocations.length} record{allocations.length > 1 ? "s" : ""})
                   </div>
-                ))}
-                <div style={{ display:"grid",gridTemplateColumns:"1fr auto",padding:"5px 8px",fontSize:11,borderTop:"2px solid #fde68a",background:"#fefce8",fontWeight:700 }}>
-                  <span>Total</span>
-                  <span style={{ textAlign:"right",fontFamily:"monospace" }}>{allocTotal.toLocaleString()}</span>
+                  <div style={{ background:"#fefce8",padding:"3px 10px 2px",display:"grid",gridTemplateColumns:"1fr auto auto",fontSize:10,fontWeight:600,color:"#a16207",gap:0 }}>
+                    <span>Customer</span><span style={{ textAlign:"right" }}>Qty</span><span style={{ textAlign:"right",paddingLeft:12 }}>PO #</span>
+                  </div>
+                  {allocations.map((a, i) => (
+                    <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr auto auto",padding:"5px 10px",fontSize:11,borderTop:"1px solid #fef3c7",background:i%2===0?"#fff":"#fffbeb",gap:0 }}>
+                      <span style={{ fontWeight:600,color:"#1f2937" }}>{a.customer || a.customer_code || "—"}</span>
+                      <span style={{ textAlign:"right",fontWeight:700,fontFamily:"monospace" }}>{(a.qty||0).toLocaleString()}</span>
+                      <span style={{ textAlign:"right",color:"#6b7280",fontFamily:"monospace",paddingLeft:12,fontSize:10 }}>{a.po || a.po_number || "—"}</span>
+                    </div>
+                  ))}
+                  <div style={{ display:"grid",gridTemplateColumns:"1fr auto",padding:"5px 10px",fontSize:11,borderTop:"2px solid #fde68a",background:"#fefce8",fontWeight:700 }}>
+                    <span>APO Total</span>
+                    <span style={{ textAlign:"right",fontFamily:"monospace" }}>{allocTotal.toLocaleString()}</span>
+                  </div>
+                </>
+              ) : (
+                <div style={{ padding:"8px 12px",fontSize:11,color:"#92400e",background:"#fffbeb",borderBottom:"1px solid #fde68a" }}>
+                  <span style={{ opacity:.7 }}>No APO allocation records — deductions sourced from A2000 (committed/allocated fields)</span>
                 </div>
-              </div>
+              )}
+
+              {/* Production Orders waterfall — shows per-PO deduction same as main catalog */}
+              {prods.length > 0 && (() => {
+                // Mirror main catalog waterfall logic: deduct from productions FIFO
+                const totalDed = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
+                const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+                const incoming = item.incoming||0;
+                let overseasDed = 0;
+                if (totalDed > 0) {
+                  if (wh <= 0) overseasDed = totalDed;
+                  else if (incoming > 0) {
+                    const neg = (wh - totalDed) < 0;
+                    const covers = incoming >= totalDed;
+                    const margin = totalDed > wh && Math.abs(incoming - totalDed) <= totalDed * 0.05;
+                    if (margin || (neg && covers)) overseasDed = totalDed;
+                  }
+                }
+                let remaining = overseasDed;
+                const prodRows = [...prods].sort((a,b)=>(a.arrival||new Date("2099"))-(b.arrival||new Date("2099"))).map(p => {
+                  const ded = Math.min(remaining, p.units||0);
+                  const flowAts = (p.units||0) - ded;
+                  remaining -= ded;
+                  return { ...p, deducted: ded, flowAts };
+                });
+                const totalProduced = prodRows.reduce((s,p)=>s+(p.units||0),0);
+                return (
+                  <>
+                    <div style={{ background:"#166534",color:"#fff",padding:"5px 10px",fontSize:10,fontWeight:700,borderTop:"1px solid #fde68a",display:"flex",justifyContent:"space-between" }}>
+                      <span>🏭 Production Orders ({prods.length} PO{prods.length>1?"s":""}) · {totalProduced.toLocaleString()} total units</span>
+                      {overseasDed > 0 && <span style={{ opacity:.8 }}>Overseas deduction: {overseasDed.toLocaleString()}</span>}
+                    </div>
+                    {/* Table header */}
+                    <div style={{ display:"grid",gridTemplateColumns:"1.6fr 1.8fr auto auto auto",padding:"4px 10px",background:"#f0fdf4",fontSize:9,fontWeight:700,color:"#166534",gap:4,borderBottom:"1px solid #dcfce7" }}>
+                      <span>Prod #</span><span>PO Name</span><span style={{ textAlign:"right" }}>Units</span><span style={{ textAlign:"right" }}>Ded</span><span style={{ textAlign:"right" }}>ATS</span>
+                    </div>
+                    {prodRows.map((p, i) => (
+                      <div key={i} style={{ background:i%2===0?"#fff":"#f9fafb",borderBottom:"1px solid #dcfce7" }}>
+                        <div style={{ display:"grid",gridTemplateColumns:"1.6fr 1.8fr auto auto auto",padding:"5px 10px",fontSize:10,gap:4,alignItems:"center" }}>
+                          <span style={{ fontFamily:"monospace",fontWeight:700,color:"#1f2937",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>{p.production||"—"}</span>
+                          <span style={{ color:"#374151",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }} title={p.poName}>{p.poName||"—"}</span>
+                          <span style={{ textAlign:"right",fontFamily:"monospace",fontWeight:700 }}>{(p.units||0).toLocaleString()}</span>
+                          <span style={{ textAlign:"right",fontFamily:"monospace",color:p.deducted>0?"#dc2626":"#9ca3af" }}>{p.deducted>0?`-${p.deducted.toLocaleString()}`:"—"}</span>
+                          <span style={{ textAlign:"right",fontFamily:"monospace",fontWeight:800,color:"#166534" }}>{p.flowAts.toLocaleString()}</span>
+                        </div>
+                        {/* Dates sub-row */}
+                        <div style={{ display:"flex",gap:8,padding:"2px 10px 5px",fontSize:9,color:"#6b7280" }}>
+                          <span>📦 Ex-Fac: <strong style={{ color:"#92400e" }}>{formatDateShort(p.etd)}</strong></span>
+                          <span>🚢 Arrival: <strong style={{ color:"#166534" }}>{formatDateShort(p.arrival)}</strong></span>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                );
+              })()}
             </div>
           )}
 
           {/* Shipment Dates (always show if available, highlighted in overseas mode) */}
-          {(dates.ex_factory || dates.arrival) && (
+          {!showAllocations && (dates.ex_factory || dates.arrival) && (
             <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12 }}>
               <div style={{ background: isOverseas ? "#fffbeb" : "#f9fafb",padding:8,borderRadius:8,textAlign:"center",border: isOverseas ? "1px solid #fcd34d" : "none" }}>
                 <p style={{ fontSize:10,color:"#92400e",fontWeight:600 }}>🚢 Ex-Factory</p>
@@ -790,34 +875,6 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
               <div style={{ background: isOverseas ? "#ecfeff" : "#f9fafb",padding:8,borderRadius:8,textAlign:"center",border: isOverseas ? "1px solid #a5f3fc" : "none" }}>
                 <p style={{ fontSize:10,color:"#0e7490",fontWeight:600 }}>📅 Est. Arrival</p>
                 <p style={{ fontSize:14,fontWeight:800,color:"#164e63" }}>{formatDateShort(dates.arrival)}</p>
-              </div>
-            </div>
-          )}
-
-          {/* Production / PO Table */}
-          {prods.length > 0 && (
-            <div style={{ marginBottom:12 }}>
-              <div style={{ background:"#166534",color:"#fff",padding:6,borderRadius:"8px 8px 0 0",textAlign:"center",fontWeight:700,fontSize:11 }}>
-                Shipment Details ({prods.length} PO{prods.length > 1 ? "s" : ""}) · {prods.reduce((s,p)=>s+p.units,0).toLocaleString()} total units
-              </div>
-              <div style={{ border:"1px solid #dcfce7",borderTop:"none",borderRadius:"0 0 8px 8px",overflow:"hidden" }}>
-                {prods.map((p, i) => (
-                  <div key={i} style={{ padding:"7px 10px",borderTop:i>0?"1px solid #dcfce7":"none",background:i%2===0?"#fff":"#f9fafb" }}>
-                    {/* Row 1: Production # + Units */}
-                    <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3 }}>
-                      <span style={{ fontWeight:700,fontFamily:"monospace",fontSize:12,color:"#1f2937" }}>{p.production || "—"}</span>
-                      <span style={{ fontWeight:800,fontFamily:"monospace",fontSize:12,color:"#166534",background:"#dcfce7",padding:"1px 8px",borderRadius:4 }}>{(p.units||0).toLocaleString()} units</span>
-                    </div>
-                    {/* Row 2: PO Name + Dates */}
-                    <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",gap:8 }}>
-                      <span style={{ fontSize:11,color:"#374151",flex:1,wordBreak:"break-word" }}>{p.poName || "—"}</span>
-                      <div style={{ display:"flex",gap:6,flexShrink:0 }}>
-                        <span style={{ fontSize:10,color:"#92400e",background:"#fffbeb",padding:"1px 6px",borderRadius:4 }}>📦 {formatDateShort(p.etd)}</span>
-                        <span style={{ fontSize:10,color:"#166534",background:"#ecfdf5",padding:"1px 6px",borderRadius:4,fontWeight:600 }}>🚢 {formatDateShort(p.arrival)}</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
               </div>
             </div>
           )}
