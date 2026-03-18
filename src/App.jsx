@@ -178,6 +178,8 @@ function rebuildBrands(inventory, filterMode = "all") {
 const SPORTSWEAR_COLLARS = new Set(["Z","U","M","N","O","R"]);
 const SHORT_SLEEVE_FIT_CODES = new Set(["SS","SR","SB","ST"]);
 const BT_FIT_CODES = new Set(["BT","BB","TT","SB","ST"]);
+// Young Men fabric codes — positions 4-5 of base SKU (mirrors main catalog)
+const YOUNG_MEN_FABRIC_CODES = new Set(["KN","WT","SD","SF","SB","SL","BC","BR","BH","BA","CO","TH","PO","PW","PJ","PH","PL","HE"]);
 
 function isBigAndTall(sku) {
   if (!sku) return false;
@@ -186,10 +188,19 @@ function isBigAndTall(sku) {
   return BT_FIT_CODES.has(base.substring(9, 11));
 }
 
+function isYoungMen(sku) {
+  if (!sku) return false;
+  const base = sku.split("-")[0].toUpperCase();
+  if (base.length < 6) return false;
+  return YOUNG_MEN_FABRIC_CODES.has(base.substring(4, 6));
+}
+
 function isShortSleeve(sku) {
   if (!sku) return false;
   const base = sku.split("-")[0].toUpperCase();
   if (base.length < 11) return false;
+  // Pants can never be short sleeve — fit code collision (e.g. SR) doesn't apply to pants
+  if (getItemCategory(sku) === "pants") return false;
   return SHORT_SLEEVE_FIT_CODES.has(base.substring(9, 11));
 }
 
@@ -210,6 +221,7 @@ function getDetailedCategory(sku, brandAbbr) {
   if (base === "pants") return "pants";
   if (base === "sportswear") return "sportswear";
   if (base === "accessories") return "accessories";
+  if (isYoungMen(sku)) return "young_men";
   if (isBigAndTall(sku)) return "big_tall";
   return isShortSleeve(sku) ? "short_sleeve" : "long_sleeve";
 }
@@ -571,9 +583,9 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap }) {
   const totalProdUnits = prods.reduce((s, p) => s + (p.units || 0), 0);
   const nearestArrival = prods.length > 0 ? prods[0].arrival : null; // already sorted soonest first
 
-  // Category badges
   const itemCat = getItemCategory(item.sku, item.brand_abbr || item.brand);
-  const isSS = isShortSleeve(item.sku) && !isBigAndTall(item.sku);
+  const isYM = isYoungMen(item.sku);
+  const isSS = isShortSleeve(item.sku) && !isBigAndTall(item.sku); // already pants-safe via isShortSleeve guard
   const isBT = isBigAndTall(item.sku);
 
   return (
@@ -584,6 +596,7 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap }) {
         {/* Category badges — bottom of image */}
         {isSS && <span style={{ position:"absolute",bottom:8,left:8,background:"rgba(14,165,233,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>SHORT SLEEVE</span>}
         {isBT && <span style={{ position:"absolute",bottom: isSS ? 30 : 8,left:8,background:"rgba(124,58,237,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>BIG & TALL</span>}
+        {isYM && <span style={{ position:"absolute",bottom: (isSS || isBT) ? 30 : 8,left:8,background:"rgba(234,179,8,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>YOUNG MEN</span>}
         {itemCat === "pants" && <span style={{ position:"absolute",bottom:8,right:8,background:"rgba(107,114,128,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>PANTS</span>}
         {itemCat === "sportswear" && <span style={{ position:"absolute",bottom:8,right:8,background:"rgba(234,88,12,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>SPORTSWEAR</span>}
         {itemCat === "accessories" && <span style={{ position:"absolute",bottom:8,right:8,background:"rgba(168,85,247,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>
@@ -1461,11 +1474,21 @@ export default function VersaInventoryApp() {
   const [colorCategoryFilter, setColorCategoryFilter] = useState(null); // { cat, label, skus: Set }
   const [fabricCodeFilter, setFabricCodeFilter] = useState(null);       // { code, label, skus: Set }
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [brandCategoryFilter, setBrandCategoryFilter] = useState("all"); // filters brand cards in brands view
   const [showExport, setShowExport] = useState(false);
 
   const allItems = useMemo(() => {
     return Object.values(brands).flatMap(b => b.items || []);
   }, [brands]);
+
+  // Filter brand cards when a category is selected on the brands view
+  const filteredBrands = useMemo(() => {
+    const entries = sortBrands(Object.entries(brands));
+    if (brandCategoryFilter === "all") return entries;
+    return entries.filter(([, data]) =>
+      (data.items || []).some(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand) === brandCategoryFilter)
+    );
+  }, [brands, brandCategoryFilter]);
 
   // ─── Data Loading ──────────────────────
   useEffect(() => {
@@ -1652,12 +1675,13 @@ export default function VersaInventoryApp() {
     setShowFabricSummary(false);
     setColorCategoryFilter(null);
     setFabricCodeFilter(null);
-    setCategoryFilter("all");
+    // Pre-seed inventory category filter from brands-view filter when drilling in
+    setCategoryFilter(brandCategoryFilter !== "all" ? brandCategoryFilter : "all");
     window.history.pushState({ view: "inventory", brand: brandKey }, "", `#brand-${brandKey}`);
     // Preload images for this brand
     const b = brands[brandKey];
     if (b?.items) preloadImages(b.items);
-  }, [brands]);
+  }, [brands, brandCategoryFilter]);
   const goToDetail = useCallback((item) => { 
     setSelectedItem(item); 
     window.history.pushState({ view: "detail", sku: item.sku }, "", `#sku-${item.sku}`);
@@ -1910,6 +1934,28 @@ export default function VersaInventoryApp() {
               ))}
             </div>
 
+            {/* Category Filter Pills */}
+            <div style={{ display:"flex",gap:8,flexWrap:"wrap",marginBottom:20,alignItems:"center" }}>
+              <span style={{ fontSize:12,fontWeight:700,color:"#64748b",whiteSpace:"nowrap" }}>Filter:</span>
+              {[
+                { value:"all",       label:"All Products" },
+                { value:"long_sleeve", label:"👔 Long Sleeve" },
+                { value:"short_sleeve", label:"👕 Short Sleeve" },
+                { value:"big_tall",   label:"🧢 Big & Tall" },
+                { value:"pants",      label:"👖 Dress Pants" },
+                { value:"sportswear", label:"🏋️ Sportswear" },
+                { value:"young_men",  label:"🧒 Young Men" },
+                { value:"accessories",label:"🎀 Accessories" },
+              ].map(({ value, label }) => (
+                <button key={value}
+                  onClick={() => setBrandCategoryFilter(value)}
+                  className={`filter-pill${brandCategoryFilter === value ? " active" : ""}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
             {/* Brand Grid */}
             <div style={{ background:"rgba(255,255,255,.04)",borderRadius:20,border:"1px solid rgba(255,255,255,.06)",padding:24 }}>
               <h2 style={{ fontSize:18,fontWeight:700,color:"#e2e8f0",marginBottom:20 }}>
@@ -1917,16 +1963,23 @@ export default function VersaInventoryApp() {
                 <span style={{ fontSize:13,fontWeight:500,color:"#64748b",marginLeft:8 }}>
                   {filterMode === "incoming" ? "🚢 Overseas" : filterMode === "ats" ? "🏭 Warehouse ATS" : "📦 All"}
                 </span>
+                {brandCategoryFilter !== "all" && (
+                  <span style={{ fontSize:12,fontWeight:700,color:"#818cf8",marginLeft:8,background:"rgba(99,102,241,.15)",padding:"3px 10px",borderRadius:20,border:"1px solid rgba(99,102,241,.3)" }}>
+                    {filteredBrands.length} brand{filteredBrands.length !== 1 ? "s" : ""}
+                  </span>
+                )}
               </h2>
-              {Object.keys(brands).length === 0 ? (
+              {filteredBrands.length === 0 ? (
                 <div style={{ textAlign:"center",padding:60,color:"#64748b" }}>
-                  <p style={{ fontSize:48,marginBottom:12 }}>📭</p>
-                  <p style={{ fontSize:16 }}>No inventory data available</p>
-                  <p style={{ fontSize:13,marginTop:8 }}>Backend may still be waking up — refresh in a moment</p>
+                  <p style={{ fontSize:48,marginBottom:12 }}>🔍</p>
+                  <p style={{ fontSize:16 }}>No brands found for this category</p>
+                  <button onClick={() => setBrandCategoryFilter("all")} style={{ marginTop:16,background:"linear-gradient(135deg,#818cf8,#6366f1)",color:"#fff",border:"none",padding:"10px 24px",borderRadius:10,fontWeight:700,cursor:"pointer",fontSize:14 }}>
+                    Show All Brands
+                  </button>
                 </div>
               ) : (
                 <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:16 }}>
-                  {sortBrands(Object.entries(brands)).map(([abbr, data]) => (
+                  {filteredBrands.map(([abbr, data]) => (
                     <BrandCard key={abbr} abbr={abbr} data={data} onClick={() => goToInventory(abbr)} />
                   ))}
                 </div>
@@ -2000,6 +2053,7 @@ export default function VersaInventoryApp() {
                   <option value="big_tall">🧢 Big &amp; Tall</option>
                   <option value="pants">👖 Dress Pants</option>
                   <option value="sportswear">🏋️ Sportswear</option>
+                  <option value="young_men">🧒 Young Men</option>
                   <option value="accessories">🎀 Ties &amp; Accessories</option>
                 </select>
               </div>
@@ -2010,7 +2064,7 @@ export default function VersaInventoryApp() {
                 Showing <strong style={{ color:"#e2e8f0" }}>{filteredItems.length}</strong> of {brandData.items.length} styles
                 {categoryFilter !== "all" && (
                   <span style={{ display:"inline-flex",alignItems:"center",gap:4,background:"rgba(99,102,241,.15)",color:"#818cf8",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,border:"1px solid rgba(99,102,241,.3)" }}>
-                    {{ long_sleeve:"👔 Long Sleeve",short_sleeve:"👕 Short Sleeve",big_tall:"🧢 Big & Tall",pants:"👖 Pants",sportswear:"🏋️ Sportswear",accessories:"🎀 Accessories" }[categoryFilter]}
+                    {{ long_sleeve:"👔 Long Sleeve", short_sleeve:"👕 Short Sleeve", big_tall:"🧢 Big & Tall", pants:"👖 Pants", sportswear:"🏋️ Sportswear", young_men:"🧒 Young Men", accessories:"🎀 Accessories" }[categoryFilter]}
                     <button onClick={() => setCategoryFilter("all")} style={{ background:"none",border:"none",color:"#818cf8",cursor:"pointer",fontSize:12,padding:0,lineHeight:1,marginLeft:2 }}>✕</button>
                   </span>
                 )}
