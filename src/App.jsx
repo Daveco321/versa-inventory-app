@@ -47,6 +47,15 @@ const FABRIC_RULES = {AW:"4 Way Stretch",CA:"Cataonic 95% Polyester / 5% Spandex
 
 const FIT_CODES = {SL:"Slim Fit",RF:"Regular Fit",TF:"Tailored Fit",MF:"Modern Fit",BT:"Big & Tall",CF:"Classic Fit",AF:"Athletic Fit"};
 
+const BANNER_RULES_SEED = [
+  { id:'seed-ss', text:'SHORT SLEEVE', bgColor:'rgba(14,165,233,0.9)', textColor:'#fff', position:'bottom-left', visibility:'both', category:'short_sleeve', fits:[], customers:[], brands:[], skus:[] },
+  { id:'seed-bt', text:'BIG & TALL', bgColor:'rgba(124,58,237,0.9)', textColor:'#fff', position:'bottom-left', visibility:'both', category:'big_tall', fits:[], customers:[], brands:[], skus:[] },
+  { id:'seed-pants', text:'PANTS', bgColor:'rgba(107,114,128,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'pants', fits:[], customers:[], brands:[], skus:[] },
+  { id:'seed-sport', text:'SPORTSWEAR', bgColor:'rgba(234,88,12,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'sportswear', fits:[], customers:[], brands:[], skus:[] },
+  { id:'seed-acc-chaps', text:'TIE & HANKY', bgColor:'rgba(168,85,247,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'accessories', fits:[], customers:[], brands:['CHAPS'], skus:[] },
+  { id:'seed-acc-shaq', text:'TIE & SHIRT', bgColor:'rgba(168,85,247,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'accessories', fits:[], customers:[], brands:['SHAQ'], skus:[] },
+];
+
 // ═══════════════════════════════════════════
 // UTILITY FUNCTIONS
 // ═══════════════════════════════════════════
@@ -84,10 +93,53 @@ const SIZE_PACKS = {
   "Von Dutch": { master_qty:36, inner_qty:9, sizes:[["S (14-14.5)",6],["M (15-15.5)",8],["L (16-16.5)",8],["XL (17-17.5)",8],["XXL (18-18.5)",6]] }
 };
 
-function getSizePack(sku, brandAbbr) {
+function getSizePack(sku, brandAbbr, prepackDefaults) {
+  // Try S3-backed prepack defaults first (scoring system matches desktop)
+  if (prepackDefaults && prepackDefaults.length > 0) {
+    const matched = matchPrepackDefault(sku, brandAbbr, prepackDefaults);
+    if (matched) return matched;
+  }
+  // Fallback to hardcoded
   if (brandAbbr === "VD") return SIZE_PACKS["Von Dutch"];
   const fit = getFitFromSKU(sku);
   return SIZE_PACKS[fit] || SIZE_PACKS["Regular Fit"];
+}
+
+function matchPrepackDefault(sku, brandAbbr, prepackDefaults) {
+  if (!prepackDefaults || prepackDefaults.length === 0) return null;
+  const skuUpper = sku.toUpperCase().trim();
+  const base = skuUpper.split('-')[0];
+  const brandUp = (brandAbbr || '').toUpperCase().trim();
+  const cat = getDetailedCategory(sku, brandAbbr);
+  const fit = extractFitCode(sku);
+
+  // SKU-specific assignment first
+  const skuMatch = prepackDefaults.find(d =>
+    (d.skus || []).some(s => {
+      const su = s.toUpperCase().trim();
+      return su && (su === skuUpper || su === base || skuUpper.startsWith(su));
+    })
+  );
+  if (skuMatch) return skuMatch;
+
+  // Score-based dimension matching
+  let bestRule = null, bestScore = -1;
+  for (const d of prepackDefaults) {
+    const rCat = d.category || 'any';
+    if (rCat !== cat && rCat !== 'any') continue;
+    const rFits = _ruleFits(d);
+    if (rFits.length > 0 && !rFits.includes(fit)) continue;
+    const rCusts = _ruleCustomers(d);
+    if (rCusts.length > 0) continue; // mobile has no customer context
+    const rBrands = _ruleBrands(d);
+    if (rBrands.length > 0 && (!brandUp || !rBrands.map(b => b.toUpperCase()).includes(brandUp))) continue;
+    let score = 0;
+    if (rCat !== 'any') score++;
+    if (rFits.length > 0) score++;
+    if (rBrands.length > 0) score++;
+    if (score > bestScore) { bestScore = score; bestRule = d; }
+  }
+  return bestRule;
 }
 
 function sortBrands(entries) {
@@ -101,7 +153,7 @@ function sortBrands(entries) {
   });
 }
 
-function rebuildBrands(inventory, filterMode = "all") {
+function rebuildBrands(inventory, filterMode = "all", prodData = [], suppressionOverrides = new Set(), deductionAssignments = {}) {
   const brands = {};
   let source = [...inventory];
 
@@ -109,19 +161,37 @@ function rebuildBrands(inventory, filterMode = "all") {
     source = source.filter(i => (i.incoming || 0) > 0).map(item => {
       const incoming = item.incoming || 0;
       const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+      // Arrival suppression
+      const suppressedQty = _getSuppressedIncoming(item.sku, prodData, wh, suppressionOverrides);
+      const adjustedIncoming = Math.max(0, incoming - suppressedQty);
+      if (adjustedIncoming <= 0) return null;
       const ded = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
       let osDed = 0;
       if (ded > 0) {
-        if (wh <= 0) osDed = ded;
-        else if (incoming > 0) {
-          const neg = (wh - ded) < 0;
-          const covers = incoming >= ded;
-          const margin = ded > wh && Math.abs(incoming - ded) <= ded * 0.05;
-          if (margin || (neg && covers)) osDed = ded;
+        const assign = deductionAssignments[item.sku] || null;
+        if (assign === 'overseas') {
+          osDed = ded;
+        } else if (assign === 'warehouse') {
+          osDed = 0;
+        } else if (assign === 'fifo') {
+          const whAbsorbed = Math.min(ded, wh);
+          osDed = Math.max(0, ded - whAbsorbed);
+        } else if (wh <= 0) {
+          osDed = ded;
+        } else if (adjustedIncoming > 0) {
+          const totalAvail = wh + adjustedIncoming;
+          if (ded > totalAvail) {
+            osDed = ded - wh;
+          } else {
+            const neg = (wh - ded) < 0;
+            const covers = adjustedIncoming >= ded;
+            const margin = ded > wh && Math.abs(adjustedIncoming - ded) <= ded * 0.05;
+            if (margin || (neg && covers)) osDed = ded;
+          }
         }
       }
-      return { ...item, total_ats: incoming - osDed, total_warehouse: 0, jtw:0,tr:0,dcw:0,qa:0, _overseas_deducted: osDed, _display_mode:"overseas" };
-    });
+      return { ...item, incoming: adjustedIncoming, _suppressed_incoming: suppressedQty, total_ats: adjustedIncoming - osDed, total_warehouse: 0, jtw:0,tr:0,dcw:0,qa:0, _overseas_deducted: osDed, _display_mode:"overseas" };
+    }).filter(Boolean);
   } else if (filterMode === "ats") {
     source = source.map(item => {
       const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
@@ -129,14 +199,25 @@ function rebuildBrands(inventory, filterMode = "all") {
       const ded = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
       const incoming = item.incoming || 0;
       let apply = ded;
-      if (ded > 0 && incoming > 0) {
-        const neg = (wh - ded) < 0;
-        const covers = incoming >= ded;
-        const margin = ded > wh && Math.abs(incoming - ded) <= ded * 0.05;
-        if (margin || (neg && covers)) apply = 0;
+      const assign = deductionAssignments[item.sku] || null;
+      if (assign === 'overseas') {
+        apply = 0;
+      } else if (assign === 'warehouse') {
+        apply = ded;
+      } else if (assign === 'fifo') {
+        apply = Math.min(ded, wh);
+      } else if (ded > 0 && incoming > 0) {
+        const totalAvail = wh + incoming;
+        if (ded > totalAvail) {
+          apply = wh; // Over-allocated — drain warehouse
+        } else {
+          const neg = (wh - ded) < 0;
+          const covers = incoming >= ded;
+          const margin = ded > wh && Math.abs(incoming - ded) <= ded * 0.05;
+          if (margin || (neg && covers)) apply = 0;
+        }
       }
       const sell = wh - apply;
-      if (sell <= 0) return null;
       return { ...item, total_ats: sell, total_warehouse: wh, incoming: 0, _display_mode:"ats" };
     }).filter(Boolean);
   } else {
@@ -147,8 +228,10 @@ function rebuildBrands(inventory, filterMode = "all") {
       const incoming = item.incoming || 0;
       const committed = Math.abs(item.committed||0);
       const allocated = Math.abs(item.allocated||0);
-      const total_ats = wh + incoming - committed - allocated;
-      return { ...item, total_ats, total_warehouse: wh };
+      const suppressedQty = _getSuppressedIncoming(item.sku, prodData, wh, suppressionOverrides);
+      const adjustedIncoming = Math.max(0, incoming - suppressedQty);
+      const total_ats = wh + adjustedIncoming - committed - allocated;
+      return { ...item, incoming: adjustedIncoming, _suppressed_incoming: suppressedQty, total_ats, total_warehouse: wh };
     });
   }
 
@@ -258,14 +341,14 @@ function classifyColor(colorDisplay, brandAbbr) {
 }
 
 // ─── Color Summary Panel ──────────────────────────────────────
-function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColorFilter, onColorFilter }) {
+function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColorFilter, onColorFilter, styleOverrides }) {
   // Compute counts + build per-category SKU sets for click-to-filter
   let cWhite = 0, cBlack = 0, cNavy = 0, cOther = 0, cFancy = 0;
   const skuSets = { white: new Set(), black: new Set(), navy: new Set(), other_solids: new Set(), fancies: new Set() };
   items.forEach(item => {
     const qty = item.total_ats || 0;
     if (qty <= 0) return;
-    const ci = getStyleColorInfo(item.sku, brandAbbr, colorMap);
+    const ci = getStyleColorInfo(item.sku, brandAbbr, colorMap, styleOverrides);
     const cat = classifyColor(ci ? ci.display : "", brandAbbr);
     if (cat === "white") cWhite += qty;
     else if (cat === "black") cBlack += qty;
@@ -567,41 +650,30 @@ function BrandCard({ abbr, data, onClick }) {
 }
 
 // ─── Product Card ────────────────────────
-function ProductCard({ item, onClick, filterMode, prodData, colorMap }) {
+function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRules, suppressionOverrides, styleOverrides }) {
   const fabric = getFabricFromSKU(item.sku);
   const fit = getFitFromSKU(item.sku);
   const ats = item.total_ats || 0;
   const isOverseas = filterMode === "incoming";
   const atsLabel = isOverseas ? "Overseas ATS" : filterMode === "ats" ? "WH ATS" : "ATS";
   const atsColor = ats > 0 ? (isOverseas ? "#d97706" : "#16a34a") : "#dc2626";
-  const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap);
+  const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap, styleOverrides);
   const [prodOpen, setProdOpen] = useState(false);
 
-  // Production data
-  const prods = getEarliestDates(item.sku, prodData).productions;
+  // Production data — suppression-aware
+  const rawWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+  const prods = getEarliestDates(item.sku, prodData, rawWh, suppressionOverrides).productions;
   const hasProd = prods.length > 0;
   const totalProdUnits = prods.reduce((s, p) => s + (p.units || 0), 0);
-  const nearestArrival = prods.length > 0 ? prods[0].arrival : null; // already sorted soonest first
-
-  const itemCat = getItemCategory(item.sku, item.brand_abbr || item.brand);
-  const isYM = isYoungMen(item.sku);
-  const isSS = isShortSleeve(item.sku) && !isBigAndTall(item.sku); // already pants-safe via isShortSleeve guard
-  const isBT = isBigAndTall(item.sku);
+  const nearestArrival = prods.length > 0 ? prods[0].arrival : null;
 
   return (
     <div onClick={onClick} className="product-card" style={{ background:"#fff",borderRadius:14,overflow:"hidden",border: isOverseas ? "2px solid #fcd34d" : "2px solid #e5e7eb" }}>
       <div style={{ position:"relative",overflow:"hidden" }}>
         <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ width:"100%",height:220,objectFit:"cover",background:"#f3f4f6" }} />
         {isOverseas && <span style={{ position:"absolute",top:8,right:8,background:"rgba(217,119,6,.9)",color:"#fff",padding:"3px 8px",borderRadius:8,fontSize:10,fontWeight:700 }}>🚢 Overseas</span>}
-        {/* Category badges — bottom of image */}
-        {isSS && <span style={{ position:"absolute",bottom:8,left:8,background:"rgba(14,165,233,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>SHORT SLEEVE</span>}
-        {isBT && <span style={{ position:"absolute",bottom: isSS ? 30 : 8,left:8,background:"rgba(124,58,237,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>BIG & TALL</span>}
-        {isYM && <span style={{ position:"absolute",bottom: (isSS || isBT) ? 30 : 8,left:8,background:"rgba(234,179,8,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>YOUNG MEN</span>}
-        {itemCat === "pants" && <span style={{ position:"absolute",bottom:8,right:8,background:"rgba(107,114,128,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>PANTS</span>}
-        {itemCat === "sportswear" && <span style={{ position:"absolute",bottom:8,right:8,background:"rgba(234,88,12,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>SPORTSWEAR</span>}
-        {itemCat === "accessories" && <span style={{ position:"absolute",bottom:8,right:8,background:"rgba(168,85,247,.9)",color:"#fff",padding:"3px 9px",borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:".3px",backdropFilter:"blur(2px)" }}>
-          {(item.brand_abbr||item.brand||"").toUpperCase() === "SHAQ" ? "TIE & SHIRT" : "TIE & HANKY"}
-        </span>}
+        {/* Dynamic banners from Banner Rules */}
+        <BannerBadges sku={item.sku} brandAbbr={item.brand_abbr || item.brand} bannerRules={bannerRules} />
       </div>
       <div style={{ padding:"12px 14px" }}>
         <h3 style={{ fontSize:15,fontWeight:700,color:"#1f2937",marginBottom:2 }}>{item.sku}</h3>
@@ -696,7 +768,7 @@ function FullscreenImage({ src, alt, onClose }) {
 }
 
 // ─── Export Panel ────────────────
-function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filteredItems, productionData, viewMode }) {
+function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filteredItems, productionData, viewMode, suppressionOverrides }) {
   const [manifest, setManifest] = useState(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(null);
@@ -724,7 +796,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
       const out = { ...item };
       // Always attach production dates if available
       if (productionData?.length > 0) {
-        const dates = getEarliestDates(item.sku, productionData);
+        const dates = getEarliestDates(item.sku, productionData, (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0), suppressionOverrides);
         if (dates.ex_factory) out.ex_factory = dates.ex_factory instanceof Date ? dates.ex_factory.toISOString().slice(0,10) : String(dates.ex_factory);
         if (dates.arrival) out.arrival = dates.arrival instanceof Date ? dates.arrival.toISOString().slice(0,10) : String(dates.arrival);
       }
@@ -966,19 +1038,19 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
 }
 
 // ─── Product Detail Modal ────────────────
-function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, colorMap, allocationData, apoData, openOrdersData }) {
+function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, colorMap, allocationData, apoData, openOrdersData, suppressionOverrides, styleOverrides, prepackDefaults }) {
   if (!item) return null;
   const fabric = getFabricFromSKU(item.sku);
   const fit = getFitFromSKU(item.sku);
-  const sp = getSizePack(item.sku, item.brand_abbr || item.brand);
+  const sp = getSizePack(item.sku, item.brand_abbr || item.brand, prepackDefaults);
   const totalStock = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
   const ats = item.total_ats || 0;
   const [showFullImage, setShowFullImage] = useState(false);
   const [showAllocations, setShowAllocations] = useState(false);
   const isOverseas = filterMode === "incoming";
-  const dates = getEarliestDates(item.sku, prodData);
+  const dates = getEarliestDates(item.sku, prodData, totalStock, suppressionOverrides);
   const prods = dates.productions;
-  const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap);
+  const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap, styleOverrides);
 
   // Manual holds from /allocations — exact SKU match
   const manualHolds = (allocationData || []).filter(a => a.sku === (item.sku || "").toUpperCase());
@@ -1386,7 +1458,7 @@ function UniversalSearch({ items, onSelect, placeholder }) {
 }
 
 // ─── Color Name Helpers ─────────────────
-const COLOR_MAP_URL = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/Inventory+Colors+Data/style_color_map.xlsx";
+const COLOR_MAP_URL = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/Inventory+Colors+Data/style_color_map.xlsx?v=" + Math.floor(Date.now() / (1000 * 60 * 60));
 
 function formatColorName(raw) {
   if (!raw) return "";
@@ -1400,10 +1472,17 @@ function formatColorName(raw) {
   return s.replace(/\s{2,}/g, " ").trim();
 }
 
-function getStyleColorInfo(sku, brandAbbr, colorMap) {
+function getStyleColorInfo(sku, brandAbbr, colorMap, styleOverrides) {
   if (!colorMap || Object.keys(colorMap).length === 0) return null;
   const fullSku = (sku || "").toUpperCase().trim();
   const baseSku = fullSku.split("-")[0];
+
+  // 0) Style override color — highest priority (matches desktop)
+  if (styleOverrides) {
+    const ov = styleOverrides[baseSku] || styleOverrides[fullSku];
+    if (ov && ov.color) return { display: formatColorName(ov.color), ground: formatColorName(ov.color), hasPrint: false };
+  }
+
   let raw = fullSku.includes("-") ? colorMap[fullSku] : undefined;
   if (!raw) raw = colorMap[baseSku];
   if (!raw) {
@@ -1435,8 +1514,10 @@ function getProductionForSku(sku, prodData) {
   return prodData.filter(p => (p.style || "").split("-")[0].toUpperCase() === skuUpper);
 }
 
-function getEarliestDates(sku, prodData) {
-  const prods = getProductionForSku(sku, prodData);
+function getEarliestDates(sku, prodData, warehouseQty, suppressionOverrides) {
+  const prods = typeof warehouseQty === 'number'
+    ? getActiveProductionForSku(sku, prodData, warehouseQty, suppressionOverrides)
+    : getProductionForSku(sku, prodData);
   if (prods.length === 0) return { ex_factory: null, arrival: null, productions: [] };
   const sorted = [...prods].sort((a, b) => (a.arrival || new Date("2099")) - (b.arrival || new Date("2099")));
   return {
@@ -1444,6 +1525,128 @@ function getEarliestDates(sku, prodData) {
     arrival: sorted[0].arrival,
     productions: sorted
   };
+}
+
+// ═══════════════════════════════════════════
+// ARRIVAL SUPPRESSION
+// ═══════════════════════════════════════════
+const _SUPPRESS_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // 2 weeks
+const _SUPPRESS_TOLERANCE = 0.10; // 10%
+
+function _isProductionSuppressed(warehouseQty, prod, sku, suppressionOverrides) {
+  if (sku && suppressionOverrides && suppressionOverrides.has(sku.toUpperCase())) return false;
+  if (!prod.arrival) return false;
+  const now = new Date();
+  const diffMs = Math.abs(now.getTime() - prod.arrival.getTime());
+  if (diffMs > _SUPPRESS_WINDOW_MS) return false;
+  if (prod.units <= 0) return false;
+  const pct = Math.abs(warehouseQty - prod.units) / prod.units;
+  return pct <= _SUPPRESS_TOLERANCE;
+}
+
+function getActiveProductionForSku(sku, prodData, warehouseQty, suppressionOverrides) {
+  const all = getProductionForSku(sku, prodData);
+  if (typeof warehouseQty !== 'number') return all;
+  return all.filter(p => !_isProductionSuppressed(warehouseQty, p, sku, suppressionOverrides));
+}
+
+function _getSuppressedIncoming(sku, prodData, warehouseQty, suppressionOverrides) {
+  const all = getProductionForSku(sku, prodData);
+  let suppressed = 0;
+  all.forEach(p => {
+    if (_isProductionSuppressed(warehouseQty, p, sku, suppressionOverrides)) suppressed += p.units;
+  });
+  return suppressed;
+}
+
+// ═══════════════════════════════════════════
+// BANNER RULES HELPERS
+// ═══════════════════════════════════════════
+function _ruleFits(rule) {
+  if (Array.isArray(rule.fits)) return rule.fits.filter(f => f && f !== 'any');
+  if (rule.fit && rule.fit !== 'any') return [rule.fit];
+  return [];
+}
+function _ruleCustomers(rule) {
+  if (Array.isArray(rule.customers)) return rule.customers.filter(c => c && c.trim());
+  if (rule.customer && rule.customer.trim()) return [rule.customer.trim()];
+  return [];
+}
+function _ruleBrands(rule) {
+  if (Array.isArray(rule.brands)) return rule.brands.filter(b => b && b.trim());
+  return [];
+}
+
+function extractFitCode(sku) {
+  if (!sku || sku.length < 3) return '';
+  const baseStyle = sku.split('-')[0].toUpperCase();
+  return baseStyle.slice(-3, -1);
+}
+
+function getMatchingBanners(sku, brandAbbr, bannerRules) {
+  if (!bannerRules || bannerRules.length === 0) return [];
+  const skuUpper = sku.toUpperCase().trim();
+  const base = skuUpper.split('-')[0];
+  const brandUp = (brandAbbr || '').toUpperCase().trim();
+  const cat = getDetailedCategory(sku, brandAbbr);
+  const fit = extractFitCode(sku);
+
+  return bannerRules.filter(r => {
+    // Visibility: mobile app is admin only
+    const vis = r.visibility || 'both';
+    if (vis === 'catalog') return false;
+
+    // SKU-specific match
+    const rSkus = r.skus || [];
+    if (rSkus.length > 0) {
+      return rSkus.some(s => {
+        const su = s.toUpperCase().trim();
+        return su && (su === skuUpper || su === base || skuUpper.startsWith(su));
+      });
+    }
+
+    const rCat = r.category || 'any';
+    if (rCat !== 'any' && rCat !== cat) return false;
+    const rFits = _ruleFits(r);
+    if (rFits.length > 0 && !rFits.includes(fit)) return false;
+    const rCusts = _ruleCustomers(r);
+    if (rCusts.length > 0) return false; // mobile has no customer context
+    const rBrands = _ruleBrands(r);
+    if (rBrands.length > 0 && (!brandUp || !rBrands.map(b => b.toUpperCase()).includes(brandUp))) return false;
+
+    return true;
+  });
+}
+
+function BannerBadges({ sku, brandAbbr, bannerRules }) {
+  const banners = getMatchingBanners(sku, brandAbbr, bannerRules);
+  if (banners.length === 0) return null;
+  const byPos = {};
+  banners.forEach(b => {
+    const pos = b.position || 'top-left';
+    if (!byPos[pos]) byPos[pos] = [];
+    byPos[pos].push(b);
+  });
+  const posStyle = {
+    'top-left':      (i) => ({ position:'absolute',top:6+i*24,left:6 }),
+    'top-center':    (i) => ({ position:'absolute',top:6+i*24,left:'50%',transform:'translateX(-50%)' }),
+    'top-right':     (i) => ({ position:'absolute',top:6+i*24,right:6 }),
+    'middle-left':   (i) => ({ position:'absolute',top:'50%',left:6,transform:`translateY(calc(-50% + ${i*24}px))` }),
+    'middle-right':  (i) => ({ position:'absolute',top:'50%',right:6,transform:`translateY(calc(-50% + ${i*24}px))` }),
+    'bottom-left':   (i) => ({ position:'absolute',bottom:8+i*24,left:8 }),
+    'bottom-center': (i) => ({ position:'absolute',bottom:8+i*24,left:'50%',transform:'translateX(-50%)' }),
+    'bottom-right':  (i) => ({ position:'absolute',bottom:8+i*24,right:8 }),
+  };
+  const badges = [];
+  for (const [pos, items] of Object.entries(byPos)) {
+    const fn = posStyle[pos] || posStyle['top-left'];
+    items.forEach((b, i) => {
+      badges.push(
+        <span key={`${pos}-${i}`} style={{ ...fn(i), background:b.bgColor||'rgba(220,38,38,0.9)',color:b.textColor||'#fff',padding:'3px 9px',borderRadius:6,fontSize:10,fontWeight:700,letterSpacing:'.3px',backdropFilter:'blur(2px)',zIndex:5,whiteSpace:'nowrap',maxWidth:'calc(100% - 16px)',overflow:'hidden',textOverflow:'ellipsis' }}>{b.text||''}</span>
+      );
+    });
+  }
+  return <>{badges}</>;
 }
 
 // ═══════════════════════════════════════════
@@ -1469,6 +1672,11 @@ export default function VersaInventoryApp() {
   const [allocationData, setAllocationData] = useState([]);
   const [apoData, setApoData] = useState([]);
   const [openOrdersData, setOpenOrdersData] = useState([]);
+  const [suppressionOverrides, setSuppressionOverrides] = useState(new Set());
+  const [bannerRules, setBannerRules] = useState([]);
+  const [styleOverrides, setStyleOverrides] = useState({});
+  const [prepackDefaults, setPrepackDefaults] = useState([]);
+  const [deductionAssignments, setDeductionAssignments] = useState({});
   const [showColorSummary, setShowColorSummary] = useState(false);
   const [showFabricSummary, setShowFabricSummary] = useState(false);
   const [colorCategoryFilter, setColorCategoryFilter] = useState(null); // { cat, label, skus: Set }
@@ -1577,7 +1785,8 @@ export default function VersaInventoryApp() {
         const rows = window.XLSX.utils.sheet_to_json(sheet);
         const map = {};
         rows.forEach(row => {
-          if (row.Key && row.Color_Description) map[row.Key] = row.Color_Description;
+          const key = (row.Key || row.Style_Number || row.Style_Num || '').toString().trim().toUpperCase();
+          if (key && row.Color_Description) map[key] = row.Color_Description;
         });
         setColorMap(map);
         console.log("✓ Color map loaded:", Object.keys(map).length, "entries");
@@ -1612,7 +1821,8 @@ export default function VersaInventoryApp() {
     // Load open orders (A2000 committed PO breakdown)
     const loadOpenOrders = async () => {
       try {
-        const resp = await fetch(`${ORDERS_API_URL}/api/orders`, { signal: AbortSignal.timeout(12000) });
+        const c = new AbortController(); setTimeout(() => c.abort(), 12000);
+        const resp = await fetch(`${ORDERS_API_URL}/api/orders`, { signal: c.signal });
         if (!resp.ok) return;
         const json = await resp.json();
         setOpenOrdersData(json.orders || []);
@@ -1620,6 +1830,79 @@ export default function VersaInventoryApp() {
       } catch (e) { console.warn("Open orders unavailable:", e.message); }
     };
     loadOpenOrders();
+
+    // Load suppression overrides (S3-backed SKU exemptions)
+    const loadSuppressionOverrides = async () => {
+      try {
+        const c = new AbortController(); setTimeout(() => c.abort(), 10000);
+        const resp = await fetch(`${API_URL}/suppression-overrides`, { signal: c.signal });
+        if (!resp.ok) return;
+        const json = await resp.json();
+        setSuppressionOverrides(new Set((json.overrides || []).map(s => s.toUpperCase())));
+        console.log("✓ Suppression overrides loaded:", (json.overrides || []).length);
+      } catch (e) { console.warn("Suppression overrides unavailable:", e.message); }
+    };
+    loadSuppressionOverrides();
+
+    // Load banner rules (S3-backed custom tile banners)
+    const loadBannerRules = async () => {
+      try {
+        const c = new AbortController(); setTimeout(() => c.abort(), 10000);
+        const resp = await fetch(`${API_URL}/banner-rules`, { signal: c.signal });
+        if (!resp.ok) return;
+        const json = await resp.json();
+        const loaded = Array.isArray(json.rules) ? json.rules : [];
+        setBannerRules(loaded.length > 0 ? loaded : BANNER_RULES_SEED);
+        console.log("✓ Banner rules loaded:", loaded.length);
+      } catch (e) {
+        console.warn("Banner rules unavailable:", e.message);
+        setBannerRules(BANNER_RULES_SEED);
+      }
+    };
+    loadBannerRules();
+
+    // Load style overrides (color/brand overrides from S3)
+    const loadStyleOverrides = async () => {
+      try {
+        const c = new AbortController(); setTimeout(() => c.abort(), 10000);
+        const resp = await fetch(`${API_URL}/overrides`, { signal: c.signal });
+        if (!resp.ok) return;
+        const json = await resp.json();
+        const map = {};
+        (json.overrides || []).forEach(ov => {
+          if (ov.sku) map[ov.sku.toUpperCase()] = ov;
+        });
+        setStyleOverrides(map);
+        console.log("✓ Style overrides loaded:", Object.keys(map).length);
+      } catch (e) { console.warn("Style overrides unavailable:", e.message); }
+    };
+    loadStyleOverrides();
+
+    // Load prepack defaults (dynamic size packs from S3)
+    const loadPrepackDefaults = async () => {
+      try {
+        const c = new AbortController(); setTimeout(() => c.abort(), 10000);
+        const resp = await fetch(`${API_URL}/prepack-defaults`, { signal: c.signal });
+        if (!resp.ok) return;
+        const json = await resp.json();
+        setPrepackDefaults(Array.isArray(json.defaults) ? json.defaults : []);
+        console.log("✓ Prepack defaults loaded:", (json.defaults || []).length);
+      } catch (e) { console.warn("Prepack defaults unavailable:", e.message); }
+    };
+    loadPrepackDefaults();
+
+    // Load deduction assignments (per-SKU routing rules)
+    const loadDeductionAssignments = async () => {
+      try {
+        const c = new AbortController(); setTimeout(() => c.abort(), 10000);
+        const resp = await fetch(`${API_URL}/deduction-assignments`, { signal: c.signal });
+        if (!resp.ok) return;
+        const json = await resp.json();
+        setDeductionAssignments(json.assignments || {});
+        console.log("✓ Deduction assignments loaded:", Object.keys(json.assignments || {}).length);
+      } catch (e) { console.warn("Deduction assignments unavailable:", e.message); }
+    };
+    loadDeductionAssignments();
 
     // Auto-refresh inventory every 5 minutes
     const refreshInterval = setInterval(async () => {
@@ -1652,12 +1935,12 @@ export default function VersaInventoryApp() {
     return () => { clearInterval(refreshInterval); clearInterval(dailyRefresh); clearInterval(weeklyRefresh); };
   }, []);
 
-  // Rebuild brands when filterMode changes
+  // Rebuild brands when filterMode or suppression-relevant data changes
   useEffect(() => {
     if (inventory.length > 0) {
-      setBrands(rebuildBrands(inventory, filterMode));
+      setBrands(rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments));
     }
-  }, [filterMode, inventory]);
+  }, [filterMode, inventory, productionData, suppressionOverrides, deductionAssignments]);
 
   // ─── Navigation with Browser History ────────────────────────
   const goToBrands = useCallback(() => { 
@@ -1798,17 +2081,17 @@ export default function VersaInventoryApp() {
     else if (sortBy === "sku-asc") items.sort((a,b) => (a.sku||"").localeCompare(b.sku||""));
     else if (sortBy === "sku-desc") items.sort((a,b) => (b.sku||"").localeCompare(a.sku||""));
     else if (sortBy === "arrival-asc") items.sort((a,b) => {
-      const da = getEarliestDates(a.sku, productionData).arrival || new Date("2099");
-      const db = getEarliestDates(b.sku, productionData).arrival || new Date("2099");
+      const da = getEarliestDates(a.sku, productionData, (a.jtw||0)+(a.tr||0)+(a.dcw||0)+(a.qa||0), suppressionOverrides).arrival || new Date("2099");
+      const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0), suppressionOverrides).arrival || new Date("2099");
       return da - db;
     });
     else if (sortBy === "arrival-desc") items.sort((a,b) => {
-      const da = getEarliestDates(a.sku, productionData).arrival || new Date("1970");
-      const db = getEarliestDates(b.sku, productionData).arrival || new Date("1970");
+      const da = getEarliestDates(a.sku, productionData, (a.jtw||0)+(a.tr||0)+(a.dcw||0)+(a.qa||0), suppressionOverrides).arrival || new Date("1970");
+      const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0), suppressionOverrides).arrival || new Date("1970");
       return db - da;
     });
     return items;
-  }, [brandData, categoryFilter, colorCategoryFilter, fabricCodeFilter, searchQuery, fitFilter, fabricFilter, sortBy, productionData]);
+  }, [brandData, categoryFilter, colorCategoryFilter, fabricCodeFilter, searchQuery, fitFilter, fabricFilter, sortBy, productionData, suppressionOverrides]);
 
   // Get unique fits/fabrics for filters
   const availableFits = useMemo(() => {
@@ -2107,6 +2390,7 @@ export default function VersaInventoryApp() {
                 filterMode={filterMode}
                 activeColorFilter={colorCategoryFilter}
                 onColorFilter={setColorCategoryFilter}
+                styleOverrides={styleOverrides}
               />
             )}
 
@@ -2129,7 +2413,7 @@ export default function VersaInventoryApp() {
             ) : (
               <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16 }}>
                 {filteredItems.map(item => (
-                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} />
+                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} />
                 ))}
               </div>
             )}
@@ -2156,7 +2440,7 @@ export default function VersaInventoryApp() {
 
       {/* ─── MODALS ────────────────────────── */}
       {selectedItem && (
-        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} colorMap={colorMap} allocationData={allocationData} apoData={apoData} openOrdersData={openOrdersData} />
+        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} colorMap={colorMap} allocationData={allocationData} apoData={apoData} openOrdersData={openOrdersData} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} prepackDefaults={prepackDefaults} />
       )}
       {showCart && (
         <CartModal cart={cart} onClose={() => setShowCart(false)}
@@ -2166,7 +2450,7 @@ export default function VersaInventoryApp() {
         />
       )}
       {showExport && (
-        <ExportPanel onClose={() => setShowExport(false)} brands={brands} currentBrand={currentBrand} filterMode={filterMode} API_URL={API_URL} filteredItems={filteredItems} productionData={productionData} viewMode={view} />
+        <ExportPanel onClose={() => setShowExport(false)} brands={brands} currentBrand={currentBrand} filterMode={filterMode} API_URL={API_URL} filteredItems={filteredItems} productionData={productionData} viewMode={view} suppressionOverrides={suppressionOverrides} />
       )}
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
