@@ -1984,10 +1984,15 @@ export default function VersaInventoryApp() {
         const resp = await fetch(`${API_URL}/overrides`, { signal: c.signal });
         if (!resp.ok) return;
         const json = await resp.json();
-        const map = {};
-        (json.overrides || []).forEach(ov => {
-          if (ov.sku) map[ov.sku.toUpperCase()] = ov;
-        });
+        const raw = json.overrides || {};
+        let map = {};
+        if (Array.isArray(raw)) {
+          // Array format: each entry has a .sku field
+          raw.forEach(ov => { if (ov.sku) map[ov.sku.toUpperCase()] = ov; });
+        } else if (typeof raw === 'object') {
+          // Object format (desktop standard): keys are SKUs, values are override objects
+          Object.entries(raw).forEach(([sku, ov]) => { map[sku.toUpperCase()] = ov; });
+        }
         setStyleOverrides(map);
         console.log("✓ Style overrides loaded:", Object.keys(map).length);
       } catch (e) { console.warn("Style overrides unavailable:", e.message); }
