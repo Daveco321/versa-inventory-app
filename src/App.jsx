@@ -59,15 +59,47 @@ const BANNER_RULES_SEED = [
 // ═══════════════════════════════════════════
 // UTILITY FUNCTIONS
 // ═══════════════════════════════════════════
+
+// Style override lookup — matches desktop logic including prefix wildcard keys (keys ending with '-')
+function getStyleOverride(sku, overrides) {
+  if (!sku || !overrides) return null;
+  const skuUpper = sku.toUpperCase().split("-")[0]; // base style
+  // 1. Exact match
+  if (overrides[skuUpper]) return overrides[skuUpper];
+  // 2. Full SKU with size match
+  const fullUpper = sku.toUpperCase();
+  if (overrides[fullUpper]) return overrides[fullUpper];
+  // 3. Prefix match — keys ending with '-' match any SKU starting with that prefix
+  for (const key of Object.keys(overrides)) {
+    if (key.endsWith('-')) {
+      const prefix = key.slice(0, -1);
+      if (skuUpper.startsWith(prefix) || fullUpper.startsWith(prefix)) return overrides[key];
+    }
+  }
+  return null;
+}
+
 // Folder name mapping for brands whose S3 folder doesn't match brand_abbr
-function getImageUrl(item) {
+function getImageUrl(item, styleOverrides) {
+  // Check for base64 image override first (matches desktop priority)
+  if (styleOverrides) {
+    const ov = getStyleOverride(item.sku, styleOverrides);
+    if (ov && ov.image) return ov.image;
+  }
   const baseStyle = (item.sku || "").split("-")[0].toUpperCase();
   const brand = item.brand_abbr || item.brand || "";
   return `${API_URL}/image/${baseStyle}?brand=${brand}`;
 }
 
-function getFabricFromSKU(sku) {
+function getFabricFromSKU(sku, styleOverrides) {
   if (!sku || sku.length < 6) return { code: "—", description: "Unknown" };
+  // Check style override for fabrication (matches desktop)
+  if (styleOverrides) {
+    const ov = getStyleOverride(sku, styleOverrides);
+    if (ov && ov.fabrication) {
+      return { code: ov.fabricCode || sku.substring(4, 6).toUpperCase(), description: ov.fabrication };
+    }
+  }
   // SKU structure: [0-1] customer + [2-3] brand + [4-5] fabric + [6-9] style# + [9-10] fit + [11] collar
   const brand = sku.substring(2, 4).toUpperCase();
   const code = sku.substring(4, 6).toUpperCase();
@@ -79,10 +111,24 @@ function getFabricFromSKU(sku) {
   return { code, description: desc };
 }
 
-function getFitFromSKU(sku) {
+function getFitFromSKU(sku, styleOverrides) {
   if (!sku || sku.length < 3) return "Unknown";
-  // Fit code is 2nd and 3rd characters from the end of the base style
-  const baseStyle = sku.split("-")[0].toUpperCase();
+  // Check style override fit first (matches desktop)
+  if (styleOverrides) {
+    const ov = getStyleOverride(sku, styleOverrides);
+    if (ov && ov.fit) return ov.fit;
+  }
+  const parts = sku.toUpperCase().split("-");
+  const baseStyle = parts[0];
+  if (baseStyle.length >= 3) {
+    const fitFromBase = baseStyle.slice(-3, -1);
+    if (FIT_CODES[fitFromBase]) return FIT_CODES[fitFromBase];
+  }
+  // Suffix fallback: check parts after dash (e.g. NONAU175-SL)
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i].trim();
+    if (FIT_CODES[part]) return FIT_CODES[part];
+  }
   const fitCode = baseStyle.slice(-3, -1);
   return FIT_CODES[fitCode] || fitCode || "Unknown";
 }
@@ -93,7 +139,12 @@ const SIZE_PACKS = {
   "Von Dutch": { master_qty:36, inner_qty:9, sizes:[["S (14-14.5)",6],["M (15-15.5)",8],["L (16-16.5)",8],["XL (17-17.5)",8],["XXL (18-18.5)",6]] }
 };
 
-function getSizePack(sku, brandAbbr, prepackDefaults) {
+function getSizePack(sku, brandAbbr, prepackDefaults, styleOverrides) {
+  // Check style override sizePack first (matches desktop)
+  if (styleOverrides) {
+    const ov = getStyleOverride(sku, styleOverrides);
+    if (ov && ov.sizePack) return ov.sizePack;
+  }
   // Try S3-backed prepack defaults first (scoring system matches desktop)
   if (prepackDefaults && prepackDefaults.length > 0) {
     const matched = matchPrepackDefault(sku, brandAbbr, prepackDefaults);
@@ -101,7 +152,7 @@ function getSizePack(sku, brandAbbr, prepackDefaults) {
   }
   // Fallback to hardcoded
   if (brandAbbr === "VD") return SIZE_PACKS["Von Dutch"];
-  const fit = getFitFromSKU(sku);
+  const fit = getFitFromSKU(sku, styleOverrides);
   return SIZE_PACKS[fit] || SIZE_PACKS["Regular Fit"];
 }
 
@@ -112,6 +163,7 @@ function matchPrepackDefault(sku, brandAbbr, prepackDefaults) {
   const brandUp = (brandAbbr || '').toUpperCase().trim();
   const cat = getDetailedCategory(sku, brandAbbr);
   const fit = extractFitCode(sku);
+  const fab = base.length >= 6 ? base.substring(4, 6).toUpperCase() : '';
 
   // SKU-specific assignment first
   const skuMatch = prepackDefaults.find(d =>
@@ -133,10 +185,13 @@ function matchPrepackDefault(sku, brandAbbr, prepackDefaults) {
     if (rCusts.length > 0) continue; // mobile has no customer context
     const rBrands = _ruleBrands(d);
     if (rBrands.length > 0 && (!brandUp || !rBrands.map(b => b.toUpperCase()).includes(brandUp))) continue;
+    const rFabs = _ruleFabrics(d);
+    if (rFabs.length > 0 && (!fab || !rFabs.map(f => f.toUpperCase()).includes(fab))) continue;
     let score = 0;
     if (rCat !== 'any') score++;
     if (rFits.length > 0) score++;
     if (rBrands.length > 0) score++;
+    if (rFabs.length > 0) score++;
     if (score > bestScore) { bestScore = score; bestRule = d; }
   }
   return bestRule;
@@ -153,7 +208,7 @@ function sortBrands(entries) {
   });
 }
 
-function rebuildBrands(inventory, filterMode = "all", prodData = [], suppressionOverrides = new Set(), deductionAssignments = {}) {
+function rebuildBrands(inventory, filterMode = "all", prodData = [], suppressionOverrides = new Set(), deductionAssignments = {}, styleOverrides = {}) {
   const brands = {};
   let source = [...inventory];
 
@@ -249,10 +304,19 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
     item.brand = brand;
     item.brand_abbr = brand;
     item.brand_full = (BRAND_MAPPING[brand]||{}).full_name || brand;
-    if (!brands[brand]) brands[brand] = { full_name: item.brand_full, logo: (BRAND_MAPPING[brand]||{}).logo || DEFAULT_LOGO, items: [], sku_count: 0, total_ats: 0 };
+    // Apply brand override from style overrides (takes priority over everything — matches desktop)
+    const ov = getStyleOverride(item.sku, styleOverrides);
+    if (ov && ov.brand && ov.brand !== brand) {
+      brand = ov.brand;
+      item.brand = brand;
+      item.brand_abbr = brand;
+      item.brand_full = (BRAND_MAPPING[brand]||{}).full_name || brand;
+    }
+    if (!brands[brand]) brands[brand] = { full_name: item.brand_full, logo: (BRAND_MAPPING[brand]||{}).logo || DEFAULT_LOGO, items: [], sku_count: 0, total_ats: 0, total_warehouse: 0 };
     brands[brand].items.push(item);
     brands[brand].sku_count++;
     brands[brand].total_ats += (item.total_ats || 0);
+    brands[brand].total_warehouse += (item.total_warehouse || 0);
   });
   return brands;
 }
@@ -278,12 +342,17 @@ function isYoungMen(sku) {
   return YOUNG_MEN_FABRIC_CODES.has(base.substring(4, 6));
 }
 
-function isShortSleeve(sku) {
+function isShortSleeve(sku, styleOverrides) {
   if (!sku) return false;
-  const base = sku.split("-")[0].toUpperCase();
-  if (base.length < 11) return false;
   // Pants can never be short sleeve — fit code collision (e.g. SR) doesn't apply to pants
   if (getItemCategory(sku) === "pants") return false;
+  // Check override fit label first (matches desktop)
+  if (styleOverrides) {
+    const ov = getStyleOverride(sku, styleOverrides);
+    if (ov && ov.fit) return /short\s*sleeve/i.test(ov.fit);
+  }
+  const base = sku.split("-")[0].toUpperCase();
+  if (base.length < 11) return false;
   return SHORT_SLEEVE_FIT_CODES.has(base.substring(9, 11));
 }
 
@@ -299,14 +368,14 @@ function getItemCategory(sku, brandAbbr) {
   return "shirts";
 }
 
-function getDetailedCategory(sku, brandAbbr) {
+function getDetailedCategory(sku, brandAbbr, styleOverrides) {
   const base = getItemCategory(sku, brandAbbr);
   if (base === "pants") return "pants";
   if (base === "sportswear") return "sportswear";
   if (base === "accessories") return "accessories";
   if (isYoungMen(sku)) return "young_men";
   if (isBigAndTall(sku)) return "big_tall";
-  return isShortSleeve(sku) ? "short_sleeve" : "long_sleeve";
+  return isShortSleeve(sku, styleOverrides) ? "short_sleeve" : "long_sleeve";
 }
 
 // ─── Color Classification (mirrors main catalog) ──────────────
@@ -315,6 +384,13 @@ function classifyColor(colorDisplay, brandAbbr) {
   const c = colorDisplay.trim().toLowerCase();
   // Disqualifiers: presence of any of these forces fancies regardless of solid/sld
   const _hasPrint = /\bprint\b|\bprnt\b|\bgrnd\b|\bstripe\b|\bstripes\b|\bgeo\b|\bcheck\b/.test(c);
+  // Ben Sherman DOBBY rule: treat "dobby" like a solid; bucket by color word if present
+  if ((brandAbbr || "").toUpperCase() === "BEN" && !_hasPrint && /\bdobby\b/.test(c)) {
+    if (/\bwhite\b|\bivory\b|\bcream\b/.test(c)) return "white";
+    if (/\bblack\b/.test(c)) return "black";
+    if (/\bnavy\b/.test(c)) return "navy";
+    return "other_solids";
+  }
   // Navy: "navy solid" or "navy sld" as adjacent words anywhere
   if (!_hasPrint && /\bnavy\s+s(?:olid|ld)\b/.test(c)) return "navy";
   // White/Black exact: "[color] solid" or "[color] sld" — nothing before or after
@@ -344,21 +420,24 @@ function classifyColor(colorDisplay, brandAbbr) {
 function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColorFilter, onColorFilter, styleOverrides }) {
   // Compute counts + build per-category SKU sets for click-to-filter
   let cWhite = 0, cBlack = 0, cNavy = 0, cOther = 0, cFancy = 0;
+  let wWhite = 0, wBlack = 0, wNavy = 0, wOther = 0, wFancy = 0;
   const skuSets = { white: new Set(), black: new Set(), navy: new Set(), other_solids: new Set(), fancies: new Set() };
   items.forEach(item => {
     const qty = item.total_ats || 0;
-    if (qty <= 0) return;
+    const wh = item.total_warehouse || 0;
+    if (qty <= 0 && wh <= 0) return;
     const ci = getStyleColorInfo(item.sku, brandAbbr, colorMap, styleOverrides);
     const cat = classifyColor(ci ? ci.display : "", brandAbbr);
-    if (cat === "white") cWhite += qty;
-    else if (cat === "black") cBlack += qty;
-    else if (cat === "navy") cNavy += qty;
-    else if (cat === "other_solids") cOther += qty;
-    else cFancy += qty;
+    if (cat === "white") { cWhite += qty; wWhite += wh; }
+    else if (cat === "black") { cBlack += qty; wBlack += wh; }
+    else if (cat === "navy") { cNavy += qty; wNavy += wh; }
+    else if (cat === "other_solids") { cOther += qty; wOther += wh; }
+    else { cFancy += qty; wFancy += wh; }
     if (skuSets[cat]) skuSets[cat].add(item.sku.toUpperCase());
   });
 
   const barTotal = cWhite + cBlack + cNavy + cOther + cFancy;
+  const whTotal = wWhite + wBlack + wNavy + wOther + wFancy;
   const pct = v => barTotal ? Math.round(v / barTotal * 100) : 0;
   const bW = pct(cWhite), bB = pct(cBlack), bN = pct(cNavy), bO = pct(cOther), bF = pct(cFancy);
   const modeLabel = filterMode === "incoming" ? "Overseas" : filterMode === "ats" ? "Warehouse ATS" : "Total";
@@ -399,9 +478,14 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
             </span>
           )}
         </div>
-        <span style={{ fontSize:11,color:"#6366f1",background:"#eef2ff",padding:"3px 10px",borderRadius:99,fontWeight:600 }}>
-          {barTotal.toLocaleString()} total units
-        </span>
+        <div style={{ display:"flex",gap:8,flexWrap:"wrap" }}>
+          <span style={{ fontSize:11,color:"#7c3aed",background:"#faf5ff",padding:"3px 10px",borderRadius:99,fontWeight:600 }}>
+            🏭 {whTotal.toLocaleString()} WH
+          </span>
+          <span style={{ fontSize:11,color:"#6366f1",background:"#eef2ff",padding:"3px 10px",borderRadius:99,fontWeight:600 }}>
+            📦 {barTotal.toLocaleString()} ATS
+          </span>
+        </div>
       </div>
 
       {/* Stacked bar — segments are clickable */}
@@ -415,19 +499,32 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
 
       {/* Clickable grid — all 5 rows always shown */}
       <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:13 }}>
-        {[["white","⬜ White Solid",cWhite],["black","⬛ Black Solid",cBlack],["navy","🟦 Navy Solid",cNavy],["other_solids","🎨 Other Solids",cOther]].map(([cat, label, val]) => (
+        {[["white","⬜ White Solid",cWhite,wWhite],["black","⬛ Black Solid",cBlack,wBlack],["navy","🟦 Navy Solid",cNavy,wNavy],["other_solids","🎨 Other Solids",cOther,wOther]].map(([cat, label, ats, wh]) => (
           <div key={cat} onClick={() => handleClick(cat)} style={rowStyle(cat)}>
             <span style={{ color:"#64748b" }}>{label}</span>
-            <span style={{ fontWeight:700,color:"#1e293b" }}>{val.toLocaleString()}</span>
+            <span style={{ display:"flex",gap:8,alignItems:"center" }}>
+              <span style={{ fontSize:11,color:"#7c3aed",fontWeight:600 }}>{wh.toLocaleString()}</span>
+              <span style={{ color:"#cbd5e1" }}>|</span>
+              <span style={{ fontWeight:700,color:"#1e293b" }}>{ats.toLocaleString()}</span>
+            </span>
           </div>
         ))}
         <div onClick={() => handleClick("fancies")} style={rowStyle("fancies", true)}>
           <span style={{ color:"#64748b" }}>✨ Fancies</span>
-          <span style={{ fontWeight:700,color:"#1e293b" }}>{cFancy.toLocaleString()}</span>
+          <span style={{ display:"flex",gap:8,alignItems:"center" }}>
+            <span style={{ fontSize:11,color:"#7c3aed",fontWeight:600 }}>{wFancy.toLocaleString()}</span>
+            <span style={{ color:"#cbd5e1" }}>|</span>
+            <span style={{ fontWeight:700,color:"#1e293b" }}>{cFancy.toLocaleString()}</span>
+          </span>
         </div>
-        <div style={{ display:"flex",justifyContent:"space-between",padding:"7px 10px",background:"#e0f2fe",borderRadius:6,border:"1px solid #bae6fd",gridColumn:"span 2" }}>
-          <span style={{ color:"#0369a1",fontWeight:600 }}>Total ATS</span>
-          <span style={{ fontWeight:800,color:"#0369a1" }}>{barTotal.toLocaleString()}</span>
+        {/* Column legend + totals */}
+        <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 10px",background:"#e0f2fe",borderRadius:6,border:"1px solid #bae6fd",gridColumn:"span 2" }}>
+          <span style={{ color:"#0369a1",fontWeight:600 }}>Totals</span>
+          <span style={{ display:"flex",gap:8,alignItems:"center" }}>
+            <span style={{ fontSize:11,color:"#7c3aed",fontWeight:700 }}>🏭 {whTotal.toLocaleString()}</span>
+            <span style={{ color:"#93c5fd" }}>|</span>
+            <span style={{ fontWeight:800,color:"#0369a1" }}>📦 {barTotal.toLocaleString()}</span>
+          </span>
         </div>
       </div>
       <p style={{ fontSize:11,color:"#94a3b8",margin:"8px 0 0",textAlign:"center" }}>Click any row to filter the inventory below · Click again to clear</p>
@@ -436,21 +533,24 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
 }
 
 // ─── Fabric Summary Panel ─────────────────────────────────────
-function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFilter }) {
+function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFilter, styleOverrides }) {
   // Build fabric map — same logic as main catalog's showAdminFabricSummary
   const fabricMap = {};
   items.forEach(item => {
     const qty = item.total_ats || 0;
-    const f = getFabricFromSKU(item.sku);
+    const wh = item.total_warehouse || 0;
+    const f = getFabricFromSKU(item.sku, styleOverrides);
     const key = f.code.toUpperCase();
-    if (!fabricMap[key]) fabricMap[key] = { code: f.code, description: f.description, ats: 0, skus: new Set(), allSkus: new Set() };
+    if (!fabricMap[key]) fabricMap[key] = { code: f.code, description: f.description, ats: 0, warehouse: 0, skus: new Set(), allSkus: new Set() };
     fabricMap[key].ats += qty;
+    fabricMap[key].warehouse += wh;
     fabricMap[key].skus.add(item.sku.split("-")[0].toUpperCase()); // base style count
     fabricMap[key].allSkus.add(item.sku.toUpperCase()); // full SKU set for filtering
   });
 
   const rows = Object.values(fabricMap).sort((a, b) => b.ats - a.ats);
   const totalAts = rows.reduce((s, r) => s + r.ats, 0);
+  const totalWh = rows.reduce((s, r) => s + r.warehouse, 0);
   const modeLabel = filterMode === "incoming" ? "Overseas" : filterMode === "ats" ? "Warehouse ATS" : "Total";
 
   const handleClick = (code) => {
@@ -480,9 +580,9 @@ function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFil
         <table style={{ width:"100%",borderCollapse:"collapse",fontSize:13,borderRadius:8,overflow:"hidden" }}>
           <thead>
             <tr style={{ background:"#1e293b",color:"white" }}>
-              {["Code","Fabrication","Styles","ATS Units","%"].map((h, i) => (
+              {["Code","Fabrication","Styles","WH Stock","ATS Units","%"].map((h, i) => (
                 <th key={h} style={{ padding:"9px 14px",textAlign: i >= 2 ? "right" : "left",fontSize:11,fontWeight:700,letterSpacing:".05em",textTransform:"uppercase",
-                  ...(i===1?{textAlign:"left"}:{}), ...(i===2?{textAlign:"center"}:{}) }}>{h}</th>
+                  ...(i===1?{textAlign:"left"}:{}), ...(i===2?{textAlign:"center"}:{}), ...(h==="WH Stock"?{color:"#c4b5fd"}:{}) }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -501,6 +601,7 @@ function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFil
                   </td>
                   <td style={{ padding:"8px 14px",color:"#374151" }}>{r.description}</td>
                   <td style={{ padding:"8px 14px",textAlign:"center",color:"#64748b" }}>{r.skus.size}</td>
+                  <td style={{ padding:"8px 14px",textAlign:"right",fontWeight:600,color:"#7c3aed",fontSize:12 }}>{r.warehouse.toLocaleString()}</td>
                   <td style={{ padding:"8px 14px",textAlign:"right",fontWeight:700,color:"#0f172a" }}>{r.ats.toLocaleString()}</td>
                   <td style={{ padding:"8px 14px",textAlign:"right",color:"#94a3b8" }}>{pct}%</td>
                 </tr>
@@ -510,6 +611,7 @@ function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFil
           <tfoot>
             <tr style={{ background:"#f8fafc",borderTop:"2px solid #e2e8f0" }}>
               <td colSpan={3} style={{ padding:"9px 14px",fontSize:13,fontWeight:700,color:"#0369a1" }}>Total</td>
+              <td style={{ padding:"9px 14px",textAlign:"right",fontSize:13,fontWeight:700,color:"#7c3aed" }}>{totalWh.toLocaleString()}</td>
               <td style={{ padding:"9px 14px",textAlign:"right",fontSize:13,fontWeight:800,color:"#0369a1" }}>{totalAts.toLocaleString()}</td>
               <td style={{ padding:"9px 14px",textAlign:"right",fontSize:13,fontWeight:800,color:"#0369a1" }}>100%</td>
             </tr>
@@ -550,8 +652,8 @@ function getBaseStyle(sku) {
   return (sku || "").split("-")[0].toUpperCase();
 }
 
-function resolveImageUrl(item) {
-  return getImageUrl(item);
+function resolveImageUrl(item, styleOverrides) {
+  return getImageUrl(item, styleOverrides);
 }
 
 // Preload a batch of images into browser cache
@@ -639,6 +741,10 @@ function BrandCard({ abbr, data, onClick }) {
             <p style={{ fontSize:10,color:"#16a34a",fontWeight:600 }}>SKUs</p>
             <p style={{ fontSize:18,fontWeight:800,color:"#166534" }}>{data.sku_count}</p>
           </div>
+          <div style={{ background:"#faf5ff",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
+            <p style={{ fontSize:10,color:"#7c3aed",fontWeight:600 }}>WH Stock</p>
+            <p style={{ fontSize:18,fontWeight:800,color:"#5b21b6" }}>{(data.total_warehouse||0).toLocaleString()}</p>
+          </div>
           <div style={{ background:"#eef2ff",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
             <p style={{ fontSize:10,color:"#4f46e5",fontWeight:600 }}>ATS</p>
             <p style={{ fontSize:18,fontWeight:800,color:"#3730a3" }}>{(data.total_ats||0).toLocaleString()}</p>
@@ -651,13 +757,15 @@ function BrandCard({ abbr, data, onClick }) {
 
 // ─── Product Card ────────────────────────
 function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRules, suppressionOverrides, styleOverrides }) {
-  const fabric = getFabricFromSKU(item.sku);
-  const fit = getFitFromSKU(item.sku);
+  const fabric = getFabricFromSKU(item.sku, styleOverrides);
+  const fit = getFitFromSKU(item.sku, styleOverrides);
   const ats = item.total_ats || 0;
   const isOverseas = filterMode === "incoming";
   const atsLabel = isOverseas ? "Overseas ATS" : filterMode === "ats" ? "WH ATS" : "ATS";
   const atsColor = ats > 0 ? (isOverseas ? "#d97706" : "#16a34a") : "#dc2626";
   const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap, styleOverrides);
+  const custCode = (item.sku || "").substring(0, 2).toUpperCase();
+  const custName = CUSTOMER_CODES[custCode] || custCode;
   const [prodOpen, setProdOpen] = useState(false);
 
   // Production data — suppression-aware
@@ -670,14 +778,17 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRule
   return (
     <div onClick={onClick} className="product-card" style={{ background:"#fff",borderRadius:14,overflow:"hidden",border: isOverseas ? "2px solid #fcd34d" : "2px solid #e5e7eb" }}>
       <div style={{ position:"relative",overflow:"hidden" }}>
-        <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ width:"100%",height:220,objectFit:"cover",background:"#f3f4f6" }} />
+        <ImageWithFallback src={resolveImageUrl(item, styleOverrides)} alt={item.sku} style={{ width:"100%",height:220,objectFit:"cover",background:"#f3f4f6" }} />
         {isOverseas && <span style={{ position:"absolute",top:8,right:8,background:"rgba(217,119,6,.9)",color:"#fff",padding:"3px 8px",borderRadius:8,fontSize:10,fontWeight:700 }}>🚢 Overseas</span>}
         {/* Dynamic banners from Banner Rules */}
         <BannerBadges sku={item.sku} brandAbbr={item.brand_abbr || item.brand} bannerRules={bannerRules} />
       </div>
       <div style={{ padding:"12px 14px" }}>
         <h3 style={{ fontSize:15,fontWeight:700,color:"#1f2937",marginBottom:2 }}>{item.sku}</h3>
-        <p style={{ fontSize:12,color:"#6b7280",marginBottom:colorInfo ? 2 : 4 }}>{item.brand_full}</p>
+        <p style={{ fontSize:12,color:"#6b7280",marginBottom:2,display:"flex",alignItems:"center",gap:6 }}>
+          {item.brand_full}
+          <span style={{ fontSize:10,fontWeight:700,background:"#f0fdf4",color:"#15803d",padding:"1px 6px",borderRadius:4,border:"1px solid #bbf7d0" }}>{custName}</span>
+        </p>
         {colorInfo && (
           <p style={{ fontSize:11,marginBottom:4 }}>
             {colorInfo.hasPrint ? (
@@ -1040,9 +1151,9 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
 // ─── Product Detail Modal ────────────────
 function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, colorMap, allocationData, apoData, openOrdersData, suppressionOverrides, styleOverrides, prepackDefaults }) {
   if (!item) return null;
-  const fabric = getFabricFromSKU(item.sku);
-  const fit = getFitFromSKU(item.sku);
-  const sp = getSizePack(item.sku, item.brand_abbr || item.brand, prepackDefaults);
+  const fabric = getFabricFromSKU(item.sku, styleOverrides);
+  const fit = getFitFromSKU(item.sku, styleOverrides);
+  const sp = getSizePack(item.sku, item.brand_abbr || item.brand, prepackDefaults, styleOverrides);
   const totalStock = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
   const ats = item.total_ats || 0;
   const [showFullImage, setShowFullImage] = useState(false);
@@ -1079,7 +1190,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
   return (
     <>
     {showFullImage && (
-      <FullscreenImage src={resolveImageUrl(item)} alt={item.sku} onClose={() => setShowFullImage(false)} />
+      <FullscreenImage src={resolveImageUrl(item, styleOverrides)} alt={item.sku} onClose={() => setShowFullImage(false)} />
     )}
     <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16 }} onClick={onClose}>
       <div style={{ background:"rgba(255,255,255,.97)",borderRadius:14,maxWidth:580,width:"100%",maxHeight:"85vh",display:"flex",flexDirection:"column",boxShadow:"0 25px 60px rgba(0,0,0,.3)",position:"relative" }} onClick={e => e.stopPropagation()}>
@@ -1088,7 +1199,12 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
         <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 20px",borderBottom:"1px solid #e5e7eb",flexShrink:0 }}>
           <div>
             <h2 style={{ fontSize:18,fontWeight:800,color:"#1f2937" }}>{item.sku}</h2>
-            <p style={{ fontSize:12,color:"#6b7280" }}>{item.brand_full}</p>
+            <p style={{ fontSize:12,color:"#6b7280",display:"flex",alignItems:"center",gap:6 }}>
+              {item.brand_full}
+              <span style={{ fontSize:10,fontWeight:700,background:"#f0fdf4",color:"#15803d",padding:"1px 6px",borderRadius:4,border:"1px solid #bbf7d0" }}>
+                {CUSTOMER_CODES[(item.sku||"").substring(0,2).toUpperCase()] || (item.sku||"").substring(0,2).toUpperCase()}
+              </span>
+            </p>
             {colorInfo && (
               <p style={{ fontSize:12,marginTop:2 }}>
                 {colorInfo.hasPrint ? (
@@ -1108,7 +1224,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
           {/* Image + Key Stats Row */}
           <div style={{ display:"flex",gap:16,marginBottom:16 }}>
             <div style={{ position:"relative",flexShrink:0,cursor:"zoom-in" }} onClick={() => setShowFullImage(true)}>
-              <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ width:140,height:180,borderRadius:10,objectFit:"cover",border:"2px solid #e5e7eb" }} />
+              <ImageWithFallback src={resolveImageUrl(item, styleOverrides)} alt={item.sku} style={{ width:140,height:180,borderRadius:10,objectFit:"cover",border:"2px solid #e5e7eb" }} />
               <div style={{ position:"absolute",bottom:6,right:6,background:"rgba(0,0,0,.5)",color:"#fff",borderRadius:6,padding:"3px 6px",fontSize:10,fontWeight:600,backdropFilter:"blur(4px)" }}>🔍 Tap</div>
             </div>
             <div style={{ flex:1,display:"flex",flexDirection:"column",gap:8 }}>
@@ -1118,10 +1234,28 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
                   <p style={{ fontSize:22,fontWeight:800 }}>{ats.toLocaleString()}</p>
                 </div>
                 <div style={{ background:"linear-gradient(135deg,#3b82f6,#4f46e5)",color:"#fff",padding:10,borderRadius:10 }}>
-                  <p style={{ fontSize:10,opacity:.85 }}>Total Stock</p>
+                  <p style={{ fontSize:10,opacity:.85 }}>WH Stock</p>
                   <p style={{ fontSize:22,fontWeight:800 }}>{totalStock.toLocaleString()}</p>
                 </div>
               </div>
+              {(item.incoming || 0) > 0 && (
+                <div style={{ background:"linear-gradient(135deg,#f59e0b,#d97706)",color:"#fff",padding:10,borderRadius:10 }}>
+                  <p style={{ fontSize:10,opacity:.85 }}>🚢 Incoming (Overseas)</p>
+                  <p style={{ fontSize:22,fontWeight:800 }}>{(item.incoming||0).toLocaleString()}</p>
+                </div>
+              )}
+              {(committed > 0 || allocated > 0) && (
+                <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>
+                  <div style={{ background:"#fef2f2",padding:8,borderRadius:8,border:"1px solid #fecaca" }}>
+                    <p style={{ fontSize:10,color:"#991b1b",fontWeight:600 }}>Committed</p>
+                    <p style={{ fontSize:16,fontWeight:800,color:"#dc2626" }}>{committed.toLocaleString()}</p>
+                  </div>
+                  <div style={{ background:"#fff7ed",padding:8,borderRadius:8,border:"1px solid #fed7aa" }}>
+                    <p style={{ fontSize:10,color:"#9a3412",fontWeight:600 }}>Allocated</p>
+                    <p style={{ fontSize:16,fontWeight:800,color:"#ea580c" }}>{allocated.toLocaleString()}</p>
+                  </div>
+                </div>
+              )}
               <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>
                 <div style={{ background:"#f9fafb",padding:8,borderRadius:8 }}>
                   <p style={{ fontSize:10,color:"#6b7280",fontWeight:600 }}>Fit</p>
@@ -1355,7 +1489,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
 }
 
 // ─── Cart Modal ──────────────────────────
-function CartModal({ cart, onClose, onRemove, onClear, onUpdateQty }) {
+function CartModal({ cart, onClose, onRemove, onClear, onUpdateQty, styleOverrides }) {
   const totalItems = cart.length;
   const totalQty = cart.reduce((s, c) => s + c.qty, 0);
   return (
@@ -1374,7 +1508,7 @@ function CartModal({ cart, onClose, onRemove, onClear, onUpdateQty }) {
           <>
             {cart.map((c, i) => (
               <div key={i} style={{ display:"flex",alignItems:"center",gap:14,padding:14,border:"1px solid #e5e7eb",borderRadius:12,marginBottom:10 }}>
-                <ImageWithFallback src={resolveImageUrl(c)} alt={c.sku} style={{ width:56,height:56,borderRadius:8,objectFit:"cover" }} />
+                <ImageWithFallback src={resolveImageUrl(c, styleOverrides)} alt={c.sku} style={{ width:56,height:56,borderRadius:8,objectFit:"cover" }} />
                 <div style={{ flex:1 }}>
                   <p style={{ fontWeight:700,fontSize:14 }}>{c.sku}</p>
                   <p style={{ fontSize:12,color:"#6b7280" }}>{c.brand_full}</p>
@@ -1408,7 +1542,7 @@ function CartModal({ cart, onClose, onRemove, onClear, onUpdateQty }) {
 }
 
 // ─── Universal Search Dropdown ───────────
-function UniversalSearch({ items, onSelect, placeholder }) {
+function UniversalSearch({ items, onSelect, placeholder, styleOverrides }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -1441,7 +1575,7 @@ function UniversalSearch({ items, onSelect, placeholder }) {
               style={{ display:"flex",alignItems:"center",padding:"10px 16px",cursor:"pointer",borderBottom:"1px solid #f3f4f6",transition:"background .15s" }}
               onMouseEnter={e => e.currentTarget.style.background = "#f3f4f6"}
               onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-              <ImageWithFallback src={resolveImageUrl(item)} alt={item.sku} style={{ width:48,height:48,objectFit:"cover",borderRadius:8,marginRight:14 }} />
+              <ImageWithFallback src={resolveImageUrl(item, styleOverrides)} alt={item.sku} style={{ width:48,height:48,objectFit:"cover",borderRadius:8,marginRight:14 }} />
               <div style={{ flex:1 }}>
                 <p style={{ fontWeight:700,fontSize:13,color:"#1f2937" }}>{item.sku}</p>
                 <p style={{ fontSize:11,color:"#6b7280" }}>{item.brand_full}</p>
@@ -1477,9 +1611,9 @@ function getStyleColorInfo(sku, brandAbbr, colorMap, styleOverrides) {
   const fullSku = (sku || "").toUpperCase().trim();
   const baseSku = fullSku.split("-")[0];
 
-  // 0) Style override color — highest priority (matches desktop)
+  // 0) Style override color — highest priority (matches desktop, including prefix matching)
   if (styleOverrides) {
-    const ov = styleOverrides[baseSku] || styleOverrides[fullSku];
+    const ov = getStyleOverride(sku, styleOverrides);
     if (ov && ov.color) return { display: formatColorName(ov.color), ground: formatColorName(ov.color), hasPrint: false };
   }
 
@@ -1574,6 +1708,10 @@ function _ruleCustomers(rule) {
 }
 function _ruleBrands(rule) {
   if (Array.isArray(rule.brands)) return rule.brands.filter(b => b && b.trim());
+  return [];
+}
+function _ruleFabrics(rule) {
+  if (Array.isArray(rule.fabrics)) return rule.fabrics.filter(f => f && f.trim());
   return [];
 }
 
@@ -1689,14 +1827,20 @@ export default function VersaInventoryApp() {
     return Object.values(brands).flatMap(b => b.items || []);
   }, [brands]);
 
+  // allItems filtered by the brands-view category pill — used by stats bar
+  const allItemsFiltered = useMemo(() => {
+    if (brandCategoryFilter === "all") return allItems;
+    return allItems.filter(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand, styleOverrides) === brandCategoryFilter);
+  }, [allItems, brandCategoryFilter, styleOverrides]);
+
   // Filter brand cards when a category is selected on the brands view
   const filteredBrands = useMemo(() => {
     const entries = sortBrands(Object.entries(brands));
     if (brandCategoryFilter === "all") return entries;
     return entries.filter(([, data]) =>
-      (data.items || []).some(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand) === brandCategoryFilter)
+      (data.items || []).some(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand, styleOverrides) === brandCategoryFilter)
     );
-  }, [brands, brandCategoryFilter]);
+  }, [brands, brandCategoryFilter, styleOverrides]);
 
   // ─── Data Loading ──────────────────────
   useEffect(() => {
@@ -1938,9 +2082,9 @@ export default function VersaInventoryApp() {
   // Rebuild brands when filterMode or suppression-relevant data changes
   useEffect(() => {
     if (inventory.length > 0) {
-      setBrands(rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments));
+      setBrands(rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments, styleOverrides));
     }
-  }, [filterMode, inventory, productionData, suppressionOverrides, deductionAssignments]);
+  }, [filterMode, inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides]);
 
   // ─── Navigation with Browser History ────────────────────────
   const goToBrands = useCallback(() => { 
@@ -2049,7 +2193,7 @@ export default function VersaInventoryApp() {
     let items = [...brandData.items];
     // Category filter
     if (categoryFilter !== "all") {
-      items = items.filter(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand) === categoryFilter);
+      items = items.filter(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand, styleOverrides) === categoryFilter);
     }
     // Color category filter (from Color Summary panel click)
     if (colorCategoryFilter) {
@@ -2065,13 +2209,13 @@ export default function VersaInventoryApp() {
     }
     if (fitFilter.length > 0) {
       items = items.filter(i => {
-        const f = getFitFromSKU(i.sku);
+        const f = getFitFromSKU(i.sku, styleOverrides);
         return fitFilter.some(ff => f.toLowerCase().includes(ff.toLowerCase()));
       });
     }
     if (fabricFilter.length > 0) {
       items = items.filter(i => {
-        const f = getFabricFromSKU(i.sku);
+        const f = getFabricFromSKU(i.sku, styleOverrides);
         return fabricFilter.includes(f.code);
       });
     }
@@ -2091,19 +2235,28 @@ export default function VersaInventoryApp() {
       return db - da;
     });
     return items;
-  }, [brandData, categoryFilter, colorCategoryFilter, fabricCodeFilter, searchQuery, fitFilter, fabricFilter, sortBy, productionData, suppressionOverrides]);
+  }, [brandData, categoryFilter, colorCategoryFilter, fabricCodeFilter, searchQuery, fitFilter, fabricFilter, sortBy, productionData, suppressionOverrides, styleOverrides]);
+
+  // Items with only category filter applied — used by Color/Fabric summary panels
+  // so their counts reflect the active category (e.g. Long Sleeve) without being
+  // affected by their own click-to-filter selections (which would be circular).
+  const categoryFilteredItems = useMemo(() => {
+    if (!brandData) return [];
+    if (categoryFilter === "all") return brandData.items;
+    return brandData.items.filter(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand, styleOverrides) === categoryFilter);
+  }, [brandData, categoryFilter, styleOverrides]);
 
   // Get unique fits/fabrics for filters
   const availableFits = useMemo(() => {
     if (!brandData) return [];
-    const fits = new Set(brandData.items.map(i => getFitFromSKU(i.sku)));
+    const fits = new Set(brandData.items.map(i => getFitFromSKU(i.sku, styleOverrides)));
     return [...fits].sort();
   }, [brandData]);
 
   const availableFabrics = useMemo(() => {
     if (!brandData) return [];
     const fabs = {};
-    brandData.items.forEach(i => { const f = getFabricFromSKU(i.sku); fabs[f.code] = f.description; });
+    brandData.items.forEach(i => { const f = getFabricFromSKU(i.sku, styleOverrides); fabs[f.code] = f.description; });
     return Object.entries(fabs).sort((a,b) => a[1].localeCompare(b[1]));
   }, [brandData]);
 
@@ -2198,14 +2351,16 @@ export default function VersaInventoryApp() {
         {/* BRANDS VIEW */}
         {view === "brands" && (
           <>
-            <UniversalSearch items={allItems} onSelect={item => { goToInventory(item.brand_abbr || item.brand); setTimeout(() => goToDetail(item), 100); }} placeholder="🔍 Search any SKU across all brands..." />
+            <UniversalSearch items={allItems} onSelect={item => { goToInventory(item.brand_abbr || item.brand); setTimeout(() => goToDetail(item), 100); }} placeholder="🔍 Search any SKU across all brands..." styleOverrides={styleOverrides} />
             
             {/* Stats Bar */}
             <div style={{ display:"flex",gap:12,marginBottom:24,flexWrap:"wrap" }}>
               {[
-                { label:"Brands", value:Object.keys(brands).length, icon:"🏷️", bg:"linear-gradient(135deg,#818cf8,#6366f1)" },
-                { label:"Total SKUs", value:allItems.length.toLocaleString(), icon:"📦", bg:"linear-gradient(135deg,#34d399,#10b981)" },
-                { label:"Total ATS", value:allItems.reduce((s,i) => s+(i.total_ats||0),0).toLocaleString(), icon:"✅", bg:"linear-gradient(135deg,#fbbf24,#f59e0b)" },
+                { label:"Brands", value:filteredBrands.length, icon:"🏷️", bg:"linear-gradient(135deg,#818cf8,#6366f1)" },
+                { label:"Total SKUs", value:allItemsFiltered.length.toLocaleString(), icon:"📦", bg:"linear-gradient(135deg,#34d399,#10b981)" },
+                { label:"WH Stock", value:allItemsFiltered.reduce((s,i) => s+(i.total_warehouse||0),0).toLocaleString(), icon:"🏭", bg:"linear-gradient(135deg,#a78bfa,#7c3aed)" },
+                { label:"Incoming", value:allItemsFiltered.reduce((s,i) => s+(i.incoming||0),0).toLocaleString(), icon:"🚢", bg:"linear-gradient(135deg,#fbbf24,#d97706)" },
+                { label:"Total ATS", value:allItemsFiltered.reduce((s,i) => s+(i.total_ats||0),0).toLocaleString(), icon:"✅", bg:"linear-gradient(135deg,#34d399,#10b981)" },
               ].map(s => (
                 <div key={s.label} style={{ flex:1,minWidth:160,background:s.bg,padding:"14px 18px",borderRadius:14,color:"#fff",display:"flex",alignItems:"center",gap:12 }}>
                   <span style={{ fontSize:28 }}>{s.icon}</span>
@@ -2345,6 +2500,19 @@ export default function VersaInventoryApp() {
 
               <p style={{ fontSize:12,color:"#64748b",marginTop:10,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
                 Showing <strong style={{ color:"#e2e8f0" }}>{filteredItems.length}</strong> of {brandData.items.length} styles
+                <span style={{ display:"inline-flex",gap:6,alignItems:"center",marginLeft:4 }}>
+                  <span style={{ fontSize:11,color:"#c4b5fd",background:"rgba(124,58,237,.15)",padding:"2px 8px",borderRadius:12,fontWeight:700,border:"1px solid rgba(124,58,237,.25)" }}>
+                    🏭 {filteredItems.reduce((s,i) => s + (i.total_warehouse||0), 0).toLocaleString()} WH
+                  </span>
+                  {filteredItems.reduce((s,i) => s + (i.incoming||0), 0) > 0 && (
+                    <span style={{ fontSize:11,color:"#fbbf24",background:"rgba(245,158,11,.12)",padding:"2px 8px",borderRadius:12,fontWeight:700,border:"1px solid rgba(245,158,11,.25)" }}>
+                      🚢 {filteredItems.reduce((s,i) => s + (i.incoming||0), 0).toLocaleString()} Inc
+                    </span>
+                  )}
+                  <span style={{ fontSize:11,color:"#93c5fd",background:"rgba(99,102,241,.12)",padding:"2px 8px",borderRadius:12,fontWeight:700,border:"1px solid rgba(99,102,241,.25)" }}>
+                    📦 {filteredItems.reduce((s,i) => s + (i.total_ats||0), 0).toLocaleString()} ATS
+                  </span>
+                </span>
                 {categoryFilter !== "all" && (
                   <span style={{ display:"inline-flex",alignItems:"center",gap:4,background:"rgba(99,102,241,.15)",color:"#818cf8",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,border:"1px solid rgba(99,102,241,.3)" }}>
                     {{ long_sleeve:"👔 Long Sleeve", short_sleeve:"👕 Short Sleeve", big_tall:"🧢 Big & Tall", pants:"👖 Pants", sportswear:"🏋️ Sportswear", young_men:"🧒 Young Men", accessories:"🎀 Accessories" }[categoryFilter]}
@@ -2384,7 +2552,7 @@ export default function VersaInventoryApp() {
             {/* Color Summary Panel */}
             {showColorSummary && (
               <ColorSummaryPanel
-                items={brandData.items}
+                items={categoryFilteredItems}
                 colorMap={colorMap}
                 brandAbbr={currentBrand}
                 filterMode={filterMode}
@@ -2397,10 +2565,11 @@ export default function VersaInventoryApp() {
             {/* Fabric Summary Panel */}
             {showFabricSummary && (
               <FabricSummaryPanel
-                items={brandData.items}
+                items={categoryFilteredItems}
                 filterMode={filterMode}
                 activeFabricFilter={fabricCodeFilter}
                 onFabricFilter={setFabricCodeFilter}
+                styleOverrides={styleOverrides}
               />
             )}
 
@@ -2447,6 +2616,7 @@ export default function VersaInventoryApp() {
           onRemove={i => setCart(prev => prev.filter((_,idx) => idx !== i))}
           onClear={() => { setCart([]); setShowCart(false); }}
           onUpdateQty={(i, qty) => setCart(prev => { const u = [...prev]; u[i] = {...u[i], qty}; return u; })}
+          styleOverrides={styleOverrides}
         />
       )}
       {showExport && (
