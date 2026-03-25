@@ -1813,6 +1813,284 @@ function BannerBadges({ sku, brandAbbr, bannerRules }) {
 // ═══════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════
+// ═══════════════════════════════════════════
+// PRODUCTION RECAP VIEW
+// ═══════════════════════════════════════════
+const FOB_WAREHOUSE_DAYS = 37;
+function getProdArrival(etd) {
+  if (!etd) return null;
+  const d = new Date(etd.getTime());
+  d.setDate(d.getDate() + FOB_WAREHOUSE_DAYS);
+  return d;
+}
+function fmtDateShort(d) {
+  if (!d || !(d instanceof Date) || isNaN(d)) return "—";
+  return d.toLocaleDateString("en-US", { month:"short", day:"numeric", year:"2-digit" });
+}
+
+function ProductionRecapView({ productionData, openOrdersData, styleOverrides }) {
+  const [search, setSearch] = useState("");
+  const [sortMode, setSortMode] = useState("etd-asc");
+  const [expanded, setExpanded] = useState({});
+
+  // Group production data by production PO
+  const groups = useMemo(() => {
+    const g = {};
+    productionData.forEach(p => {
+      const key = p.production || "(No Production #)";
+      if (!g[key]) g[key] = { production: key, poName: p.poName || "", lines: [], totalUnits: 0, styles: new Set(), etds: [], brands: new Set() };
+      g[key].lines.push(p);
+      g[key].totalUnits += p.units || 0;
+      g[key].styles.add(p.style);
+      if (p.brand) g[key].brands.add(p.brand);
+      if (p.etd) g[key].etds.push(p.etd);
+      if (p.poName && !g[key].poName) g[key].poName = p.poName;
+    });
+    return g;
+  }, [productionData]);
+
+  // Filter and sort
+  const groupList = useMemo(() => {
+    let list = Object.values(groups);
+    if (search) {
+      const s = search.toLowerCase();
+      list = list.filter(g =>
+        g.production.toLowerCase().includes(s) ||
+        g.poName.toLowerCase().includes(s) ||
+        [...g.brands].some(b => b.toLowerCase().includes(s)) ||
+        g.lines.some(l => l.style.toLowerCase().includes(s)) ||
+        g.lines.some(l => {
+          if (!openOrdersData?.length) return false;
+          return openOrdersData.filter(o => {
+            const oBase = (o.style || o.baseStyle || "").toUpperCase().split("-")[0];
+            return oBase === l.style && (o.openQty || o.open_qty || 0) > 0;
+          }).some(o => (o.orderNo || o.po_number || "").toLowerCase().includes(s) || (o.customerFull || o.customer || "").toLowerCase().includes(s));
+        })
+      );
+    }
+    const [sortKey, sortDir] = sortMode.split("-");
+    list.sort((a, b) => {
+      let va, vb;
+      if (sortKey === "units") { va = a.totalUnits; vb = b.totalUnits; }
+      else if (sortKey === "etd") {
+        va = a.etds.length ? Math.min(...a.etds.map(d => d.getTime())) : Infinity;
+        vb = b.etds.length ? Math.min(...b.etds.map(d => d.getTime())) : Infinity;
+      } else if (sortKey === "name") {
+        va = (a.poName || a.production).toLowerCase();
+        vb = (b.poName || b.production).toLowerCase();
+        return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+      } else if (sortKey === "styles") { va = a.styles.size; vb = b.styles.size; }
+      else { va = a.totalUnits; vb = b.totalUnits; }
+      return sortDir === "asc" ? va - vb : vb - va;
+    });
+    return list;
+  }, [groups, search, sortMode, openOrdersData]);
+
+  // Summary stats
+  const totalPOs = groupList.length;
+  const totalLines = groupList.reduce((s, g) => s + g.lines.length, 0);
+  const totalUnits = groupList.reduce((s, g) => s + g.totalUnits, 0);
+  const allStyles = new Set(); groupList.forEach(g => g.styles.forEach(s => allStyles.add(s)));
+  const allBrands = new Set(); groupList.forEach(g => g.brands.forEach(b => allBrands.add(b)));
+  const allEtds = []; groupList.forEach(g => g.etds.forEach(d => allEtds.push(d)));
+  const earliestEtd = allEtds.length ? new Date(Math.min(...allEtds.map(d => d.getTime()))) : null;
+  const latestEtd = allEtds.length ? new Date(Math.max(...allEtds.map(d => d.getTime()))) : null;
+
+  const toggleGroup = (prod) => setExpanded(prev => ({ ...prev, [prod]: !prev[prod] }));
+  const expandAll = () => {
+    const all = {};
+    groupList.forEach(g => { all[g.production] = true; });
+    setExpanded(all);
+  };
+  const collapseAll = () => setExpanded({});
+
+  const getStatus = (g) => {
+    const now = new Date();
+    if (g.etds.length === 0) return { label:"NO ETD", emoji:"❓", bg:"#fef2f2", color:"#dc2626" };
+    const latestArr = getProdArrival(new Date(Math.max(...g.etds.map(d => d.getTime()))));
+    const etdMin = new Date(Math.min(...g.etds.map(d => d.getTime())));
+    if (latestArr < now) return { label:"ARRIVED", emoji:"✅", bg:"#d1fae5", color:"#065f46" };
+    if (etdMin < now) return { label:"IN TRANSIT", emoji:"🚢", bg:"#fef3c7", color:"#92400e" };
+    return { label:"PRODUCING", emoji:"🏭", bg:"#dbeafe", color:"#1e40af" };
+  };
+
+  const getLinkedPOs = (style) => {
+    if (!openOrdersData?.length) return [];
+    return openOrdersData.filter(o => {
+      const oBase = (o.style || o.baseStyle || "").toUpperCase().split("-")[0];
+      return oBase === style && (o.openQty || o.open_qty || 0) > 0;
+    });
+  };
+
+  if (productionData.length === 0) {
+    return (
+      <div style={{ textAlign:"center", padding:80, color:"#64748b" }}>
+        <p style={{ fontSize:56, marginBottom:16 }}>🏭</p>
+        <p style={{ fontSize:20, fontWeight:700, color:"#e2e8f0", marginBottom:8 }}>No Production Data</p>
+        <p style={{ fontSize:14, color:"#94a3b8" }}>Production data is loading or unavailable</p>
+      </div>
+    );
+  }
+
+  const statCardStyle = { background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"16px 12px", textAlign:"center" };
+
+  return (
+    <div style={{ paddingBottom:16 }}>
+      {/* Summary Stats */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:10, marginBottom:16 }}>
+        <div style={statCardStyle}>
+          <div style={{ fontSize:26, fontWeight:800, color:"#0891b2" }}>{totalPOs}</div>
+          <div style={{ fontSize:10, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Production POs{search ? " (filtered)" : ""}</div>
+        </div>
+        <div style={statCardStyle}>
+          <div style={{ fontSize:26, fontWeight:800, color:"#7c3aed" }}>{totalLines}</div>
+          <div style={{ fontSize:10, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Lines</div>
+        </div>
+        <div style={statCardStyle}>
+          <div style={{ fontSize:26, fontWeight:800, color:"#059669" }}>{totalUnits.toLocaleString()}</div>
+          <div style={{ fontSize:10, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Total Units</div>
+        </div>
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:10, marginBottom:20 }}>
+        <div style={statCardStyle}>
+          <div style={{ fontSize:26, fontWeight:800, color:"#d97706" }}>{allStyles.size}</div>
+          <div style={{ fontSize:10, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Unique Styles</div>
+        </div>
+        <div style={statCardStyle}>
+          <div style={{ fontSize:26, fontWeight:800, color:"#dc2626" }}>{allBrands.size}</div>
+          <div style={{ fontSize:10, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Brands</div>
+        </div>
+        <div style={statCardStyle}>
+          <div style={{ fontSize:14, fontWeight:800, color:"#e2e8f0" }}>{fmtDateShort(earliestEtd)}</div>
+          <div style={{ fontSize:9, color:"#64748b", margin:"1px 0" }}>to</div>
+          <div style={{ fontSize:14, fontWeight:800, color:"#e2e8f0" }}>{fmtDateShort(latestEtd)}</div>
+          <div style={{ fontSize:10, fontWeight:700, color:"#64748b", textTransform:"uppercase", marginTop:2 }}>ETD Range</div>
+        </div>
+      </div>
+
+      {/* Search + Sort + Actions */}
+      <div style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:14, marginBottom:16 }}>
+        <div style={{ position:"relative", marginBottom:10 }}>
+          <span style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)", fontSize:16 }}>🔍</span>
+          <input
+            type="text" value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Search PO #, production #, brand, style..."
+            style={{ width:"100%", padding:"11px 14px 11px 38px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:14, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none", boxSizing:"border-box" }}
+          />
+        </div>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+          <select value={sortMode} onChange={e => setSortMode(e.target.value)}
+            style={{ flex:1, minWidth:140, padding:"9px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:12, fontWeight:600, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none", cursor:"pointer" }}>
+            <option value="units-desc">Most Units</option>
+            <option value="units-asc">Fewest Units</option>
+            <option value="styles-desc">Most Styles</option>
+            <option value="etd-asc">Earliest ETD</option>
+            <option value="etd-desc">Latest ETD</option>
+            <option value="name-asc">Name A-Z</option>
+          </select>
+          <button onClick={expandAll} style={{ padding:"9px 14px", background:"rgba(255,255,255,.08)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, fontSize:11, fontWeight:700, color:"#94a3b8", cursor:"pointer" }}>Expand All</button>
+          <button onClick={collapseAll} style={{ padding:"9px 14px", background:"rgba(255,255,255,.08)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, fontSize:11, fontWeight:700, color:"#94a3b8", cursor:"pointer" }}>Collapse</button>
+        </div>
+      </div>
+
+      {/* Production PO Groups */}
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {groupList.length === 0 ? (
+          <div style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:48, textAlign:"center" }}>
+            <p style={{ fontSize:48, marginBottom:16 }}>🔍</p>
+            <p style={{ fontSize:18, fontWeight:700, color:"#e2e8f0" }}>No production found</p>
+            <p style={{ fontSize:14, color:"#94a3b8" }}>Try adjusting your search terms</p>
+          </div>
+        ) : groupList.map(g => {
+          const isOpen = !!expanded[g.production];
+          const status = getStatus(g);
+          const brandList = [...g.brands];
+          const etdMin = g.etds.length ? new Date(Math.min(...g.etds.map(d => d.getTime()))) : null;
+          const etdMax = g.etds.length ? new Date(Math.max(...g.etds.map(d => d.getTime()))) : null;
+          const etdRange = etdMin ? (etdMin.getTime() === etdMax.getTime() ? fmtDateShort(etdMin) : `${fmtDateShort(etdMin)} → ${fmtDateShort(etdMax)}`) : "No ETD";
+          const sortedLines = [...g.lines].sort((a, b) => (b.units || 0) - (a.units || 0));
+
+          return (
+            <div key={g.production} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, overflow:"hidden", borderLeft:`4px solid ${g.etds.length === 0 ? "#fecaca" : "#67e8f9"}` }}>
+              {/* Header row - clickable */}
+              <div onClick={() => toggleGroup(g.production)} style={{ padding:"14px 16px", cursor:"pointer", display:"flex", alignItems:"center", gap:12 }}>
+                <div style={{ fontSize:16, transition:"transform 0.2s", transform:`rotate(${isOpen ? "90" : "0"}deg)`, flexShrink:0, color:"#94a3b8" }}>▶</div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginBottom:4 }}>
+                    <span style={{ fontWeight:800, fontSize:14, color:"#e2e8f0", fontFamily:"monospace" }}>{g.production}</span>
+                    {g.poName && <span style={{ fontWeight:600, fontSize:12, color:"#94a3b8" }}>— {g.poName}</span>}
+                    <span style={{ fontSize:10, fontWeight:700, background:status.bg, color:status.color, padding:"2px 8px", borderRadius:6 }}>{status.emoji} {status.label}</span>
+                  </div>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", fontSize:11, color:"#64748b" }}>
+                    {brandList.map(b => (
+                      <span key={b} style={{ fontWeight:700, background:"rgba(99,102,241,.15)", color:"#818cf8", padding:"1px 8px", borderRadius:4, fontSize:10 }}>{b}</span>
+                    ))}
+                    <span>📦 <strong style={{ color:"#e2e8f0" }}>{g.styles.size}</strong> styles</span>
+                    <span>📅 {etdRange}</span>
+                  </div>
+                </div>
+                <div style={{ textAlign:"right", flexShrink:0 }}>
+                  <div style={{ fontSize:20, fontWeight:800, color:"#0891b2" }}>{g.totalUnits.toLocaleString()}</div>
+                  <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>units</div>
+                </div>
+              </div>
+
+              {/* Expanded detail */}
+              {isOpen && (
+                <div style={{ borderTop:"1px solid rgba(255,255,255,.08)", padding:"12px 12px 8px", background:"rgba(0,0,0,.15)" }}>
+                  {sortedLines.map((l, li) => {
+                    const arrival = l.etd ? getProdArrival(l.etd) : null;
+                    const custPOs = getLinkedPOs(l.style);
+                    const imgUrl = `${API_URL}/image/${l.style}?brand=${l.brand || ""}`;
+                    return (
+                      <div key={`${l.style}-${li}`} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 4px", borderBottom: li < sortedLines.length - 1 ? "1px solid rgba(255,255,255,.06)" : "none" }}>
+                        <img src={imgUrl} alt={l.style} style={{ width:40, height:40, objectFit:"cover", borderRadius:8, border:"1px solid rgba(255,255,255,.1)", flexShrink:0 }}
+                          onError={e => { e.target.style.display = "none"; }} />
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontWeight:700, fontFamily:"monospace", color:"#818cf8", fontSize:13 }}>{l.style}</div>
+                          <div style={{ fontSize:11, color:"#64748b", display:"flex", gap:8, flexWrap:"wrap", marginTop:2 }}>
+                            <span>{l.brand}</span>
+                            <span>ETD: {l.etd ? fmtDateShort(l.etd) : "—"}</span>
+                            <span>Arrival: {arrival ? fmtDateShort(arrival) : "—"}</span>
+                          </div>
+                          {custPOs.length > 0 && (
+                            <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginTop:4 }}>
+                              {custPOs.slice(0, 4).map((o, oi) => {
+                                const poNum = o.orderNo || o.po_number || "PO";
+                                const isPipeline = o.isPipeline || o.is_pipeline;
+                                return (
+                                  <span key={oi} style={{ fontSize:9, fontWeight:700, background: isPipeline ? "#fef3c7" : "#f0fdf4", color: isPipeline ? "#92400e" : "#16a34a", padding:"2px 6px", borderRadius:4, fontFamily:"monospace" }}>
+                                    {poNum}{isPipeline ? " B" : ""}
+                                  </span>
+                                );
+                              })}
+                              {custPOs.length > 4 && <span style={{ fontSize:9, color:"#94a3b8", fontWeight:600 }}>+{custPOs.length - 4} more</span>}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ textAlign:"right", flexShrink:0 }}>
+                          <div style={{ fontWeight:700, color:"#e2e8f0", fontSize:14 }}>{(l.units || 0).toLocaleString()}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {/* Footer */}
+                  <div style={{ marginTop:8, paddingTop:8, borderTop:"1px solid rgba(255,255,255,.08)", display:"flex", gap:12, fontSize:10, color:"#64748b", flexWrap:"wrap" }}>
+                    <span>🏭 <strong>{g.production}</strong></span>
+                    {g.poName && <span>📋 {g.poName}</span>}
+                    <span>📦 <strong>{g.totalUnits.toLocaleString()}</strong> units · <strong>{g.styles.size}</strong> styles</span>
+                    <span>📅 {etdRange}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function VersaInventoryApp() {
   const [view, setView] = useState("loading"); // loading, brands, inventory, detail
   const [inventory, setInventory] = useState([]);
@@ -1845,6 +2123,7 @@ export default function VersaInventoryApp() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [brandCategoryFilter, setBrandCategoryFilter] = useState("all"); // filters brand cards in brands view
   const [showExport, setShowExport] = useState(false);
+  const [activeTab, setActiveTab] = useState("inventory"); // "inventory" | "production"
 
   const allItems = useMemo(() => {
     return Object.values(brands).flatMap(b => b.items || []);
@@ -2336,7 +2615,7 @@ export default function VersaInventoryApp() {
               </g>
             </svg>
             <div>
-              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>Inventory Management</h1>
+              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>{activeTab === "production" ? "Production Recap" : "Inventory Management"}</h1>
               <div style={{ display:"flex",alignItems:"center",gap:8 }}>
                 <p style={{ fontSize:12,color:"#64748b" }}>Real-time inventory system</p>
                 <span style={{ fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:99,background:statusColors[syncStatus.type],color:statusTextColors[syncStatus.type] }}>
@@ -2371,8 +2650,9 @@ export default function VersaInventoryApp() {
       </header>
 
       {/* ─── CONTENT ───────────────────────── */}
-      <main style={{ maxWidth:1280,margin:"0 auto",padding:"24px 20px",minHeight:"calc(100vh - 68px)" }}>
+      <main style={{ maxWidth:1280,margin:"0 auto",padding:"24px 20px 100px",minHeight:"calc(100vh - 68px)" }}>
         
+        {activeTab === "inventory" && <>
         {/* LOADING */}
         {view === "loading" && <LoadingSpinner text="Loading Inventory..." />}
 
@@ -2638,12 +2918,18 @@ export default function VersaInventoryApp() {
             )}
           </>
         )}
+        </>}
+
+        {/* PRODUCTION TAB */}
+        {activeTab === "production" && (
+          <ProductionRecapView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} />
+        )}
       </main>
 
       {/* ─── FLOATING BACK BUTTON (inventory view) ─── */}
-      {view === "inventory" && (
+      {activeTab === "inventory" && view === "inventory" && (
         <button onClick={goToBrands} style={{
-          position:"fixed", bottom:24, left:24, zIndex:900,
+          position:"fixed", bottom:88, left:24, zIndex:900,
           background:"linear-gradient(135deg,#334155,#1e293b)", color:"#e2e8f0",
           border:"1px solid rgba(255,255,255,.15)", padding:"12px 20px", borderRadius:14,
           fontWeight:700, fontSize:14, cursor:"pointer",
@@ -2656,6 +2942,33 @@ export default function VersaInventoryApp() {
           ← All Brands
         </button>
       )}
+
+      {/* ─── BOTTOM TAB BAR ─── */}
+      <div style={{
+        position:"fixed", bottom:0, left:0, right:0, zIndex:950,
+        background:"rgba(15,23,42,.95)", backdropFilter:"blur(16px)",
+        borderTop:"1px solid rgba(255,255,255,.08)",
+        display:"flex", justifyContent:"center", gap:0,
+        paddingBottom:"env(safe-area-inset-bottom, 0px)"
+      }}>
+        {[
+          { key:"inventory", label:"Inventory", icon:"📦", activeColor:"#818cf8" },
+          { key:"production", label:"Production", icon:"🏭", activeColor:"#0891b2" },
+        ].map(tab => {
+          const isActive = activeTab === tab.key;
+          return (
+            <button key={tab.key} onClick={() => setActiveTab(tab.key)} style={{
+              flex:1, maxWidth:200, display:"flex", flexDirection:"column", alignItems:"center", gap:3,
+              padding:"10px 0 12px", background:"transparent", border:"none", cursor:"pointer",
+              position:"relative", transition:"all .2s"
+            }}>
+              {isActive && <div style={{ position:"absolute", top:0, left:"20%", right:"20%", height:3, borderRadius:"0 0 3px 3px", background:tab.activeColor }} />}
+              <span style={{ fontSize:22, filter: isActive ? "none" : "grayscale(0.7)", transition:"filter .2s" }}>{tab.icon}</span>
+              <span style={{ fontSize:11, fontWeight: isActive ? 800 : 600, color: isActive ? tab.activeColor : "#64748b", transition:"color .2s", letterSpacing:".02em" }}>{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
 
       {/* ─── MODALS ────────────────────────── */}
       {selectedItem && (
