@@ -1820,7 +1820,7 @@ const COLOR_CATS = ["white","black","navy","other_solids","fancies"];
 const COLOR_CAT_LABELS = { white:"White Solid", black:"Black Solid", navy:"Navy Solid", other_solids:"Other Solids", fancies:"Fancies" };
 const COLOR_CAT_EMOJI = { white:"⬜", black:"⬛", navy:"🟦", other_solids:"🎨", fancies:"✨" };
 
-function AnalyticsView({ inventory, colorMap, styleOverrides }) {
+function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignments }) {
   const [expandedBrand, setExpandedBrand] = useState({});
   const [sortBy, setSortBy] = useState("total-desc");
   const [search, setSearch] = useState("");
@@ -1836,6 +1836,38 @@ function AnalyticsView({ inventory, colorMap, styleOverrides }) {
       const committed = Math.abs(item.committed||0) + Math.abs(item.allocated||0);
       const totalStock = wh + incoming;
       const ats = item.total_ats || 0;
+
+      // ── Split committed into WH vs Overseas using same heuristic as rebuildBrands ──
+      let commWh = committed, commOs = 0;
+      if (committed > 0) {
+        const assign = (deductionAssignments || {})[item.sku] || null;
+        if (assign === 'overseas') {
+          commWh = 0; commOs = committed;
+        } else if (assign === 'warehouse') {
+          commWh = committed; commOs = 0;
+        } else if (assign === 'fifo') {
+          commWh = Math.min(committed, wh);
+          commOs = Math.max(0, committed - wh);
+        } else if (wh <= 0 && incoming > 0) {
+          commWh = 0; commOs = committed;
+        } else if (incoming > 0) {
+          const totalAvail = wh + incoming;
+          if (committed > totalAvail) {
+            commWh = wh; commOs = committed - wh;
+          } else {
+            const neg = (wh - committed) < 0;
+            const covers = incoming >= committed;
+            const margin = committed > wh && Math.abs(incoming - committed) <= committed * 0.05;
+            if (margin || (neg && covers)) {
+              commWh = 0; commOs = committed;
+            } else {
+              commWh = committed; commOs = 0;
+            }
+          }
+        } else {
+          commWh = committed; commOs = 0;
+        }
+      }
 
       // Brand resolution
       let brand = item.brand || "UNKNOWN";
@@ -1861,15 +1893,15 @@ function AnalyticsView({ inventory, colorMap, styleOverrides }) {
           fullName: (BRAND_MAPPING[brand]||{}).full_name || brand,
           logo: (BRAND_MAPPING[brand]||{}).logo || DEFAULT_LOGO,
           colors: {},
-          totals: { wh:0, incoming:0, totalStock:0, committed:0, ats:0, skus:0 }
+          totals: { wh:0, incoming:0, totalStock:0, committed:0, commWh:0, commOs:0, ats:0, skus:0 }
         };
-        COLOR_CATS.forEach(c => { brandMap[brand].colors[c] = { wh:0, incoming:0, totalStock:0, committed:0, ats:0, skus:0 }; });
+        COLOR_CATS.forEach(c => { brandMap[brand].colors[c] = { wh:0, incoming:0, totalStock:0, committed:0, commWh:0, commOs:0, ats:0, skus:0 }; });
       }
 
       const b = brandMap[brand];
       const cc = b.colors[colorCat];
-      cc.wh += wh; cc.incoming += incoming; cc.totalStock += totalStock; cc.committed += committed; cc.ats += ats; cc.skus++;
-      b.totals.wh += wh; b.totals.incoming += incoming; b.totals.totalStock += totalStock; b.totals.committed += committed; b.totals.ats += ats; b.totals.skus++;
+      cc.wh += wh; cc.incoming += incoming; cc.totalStock += totalStock; cc.committed += committed; cc.commWh += commWh; cc.commOs += commOs; cc.ats += ats; cc.skus++;
+      b.totals.wh += wh; b.totals.incoming += incoming; b.totals.totalStock += totalStock; b.totals.committed += committed; b.totals.commWh += commWh; b.totals.commOs += commOs; b.totals.ats += ats; b.totals.skus++;
     });
 
     // Sort brands
@@ -1898,7 +1930,7 @@ function AnalyticsView({ inventory, colorMap, styleOverrides }) {
     });
 
     return list;
-  }, [inventory, colorMap, styleOverrides, sortBy]);
+  }, [inventory, colorMap, styleOverrides, sortBy, deductionAssignments]);
 
   const filtered = useMemo(() => {
     if (!search) return data;
@@ -1908,8 +1940,8 @@ function AnalyticsView({ inventory, colorMap, styleOverrides }) {
 
   // Global sums
   const gTotals = useMemo(() => {
-    const g = { wh:0, incoming:0, totalStock:0, committed:0, ats:0 };
-    filtered.forEach(b => { g.wh += b.totals.wh; g.incoming += b.totals.incoming; g.totalStock += b.totals.totalStock; g.committed += b.totals.committed; g.ats += b.totals.ats; });
+    const g = { wh:0, incoming:0, totalStock:0, committed:0, commWh:0, commOs:0, ats:0 };
+    filtered.forEach(b => { g.wh += b.totals.wh; g.incoming += b.totals.incoming; g.totalStock += b.totals.totalStock; g.committed += b.totals.committed; g.commWh += b.totals.commWh; g.commOs += b.totals.commOs; g.ats += b.totals.ats; });
     return g;
   }, [filtered]);
 
@@ -1935,12 +1967,24 @@ function AnalyticsView({ inventory, colorMap, styleOverrides }) {
   return (
     <div style={{ paddingBottom:16 }}>
       {/* Global Summary Row */}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(5, 1fr)", gap:8, marginBottom:16 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:8 }}>
         {[
           { label:"Total Stock", val:gTotals.totalStock, color:"#e2e8f0", icon:"📦" },
           { label:"Warehouse", val:gTotals.wh, color:"#a78bfa", icon:"🏭" },
           { label:"Overseas", val:gTotals.incoming, color:"#fbbf24", icon:"🚢" },
-          { label:"Committed", val:gTotals.committed, color:"#f87171", icon:"📋" },
+        ].map(s => (
+          <div key={s.label} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12, padding:"12px 8px", textAlign:"center" }}>
+            <div style={{ fontSize:10, marginBottom:2 }}>{s.icon}</div>
+            <div style={{ fontSize:18, fontWeight:800, color:s.color }}>{s.val.toLocaleString()}</div>
+            <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:8, marginBottom:16 }}>
+        {[
+          { label:"Comm (WH)", val:gTotals.commWh, color:"#fb923c", icon:"📋" },
+          { label:"Comm (OS)", val:gTotals.commOs, color:"#c084fc", icon:"📋" },
+          { label:"Total Committed", val:gTotals.committed, color:"#f87171", icon:"📋" },
           { label:"ATS", val:gTotals.ats, color:"#34d399", icon:"✅" },
         ].map(s => (
           <div key={s.label} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12, padding:"12px 8px", textAlign:"center" }}>
@@ -1976,7 +2020,7 @@ function AnalyticsView({ inventory, colorMap, styleOverrides }) {
         {filtered.map(b => {
           const isOpen = !!expandedBrand[b.brand];
           const t = b.totals;
-          const atsPct = t.totalStock > 0 ? Math.round((t.ats / t.totalStock) * 100) : 0;
+          const atsPct = t.totalStock > 0 ? Math.round((t.committed / t.totalStock) * 100) : 0;
 
           return (
             <div key={b.brand} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, overflow:"hidden" }}>
@@ -2010,16 +2054,18 @@ function AnalyticsView({ inventory, colorMap, styleOverrides }) {
               {/* Expanded: Color Breakdown Table */}
               {isOpen && (
                 <div style={{ borderTop:"1px solid rgba(255,255,255,.08)", background:"rgba(0,0,0,.15)", overflowX:"auto" }}>
-                  <table style={{ width:"100%", borderCollapse:"collapse", minWidth:500 }}>
+                  <table style={{ width:"100%", borderCollapse:"collapse", minWidth:680 }}>
                     <thead>
                       <tr style={{ borderBottom:"2px solid rgba(255,255,255,.1)" }}>
                         <th style={{ ...headCell, textAlign:"left", paddingLeft:16 }}>Color</th>
                         <th style={headCell}>Total Stock</th>
                         <th style={headCell}>Warehouse</th>
                         <th style={headCell}>Overseas</th>
-                        <th style={headCell}>Committed</th>
+                        <th style={headCell}>Comm (WH)</th>
+                        <th style={headCell}>Comm (OS)</th>
+                        <th style={headCell}>Total Comm</th>
                         <th style={headCell}>ATS</th>
-                        <th style={headCell}>ATS %</th>
+                        <th style={headCell}>Sell-Thru %</th>
                         <th style={headCell}>Styles</th>
                       </tr>
                     </thead>
@@ -2027,8 +2073,8 @@ function AnalyticsView({ inventory, colorMap, styleOverrides }) {
                       {COLOR_CATS.map(c => {
                         const cc = b.colors[c];
                         if (cc.totalStock === 0 && cc.ats === 0) return null;
-                        const ap = cc.totalStock > 0 ? Math.round((cc.ats / cc.totalStock) * 100) : 0;
-                        const apColor = ap <= 15 ? "#ef4444" : ap <= 30 ? "#f59e0b" : "#34d399";
+                        const ap = cc.totalStock > 0 ? Math.round((cc.committed / cc.totalStock) * 100) : 0;
+                        const apColor = ap >= 80 ? "#ef4444" : ap >= 60 ? "#f59e0b" : "#34d399";
                         return (
                           <tr key={c} style={{ borderBottom:"1px solid rgba(255,255,255,.05)" }}>
                             <td style={{ padding:"8px 8px 8px 16px", display:"flex", alignItems:"center", gap:8 }}>
@@ -2038,10 +2084,12 @@ function AnalyticsView({ inventory, colorMap, styleOverrides }) {
                             <td style={{ ...numCell, color:"#e2e8f0" }}>{cc.totalStock.toLocaleString()}</td>
                             <td style={{ ...numCell, color:"#a78bfa" }}>{cc.wh.toLocaleString()}</td>
                             <td style={{ ...numCell, color:"#fbbf24" }}>{cc.incoming.toLocaleString()}</td>
+                            <td style={{ ...numCell, color:"#fb923c" }}>{cc.commWh.toLocaleString()}</td>
+                            <td style={{ ...numCell, color:"#c084fc" }}>{cc.commOs.toLocaleString()}</td>
                             <td style={{ ...numCell, color:"#f87171" }}>{cc.committed.toLocaleString()}</td>
                             <td style={{ ...numCell, color:"#34d399" }}>{cc.ats.toLocaleString()}</td>
                             <td style={{ ...numCell }}>
-                              <span style={{ fontSize:12, fontWeight:800, color:apColor, background: ap <= 15 ? "rgba(239,68,68,.12)" : ap <= 30 ? "rgba(245,158,11,.12)" : "rgba(52,211,153,.12)", padding:"3px 8px", borderRadius:6 }}>{ap}%</span>
+                              <span style={{ fontSize:12, fontWeight:800, color:apColor, background: ap >= 80 ? "rgba(239,68,68,.12)" : ap >= 60 ? "rgba(245,158,11,.12)" : "rgba(52,211,153,.12)", padding:"3px 8px", borderRadius:6 }}>{ap}%</span>
                             </td>
                             <td style={{ ...numCell, color:"#94a3b8" }}>{cc.skus}</td>
                           </tr>
@@ -2054,10 +2102,12 @@ function AnalyticsView({ inventory, colorMap, styleOverrides }) {
                         <td style={{ ...numCell, fontWeight:800, color:"#e2e8f0" }}>{t.totalStock.toLocaleString()}</td>
                         <td style={{ ...numCell, fontWeight:800, color:"#a78bfa" }}>{t.wh.toLocaleString()}</td>
                         <td style={{ ...numCell, fontWeight:800, color:"#fbbf24" }}>{t.incoming.toLocaleString()}</td>
+                        <td style={{ ...numCell, fontWeight:800, color:"#fb923c" }}>{t.commWh.toLocaleString()}</td>
+                        <td style={{ ...numCell, fontWeight:800, color:"#c084fc" }}>{t.commOs.toLocaleString()}</td>
                         <td style={{ ...numCell, fontWeight:800, color:"#f87171" }}>{t.committed.toLocaleString()}</td>
                         <td style={{ ...numCell, fontWeight:800, color:"#34d399" }}>{t.ats.toLocaleString()}</td>
                         <td style={{ ...numCell }}>
-                          <span style={{ fontSize:12, fontWeight:800, color: atsPct <= 15 ? "#ef4444" : atsPct <= 30 ? "#f59e0b" : "#34d399", background: atsPct <= 15 ? "rgba(239,68,68,.12)" : atsPct <= 30 ? "rgba(245,158,11,.12)" : "rgba(52,211,153,.12)", padding:"3px 8px", borderRadius:6 }}>{atsPct}%</span>
+                          <span style={{ fontSize:12, fontWeight:800, color: atsPct >= 80 ? "#ef4444" : atsPct >= 60 ? "#f59e0b" : "#34d399", background: atsPct >= 80 ? "rgba(239,68,68,.12)" : atsPct >= 60 ? "rgba(245,158,11,.12)" : "rgba(52,211,153,.12)", padding:"3px 8px", borderRadius:6 }}>{atsPct}%</span>
                         </td>
                         <td style={{ ...numCell, fontWeight:800, color:"#94a3b8" }}>{t.skus}</td>
                       </tr>
@@ -3194,7 +3244,7 @@ export default function VersaInventoryApp() {
 
         {/* ANALYTICS TAB */}
         {activeTab === "analytics" && (
-          <AnalyticsView inventory={inventory} colorMap={colorMap} styleOverrides={styleOverrides} />
+          <AnalyticsView inventory={inventory} colorMap={colorMap} styleOverrides={styleOverrides} deductionAssignments={deductionAssignments} />
         )}
       </main>
 
