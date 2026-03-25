@@ -1814,6 +1814,413 @@ function BannerBadges({ sku, brandAbbr, bannerRules }) {
 // MAIN APP
 // ═══════════════════════════════════════════
 // ═══════════════════════════════════════════
+// ANALYTICS / SELL-THROUGH VIEW
+// ═══════════════════════════════════════════
+const COLOR_CATS = ["white","black","navy","other_solids","fancies"];
+const COLOR_CAT_LABELS = { white:"White Solid", black:"Black Solid", navy:"Navy Solid", other_solids:"Other Solids", fancies:"Fancies" };
+const COLOR_CAT_EMOJI = { white:"⬜", black:"⬛", navy:"🟦", other_solids:"🎨", fancies:"✨" };
+const COLOR_CAT_COLORS = { white:"#94a3b8", black:"#1e293b", navy:"#1e3a5f", other_solids:"#7c3aed", fancies:"#f59e0b" };
+const ALERT_THRESHOLDS = { critical: 80, warning: 60 };
+
+function AnalyticsView({ inventory, productionData, colorMap, styleOverrides, onStyleClick }) {
+  const [expandedBrand, setExpandedBrand] = useState({});
+  const [thresholds, setThresholds] = useState(ALERT_THRESHOLDS);
+  const [viewMode, setViewMode] = useState("brand"); // "brand" | "alerts"
+  const [sortBy, setSortBy] = useState("sellthru-desc");
+
+  // Build analytics data: for each item, compute raw numbers from inventory (unfiltered)
+  const analytics = useMemo(() => {
+    if (!inventory?.length) return { brands: {}, global: null };
+
+    const brandMap = {};
+    inventory.forEach(item => {
+      if (!item.sku) return;
+      const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0);
+      const committed = Math.abs(item.committed||0) + Math.abs(item.allocated||0);
+      const incoming = item.incoming || 0;
+      const ats = Math.max(0, wh - committed); // warehouse ATS only (no incoming)
+
+      // Determine brand
+      let brand = item.brand || "UNKNOWN";
+      const skuUp = item.sku.toUpperCase();
+      if (skuUp.startsWith("VP")) brand = "VERSA";
+      else if (skuUp.startsWith("LUCK")) brand = "LUCKY";
+      else if (item.sku.length >= 4) {
+        const code = item.sku.substring(2,4).toUpperCase();
+        if (SKU_BRAND_CODE_MAP[code]) brand = SKU_BRAND_CODE_MAP[code];
+      }
+      if (styleOverrides) {
+        const ov = getStyleOverride(item.sku, styleOverrides);
+        if (ov && ov.brand) brand = ov.brand;
+      }
+
+      // Determine color category
+      const ci = getStyleColorInfo(item.sku, brand, colorMap, styleOverrides);
+      const colorCat = classifyColor(ci ? ci.display : "", brand);
+
+      if (!brandMap[brand]) {
+        brandMap[brand] = { brand, fullName: (BRAND_MAPPING[brand]||{}).full_name || brand, logo: (BRAND_MAPPING[brand]||{}).logo || DEFAULT_LOGO, colors: {}, totals: { wh:0, committed:0, incoming:0, ats:0, skuCount:0 } };
+        COLOR_CATS.forEach(c => { brandMap[brand].colors[c] = { wh:0, committed:0, incoming:0, ats:0, skuCount:0, skus:[] }; });
+      }
+      const b = brandMap[brand];
+      const cc = b.colors[colorCat];
+      cc.wh += wh; cc.committed += committed; cc.incoming += incoming; cc.ats += ats; cc.skuCount++; cc.skus.push(item.sku);
+      b.totals.wh += wh; b.totals.committed += committed; b.totals.incoming += incoming; b.totals.ats += ats; b.totals.skuCount++;
+    });
+
+    // Compute sell-through percentages
+    Object.values(brandMap).forEach(b => {
+      b.totals.sellThru = b.totals.wh > 0 ? Math.round((b.totals.committed / b.totals.wh) * 100) : 0;
+      b.totals.incomingCoverage = b.totals.committed > 0 ? Math.round(((b.totals.ats + b.totals.incoming) / b.totals.committed) * 100) : 999;
+      COLOR_CATS.forEach(c => {
+        const cc = b.colors[c];
+        cc.sellThru = cc.wh > 0 ? Math.round((cc.committed / cc.wh) * 100) : 0;
+        cc.incomingCoverage = cc.committed > 0 ? Math.round(((cc.ats + cc.incoming) / cc.committed) * 100) : 999;
+      });
+    });
+
+    // Global totals
+    const g = { wh:0, committed:0, incoming:0, ats:0, skuCount:0 };
+    const gColors = {};
+    COLOR_CATS.forEach(c => { gColors[c] = { wh:0, committed:0, incoming:0, ats:0, skuCount:0 }; });
+    Object.values(brandMap).forEach(b => {
+      g.wh += b.totals.wh; g.committed += b.totals.committed; g.incoming += b.totals.incoming; g.ats += b.totals.ats; g.skuCount += b.totals.skuCount;
+      COLOR_CATS.forEach(c => {
+        gColors[c].wh += b.colors[c].wh; gColors[c].committed += b.colors[c].committed;
+        gColors[c].incoming += b.colors[c].incoming; gColors[c].ats += b.colors[c].ats; gColors[c].skuCount += b.colors[c].skuCount;
+      });
+    });
+    g.sellThru = g.wh > 0 ? Math.round((g.committed / g.wh) * 100) : 0;
+    COLOR_CATS.forEach(c => {
+      gColors[c].sellThru = gColors[c].wh > 0 ? Math.round((gColors[c].committed / gColors[c].wh) * 100) : 0;
+    });
+
+    return { brands: brandMap, global: g, globalColors: gColors };
+  }, [inventory, colorMap, styleOverrides]);
+
+  // Build alerts list
+  const alerts = useMemo(() => {
+    const list = [];
+    Object.values(analytics.brands).forEach(b => {
+      COLOR_CATS.forEach(c => {
+        const cc = b.colors[c];
+        if (cc.wh === 0 && cc.incoming === 0) return; // skip empty
+        if (cc.sellThru >= thresholds.critical) {
+          list.push({ brand: b.brand, fullName: b.fullName, logo: b.logo, color: c, severity: "critical", ...cc });
+        } else if (cc.sellThru >= thresholds.warning) {
+          list.push({ brand: b.brand, fullName: b.fullName, logo: b.logo, color: c, severity: "warning", ...cc });
+        }
+      });
+    });
+    list.sort((a, b) => b.sellThru - a.sellThru);
+    return list;
+  }, [analytics, thresholds]);
+
+  // Sort brands
+  const sortedBrands = useMemo(() => {
+    let list = Object.values(analytics.brands).filter(b => b.totals.wh > 0 || b.totals.incoming > 0);
+    const [key, dir] = sortBy.split("-");
+    list.sort((a, b) => {
+      let va, vb;
+      if (key === "sellthru") { va = a.totals.sellThru; vb = b.totals.sellThru; }
+      else if (key === "wh") { va = a.totals.wh; vb = b.totals.wh; }
+      else if (key === "units") { va = a.totals.committed; vb = b.totals.committed; }
+      else if (key === "name") { return dir === "asc" ? a.fullName.localeCompare(b.fullName) : b.fullName.localeCompare(a.fullName); }
+      else { va = a.totals.sellThru; vb = b.totals.sellThru; }
+      return dir === "asc" ? va - vb : vb - va;
+    });
+    return list;
+  }, [analytics, sortBy]);
+
+  const getSellThruColor = (pct) => {
+    if (pct >= thresholds.critical) return { bg:"#fef2f2", color:"#dc2626", border:"#fecaca", label:"CRITICAL" };
+    if (pct >= thresholds.warning) return { bg:"#fffbeb", color:"#d97706", border:"#fde68a", label:"WATCH" };
+    return { bg:"#f0fdf4", color:"#16a34a", border:"#bbf7d0", label:"HEALTHY" };
+  };
+
+  const SellThruBar = ({ pct, height = 8 }) => {
+    const st = getSellThruColor(pct);
+    return (
+      <div style={{ display:"flex", alignItems:"center", gap:8, flex:1 }}>
+        <div style={{ flex:1, height, borderRadius:height/2, background:"rgba(255,255,255,.08)", overflow:"hidden", position:"relative" }}>
+          <div style={{
+            width:`${Math.min(pct, 100)}%`, height:"100%", borderRadius:height/2,
+            background: pct >= thresholds.critical ? "linear-gradient(90deg,#ef4444,#dc2626)" : pct >= thresholds.warning ? "linear-gradient(90deg,#f59e0b,#d97706)" : "linear-gradient(90deg,#34d399,#10b981)",
+            transition:"width .4s ease"
+          }} />
+        </div>
+        <span style={{ fontSize:12, fontWeight:800, color:st.color, minWidth:42, textAlign:"right" }}>{pct}%</span>
+      </div>
+    );
+  };
+
+  if (!inventory?.length) {
+    return (
+      <div style={{ textAlign:"center", padding:80, color:"#64748b" }}>
+        <p style={{ fontSize:56, marginBottom:16 }}>📊</p>
+        <p style={{ fontSize:20, fontWeight:700, color:"#e2e8f0", marginBottom:8 }}>No Inventory Data</p>
+        <p style={{ fontSize:14, color:"#94a3b8" }}>Waiting for inventory to load...</p>
+      </div>
+    );
+  }
+
+  const g = analytics.global;
+  const gc = analytics.globalColors;
+  const statCard = { background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"14px 12px", textAlign:"center" };
+
+  return (
+    <div style={{ paddingBottom:16 }}>
+      {/* ── Global Sell-Through Header ── */}
+      <div style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:16, padding:20, marginBottom:16 }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14, flexWrap:"wrap", gap:8 }}>
+          <span style={{ fontSize:16, fontWeight:800, color:"#e2e8f0" }}>📊 Overall Sell-Through</span>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            {alerts.length > 0 && (
+              <span style={{ fontSize:11, fontWeight:700, background: alerts.some(a => a.severity === "critical") ? "#fef2f2" : "#fffbeb", color: alerts.some(a => a.severity === "critical") ? "#dc2626" : "#d97706", padding:"4px 10px", borderRadius:8, border:`1px solid ${alerts.some(a => a.severity === "critical") ? "#fecaca" : "#fde68a"}` }}>
+                🚨 {alerts.length} Replen Alert{alerts.length !== 1 ? "s" : ""}
+              </span>
+            )}
+            <span style={{ fontSize:13, fontWeight:800, color: getSellThruColor(g.sellThru).color }}>{g.sellThru}% Sold Through</span>
+          </div>
+        </div>
+        <SellThruBar pct={g.sellThru} height={10} />
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:8, marginTop:14 }}>
+          <div style={{ textAlign:"center" }}>
+            <div style={{ fontSize:18, fontWeight:800, color:"#a78bfa" }}>{g.wh.toLocaleString()}</div>
+            <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>WH Stock</div>
+          </div>
+          <div style={{ textAlign:"center" }}>
+            <div style={{ fontSize:18, fontWeight:800, color:"#f87171" }}>{g.committed.toLocaleString()}</div>
+            <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Committed</div>
+          </div>
+          <div style={{ textAlign:"center" }}>
+            <div style={{ fontSize:18, fontWeight:800, color:"#34d399" }}>{g.ats.toLocaleString()}</div>
+            <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>WH ATS</div>
+          </div>
+          <div style={{ textAlign:"center" }}>
+            <div style={{ fontSize:18, fontWeight:800, color:"#fbbf24" }}>{g.incoming.toLocaleString()}</div>
+            <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Incoming</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Global Color Breakdown ── */}
+      <div style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:16, padding:16, marginBottom:16 }}>
+        <div style={{ fontSize:14, fontWeight:700, color:"#e2e8f0", marginBottom:12 }}>🎨 Sell-Through by Color</div>
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {COLOR_CATS.map(c => {
+            const d = gc[c];
+            if (d.wh === 0 && d.incoming === 0) return null;
+            const st = getSellThruColor(d.sellThru);
+            return (
+              <div key={c} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 12px", background:"rgba(0,0,0,.15)", borderRadius:10, border:`1px solid ${d.sellThru >= thresholds.critical ? "rgba(239,68,68,.3)" : d.sellThru >= thresholds.warning ? "rgba(245,158,11,.3)" : "rgba(255,255,255,.06)"}` }}>
+                <span style={{ fontSize:16, width:24, textAlign:"center" }}>{COLOR_CAT_EMOJI[c]}</span>
+                <div style={{ minWidth:90 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:"#e2e8f0" }}>{COLOR_CAT_LABELS[c]}</div>
+                  <div style={{ fontSize:10, color:"#64748b" }}>{d.wh.toLocaleString()} WH · {d.committed.toLocaleString()} comm</div>
+                </div>
+                <SellThruBar pct={d.sellThru} />
+                {d.sellThru >= thresholds.warning && (
+                  <span style={{ fontSize:9, fontWeight:700, background:st.bg, color:st.color, padding:"2px 6px", borderRadius:4, whiteSpace:"nowrap" }}>{st.label}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Threshold Adjuster ── */}
+      <div style={{ background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.06)", borderRadius:12, padding:"10px 14px", marginBottom:16, display:"flex", gap:16, alignItems:"center", flexWrap:"wrap" }}>
+        <span style={{ fontSize:11, fontWeight:700, color:"#64748b" }}>Alert Thresholds:</span>
+        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+          <span style={{ fontSize:10, fontWeight:700, color:"#f87171" }}>🔴 Critical</span>
+          <select value={thresholds.critical} onChange={e => setThresholds(p => ({...p, critical: +e.target.value}))}
+            style={{ padding:"4px 8px", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", borderRadius:6, color:"#e2e8f0", fontSize:11, fontWeight:700 }}>
+            {[60,65,70,75,80,85,90,95].map(v => <option key={v} value={v}>{v}%</option>)}
+          </select>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+          <span style={{ fontSize:10, fontWeight:700, color:"#fbbf24" }}>🟡 Warning</span>
+          <select value={thresholds.warning} onChange={e => setThresholds(p => ({...p, warning: +e.target.value}))}
+            style={{ padding:"4px 8px", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", borderRadius:6, color:"#e2e8f0", fontSize:11, fontWeight:700 }}>
+            {[30,40,50,55,60,65,70,75].map(v => <option key={v} value={v}>{v}%</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* ── View Toggle + Sort ── */}
+      <div style={{ display:"flex", gap:8, marginBottom:16, alignItems:"center", flexWrap:"wrap" }}>
+        <div style={{ display:"flex", background:"rgba(255,255,255,.06)", borderRadius:10, border:"1px solid rgba(255,255,255,.08)", overflow:"hidden" }}>
+          {[{ key:"brand", label:"By Brand" }, { key:"alerts", label:`Alerts (${alerts.length})` }].map(v => (
+            <button key={v.key} onClick={() => setViewMode(v.key)} style={{
+              padding:"8px 16px", fontSize:12, fontWeight:700, border:"none", cursor:"pointer", transition:"all .15s",
+              background: viewMode === v.key ? "#818cf8" : "transparent", color: viewMode === v.key ? "#fff" : "#94a3b8"
+            }}>{v.label}</button>
+          ))}
+        </div>
+        {viewMode === "brand" && (
+          <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+            style={{ padding:"8px 12px", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", borderRadius:10, color:"#e2e8f0", fontSize:12, fontWeight:600 }}>
+            <option value="sellthru-desc">Highest Sell-Through</option>
+            <option value="sellthru-asc">Lowest Sell-Through</option>
+            <option value="wh-desc">Most WH Stock</option>
+            <option value="units-desc">Most Committed</option>
+            <option value="name-asc">Name A-Z</option>
+          </select>
+        )}
+      </div>
+
+      {/* ── ALERTS VIEW ── */}
+      {viewMode === "alerts" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {alerts.length === 0 ? (
+            <div style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:48, textAlign:"center" }}>
+              <p style={{ fontSize:48, marginBottom:12 }}>✅</p>
+              <p style={{ fontSize:18, fontWeight:700, color:"#e2e8f0" }}>All Clear</p>
+              <p style={{ fontSize:13, color:"#94a3b8" }}>No color segments exceeding {thresholds.warning}% sell-through</p>
+            </div>
+          ) : alerts.map((a, ai) => {
+            const st = getSellThruColor(a.sellThru);
+            return (
+              <div key={`${a.brand}-${a.color}-${ai}`} style={{
+                background:"rgba(255,255,255,.06)", border:`1px solid ${a.severity === "critical" ? "rgba(239,68,68,.3)" : "rgba(245,158,11,.3)"}`,
+                borderRadius:14, padding:"14px 16px", borderLeft:`4px solid ${a.severity === "critical" ? "#ef4444" : "#f59e0b"}`
+              }}>
+                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8, flexWrap:"wrap" }}>
+                  <span style={{ fontSize:10, fontWeight:800, background:st.bg, color:st.color, padding:"3px 8px", borderRadius:6 }}>
+                    {a.severity === "critical" ? "🔴 REPLEN NEEDED" : "🟡 WATCH"}
+                  </span>
+                  <span style={{ fontWeight:800, fontSize:14, color:"#e2e8f0" }}>{a.fullName}</span>
+                  <span style={{ fontSize:12, color:"#94a3b8" }}>·</span>
+                  <span style={{ fontSize:13, fontWeight:700, color:"#e2e8f0" }}>{COLOR_CAT_EMOJI[a.color]} {COLOR_CAT_LABELS[a.color]}</span>
+                </div>
+                <SellThruBar pct={a.sellThru} />
+                <div style={{ display:"flex", gap:16, marginTop:8, fontSize:11, color:"#94a3b8", flexWrap:"wrap" }}>
+                  <span>WH: <strong style={{ color:"#a78bfa" }}>{a.wh.toLocaleString()}</strong></span>
+                  <span>Committed: <strong style={{ color:"#f87171" }}>{a.committed.toLocaleString()}</strong></span>
+                  <span>ATS: <strong style={{ color:"#34d399" }}>{a.ats.toLocaleString()}</strong></span>
+                  <span>Incoming: <strong style={{ color:"#fbbf24" }}>{a.incoming.toLocaleString()}</strong></span>
+                  <span>Styles: <strong style={{ color:"#e2e8f0" }}>{a.skuCount}</strong></span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── BRAND VIEW ── */}
+      {viewMode === "brand" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {sortedBrands.map(b => {
+            const isOpen = !!expandedBrand[b.brand];
+            const st = getSellThruColor(b.totals.sellThru);
+            const hasAlerts = COLOR_CATS.some(c => b.colors[c].wh > 0 && b.colors[c].sellThru >= thresholds.warning);
+
+            return (
+              <div key={b.brand} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, overflow:"hidden" }}>
+                {/* Brand Header */}
+                <div onClick={() => setExpandedBrand(prev => ({...prev, [b.brand]: !prev[b.brand]}))}
+                  style={{ padding:"14px 16px", cursor:"pointer", display:"flex", alignItems:"center", gap:12 }}>
+                  <div style={{ fontSize:14, transition:"transform 0.2s", transform:`rotate(${isOpen ? "90" : "0"}deg)`, flexShrink:0, color:"#94a3b8" }}>▶</div>
+                  <img src={b.logo} alt={b.fullName} style={{ height:28, maxWidth:80, objectFit:"contain", filter:"brightness(0) invert(1)", opacity:.7, flexShrink:0 }} onError={e => { e.target.style.display = "none"; }} />
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:2 }}>
+                      <span style={{ fontWeight:800, fontSize:15, color:"#e2e8f0" }}>{b.fullName}</span>
+                      <span style={{ fontSize:9, fontWeight:700, background:st.bg, color:st.color, padding:"2px 8px", borderRadius:6 }}>{st.label}</span>
+                      {hasAlerts && <span style={{ fontSize:10 }}>🚨</span>}
+                    </div>
+                    <div style={{ fontSize:11, color:"#64748b" }}>
+                      {b.totals.wh.toLocaleString()} WH · {b.totals.committed.toLocaleString()} committed · {b.totals.incoming.toLocaleString()} incoming
+                    </div>
+                  </div>
+                  <div style={{ textAlign:"right", flexShrink:0 }}>
+                    <div style={{ fontSize:22, fontWeight:800, color:st.color }}>{b.totals.sellThru}%</div>
+                    <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>sell-thru</div>
+                  </div>
+                </div>
+
+                {/* Expanded color breakdown */}
+                {isOpen && (
+                  <div style={{ borderTop:"1px solid rgba(255,255,255,.08)", padding:"12px 16px", background:"rgba(0,0,0,.15)" }}>
+                    {/* Incoming vs Production comparison */}
+                    <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:8, marginBottom:14, padding:"10px 12px", background:"rgba(255,255,255,.04)", borderRadius:10, border:"1px solid rgba(255,255,255,.06)" }}>
+                      <div style={{ textAlign:"center" }}>
+                        <div style={{ fontSize:16, fontWeight:800, color:"#a78bfa" }}>{b.totals.wh.toLocaleString()}</div>
+                        <div style={{ fontSize:9, fontWeight:700, color:"#64748b" }}>WH STOCK</div>
+                      </div>
+                      <div style={{ textAlign:"center" }}>
+                        <div style={{ fontSize:16, fontWeight:800, color:"#f87171" }}>{b.totals.committed.toLocaleString()}</div>
+                        <div style={{ fontSize:9, fontWeight:700, color:"#64748b" }}>COMMITTED</div>
+                      </div>
+                      <div style={{ textAlign:"center" }}>
+                        <div style={{ fontSize:16, fontWeight:800, color:"#34d399" }}>{b.totals.ats.toLocaleString()}</div>
+                        <div style={{ fontSize:9, fontWeight:700, color:"#64748b" }}>WH ATS</div>
+                      </div>
+                      <div style={{ textAlign:"center" }}>
+                        <div style={{ fontSize:16, fontWeight:800, color:"#fbbf24" }}>{b.totals.incoming.toLocaleString()}</div>
+                        <div style={{ fontSize:9, fontWeight:700, color:"#64748b" }}>INCOMING</div>
+                      </div>
+                    </div>
+
+                    {/* Per-color rows */}
+                    {COLOR_CATS.map(c => {
+                      const cc = b.colors[c];
+                      if (cc.wh === 0 && cc.incoming === 0) return null;
+                      const cst = getSellThruColor(cc.sellThru);
+                      return (
+                        <div key={c} style={{ padding:"10px 8px", borderBottom:"1px solid rgba(255,255,255,.06)", display:"flex", flexDirection:"column", gap:6 }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                            <span style={{ fontSize:14 }}>{COLOR_CAT_EMOJI[c]}</span>
+                            <span style={{ fontSize:13, fontWeight:700, color:"#e2e8f0", minWidth:90 }}>{COLOR_CAT_LABELS[c]}</span>
+                            <SellThruBar pct={cc.sellThru} />
+                            {cc.sellThru >= thresholds.warning && (
+                              <span style={{ fontSize:8, fontWeight:800, background:cst.bg, color:cst.color, padding:"2px 6px", borderRadius:4, whiteSpace:"nowrap" }}>{cst.label}</span>
+                            )}
+                          </div>
+                          <div style={{ display:"flex", gap:12, paddingLeft:30, fontSize:10, color:"#64748b", flexWrap:"wrap" }}>
+                            <span>WH: <strong style={{ color:"#a78bfa" }}>{cc.wh.toLocaleString()}</strong></span>
+                            <span>Comm: <strong style={{ color:"#f87171" }}>{cc.committed.toLocaleString()}</strong></span>
+                            <span>ATS: <strong style={{ color:"#34d399" }}>{cc.ats.toLocaleString()}</strong></span>
+                            <span>Inc: <strong style={{ color:"#fbbf24" }}>{cc.incoming.toLocaleString()}</strong></span>
+                            <span>Styles: <strong style={{ color:"#e2e8f0" }}>{cc.skuCount}</strong></span>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {/* Incoming production coverage */}
+                    {b.totals.incoming > 0 && (
+                      <div style={{ marginTop:10, padding:"10px 12px", background:"rgba(251,191,36,.06)", borderRadius:10, border:"1px solid rgba(251,191,36,.15)" }}>
+                        <div style={{ fontSize:11, fontWeight:700, color:"#fbbf24", marginBottom:6 }}>🚢 Incoming Production Coverage</div>
+                        <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+                          {COLOR_CATS.map(c => {
+                            const cc = b.colors[c];
+                            if (cc.incoming === 0) return null;
+                            const prodCov = cc.committed > 0 ? Math.round((cc.incoming / cc.committed) * 100) : (cc.incoming > 0 ? 999 : 0);
+                            return (
+                              <div key={c} style={{ background:"rgba(0,0,0,.2)", borderRadius:8, padding:"6px 10px", fontSize:10, color:"#e2e8f0" }}>
+                                <span style={{ marginRight:4 }}>{COLOR_CAT_EMOJI[c]}</span>
+                                <strong>{cc.incoming.toLocaleString()}</strong> inc
+                                <span style={{ color:"#64748b", margin:"0 4px" }}>→</span>
+                                <strong style={{ color: prodCov < 50 ? "#f87171" : prodCov < 100 ? "#fbbf24" : "#34d399" }}>{prodCov > 500 ? "∞" : prodCov + "%"}</strong> of committed
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════
 // PRODUCTION RECAP VIEW
 // ═══════════════════════════════════════════
 const FOB_WAREHOUSE_DAYS = 37;
@@ -2130,7 +2537,7 @@ export default function VersaInventoryApp() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [brandCategoryFilter, setBrandCategoryFilter] = useState("all"); // filters brand cards in brands view
   const [showExport, setShowExport] = useState(false);
-  const [activeTab, setActiveTab] = useState("inventory"); // "inventory" | "production"
+  const [activeTab, setActiveTab] = useState("inventory"); // "inventory" | "production" | "analytics"
 
   const allItems = useMemo(() => {
     return Object.values(brands).flatMap(b => b.items || []);
@@ -2622,7 +3029,7 @@ export default function VersaInventoryApp() {
               </g>
             </svg>
             <div>
-              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>{activeTab === "production" ? "Production Recap" : "Inventory Management"}</h1>
+              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>{activeTab === "production" ? "Production Recap" : activeTab === "analytics" ? "Sell-Through Analytics" : "Inventory Management"}</h1>
               <div style={{ display:"flex",alignItems:"center",gap:8 }}>
                 <p style={{ fontSize:12,color:"#64748b" }}>Real-time inventory system</p>
                 <span style={{ fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:99,background:statusColors[syncStatus.type],color:statusTextColors[syncStatus.type] }}>
@@ -2931,6 +3338,11 @@ export default function VersaInventoryApp() {
         {activeTab === "production" && (
           <ProductionRecapView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} inventory={inventory} onStyleClick={(item) => setSelectedItem(item)} />
         )}
+
+        {/* ANALYTICS TAB */}
+        {activeTab === "analytics" && (
+          <AnalyticsView inventory={inventory} productionData={productionData} colorMap={colorMap} styleOverrides={styleOverrides} onStyleClick={(item) => setSelectedItem(item)} />
+        )}
       </main>
 
       {/* ─── FLOATING BACK BUTTON (inventory view) ─── */}
@@ -2961,6 +3373,7 @@ export default function VersaInventoryApp() {
         {[
           { key:"inventory", label:"Inventory", icon:"📦", activeColor:"#818cf8" },
           { key:"production", label:"Production", icon:"🏭", activeColor:"#0891b2" },
+          { key:"analytics", label:"Analytics", icon:"📊", activeColor:"#f59e0b" },
         ].map(tab => {
           const isActive = activeTab === tab.key;
           return (
