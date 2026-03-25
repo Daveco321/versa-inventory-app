@@ -1824,6 +1824,7 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
   const [expandedBrand, setExpandedBrand] = useState({});
   const [sortBy, setSortBy] = useState("total-desc");
   const [search, setSearch] = useState("");
+  const [mode, setMode] = useState("color"); // "color" | "fabric"
 
   const data = useMemo(() => {
     if (!inventory?.length) return [];
@@ -1887,20 +1888,33 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
       const ci = getStyleColorInfo(item.sku, brand, colorMap, styleOverrides);
       const colorCat = classifyColor(ci ? ci.display : "", brand);
 
+      // Fabric classification
+      const fab = getFabricFromSKU(item.sku, styleOverrides);
+      const fabKey = fab.code.toUpperCase();
+
       if (!brandMap[brand]) {
         brandMap[brand] = {
           brand,
           fullName: (BRAND_MAPPING[brand]||{}).full_name || brand,
           logo: (BRAND_MAPPING[brand]||{}).logo || DEFAULT_LOGO,
           colors: {},
+          fabrics: {},
           totals: { wh:0, incoming:0, totalStock:0, committed:0, commWh:0, commOs:0, ats:0, skus:0 }
         };
         COLOR_CATS.forEach(c => { brandMap[brand].colors[c] = { wh:0, incoming:0, totalStock:0, committed:0, commWh:0, commOs:0, ats:0, skus:0 }; });
       }
 
       const b = brandMap[brand];
+
+      // Color bucket
       const cc = b.colors[colorCat];
       cc.wh += wh; cc.incoming += incoming; cc.totalStock += totalStock; cc.committed += committed; cc.commWh += commWh; cc.commOs += commOs; cc.ats += ats; cc.skus++;
+
+      // Fabric bucket
+      if (!b.fabrics[fabKey]) b.fabrics[fabKey] = { code: fab.code, description: fab.description, wh:0, incoming:0, totalStock:0, committed:0, commWh:0, commOs:0, ats:0, skus:0 };
+      const fc = b.fabrics[fabKey];
+      fc.wh += wh; fc.incoming += incoming; fc.totalStock += totalStock; fc.committed += committed; fc.commWh += commWh; fc.commOs += commOs; fc.ats += ats; fc.skus++;
+
       b.totals.wh += wh; b.totals.incoming += incoming; b.totals.totalStock += totalStock; b.totals.committed += committed; b.totals.commWh += commWh; b.totals.commOs += commOs; b.totals.ats += ats; b.totals.skus++;
     });
 
@@ -1989,6 +2003,20 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
         ))}
       </div>
 
+      {/* Mode Toggle */}
+      <div style={{ display:"flex", background:"linear-gradient(135deg,rgba(30,41,59,.9),rgba(15,23,42,.9))", borderRadius:12, border:"1px solid rgba(255,255,255,.1)", overflow:"hidden", marginBottom:12 }}>
+        {[{ key:"color", label:"🎨 By Color", desc:"White / Black / Navy / Solids / Fancies" }, { key:"fabric", label:"🧵 By Fabric", desc:"Fabric code breakdown" }].map(v => (
+          <button key={v.key} onClick={() => { setMode(v.key); setExpandedBrand({}); }} style={{
+            flex:1, padding:"12px 16px", border:"none", cursor:"pointer", transition:"all .15s", textAlign:"center",
+            background: mode === v.key ? "rgba(129,140,248,.2)" : "transparent",
+            borderBottom: mode === v.key ? "2px solid #818cf8" : "2px solid transparent"
+          }}>
+            <div style={{ fontSize:13, fontWeight:800, color: mode === v.key ? "#e2e8f0" : "#64748b" }}>{v.label}</div>
+            <div style={{ fontSize:10, color: mode === v.key ? "#94a3b8" : "#475569", marginTop:2 }}>{v.desc}</div>
+          </button>
+        ))}
+      </div>
+
       {/* Search + Sort */}
       <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap" }}>
         <div style={{ flex:1, minWidth:180, position:"relative" }}>
@@ -2045,13 +2073,26 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
                 </div>
               </div>
 
-              {/* Expanded: Color Breakdown Table */}
-              {isOpen && (
+              {/* Expanded: Breakdown Table */}
+              {isOpen && (() => {
+                // Build rows based on mode
+                const rows = mode === "color"
+                  ? COLOR_CATS.map(c => {
+                      const cc = b.colors[c];
+                      if (cc.totalStock === 0 && cc.ats === 0) return null;
+                      return { key: c, label: COLOR_CAT_LABELS[c], icon: COLOR_CAT_EMOJI[c], ...cc };
+                    }).filter(Boolean)
+                  : Object.values(b.fabrics)
+                      .filter(f => f.totalStock > 0 || f.ats !== 0)
+                      .sort((a, b) => b.totalStock - a.totalStock)
+                      .map(f => ({ key: f.code, label: f.description, icon: f.code, isFabric: true, ...f }));
+
+                return (
                 <div style={{ borderTop:"1px solid rgba(255,255,255,.08)", background:"rgba(0,0,0,.15)", overflowX:"auto" }}>
                   <table style={{ width:"100%", borderCollapse:"collapse", minWidth:680 }}>
                     <thead>
                       <tr style={{ borderBottom:"2px solid rgba(255,255,255,.1)" }}>
-                        <th style={{ ...headCell, textAlign:"left", paddingLeft:16 }}>Color</th>
+                        <th style={{ ...headCell, textAlign:"left", paddingLeft:16 }}>{mode === "color" ? "Color" : "Fabrication"}</th>
                         <th style={headCell}>Total Stock</th>
                         <th style={headCell}>Warehouse</th>
                         <th style={headCell}>Overseas</th>
@@ -2064,28 +2105,31 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
                       </tr>
                     </thead>
                     <tbody>
-                      {COLOR_CATS.map(c => {
-                        const cc = b.colors[c];
-                        if (cc.totalStock === 0 && cc.ats === 0) return null;
-                        const ap = cc.totalStock > 0 ? Math.round((cc.committed / cc.totalStock) * 100) : 0;
-                        const apColor = ap >= 80 ? "#ef4444" : ap >= 60 ? "#f59e0b" : "#34d399";
+                      {rows.map(r => {
+                        const sp = r.totalStock > 0 ? Math.round((r.committed / r.totalStock) * 100) : 0;
+                        const spColor = sp >= 80 ? "#ef4444" : sp >= 60 ? "#f59e0b" : "#34d399";
                         return (
-                          <tr key={c} style={{ borderBottom:"1px solid rgba(255,255,255,.05)" }}>
-                            <td style={{ padding:"8px 8px 8px 16px", display:"flex", alignItems:"center", gap:8 }}>
-                              <span style={{ fontSize:14 }}>{COLOR_CAT_EMOJI[c]}</span>
-                              <span style={{ fontSize:13, fontWeight:700, color:"#e2e8f0" }}>{COLOR_CAT_LABELS[c]}</span>
+                          <tr key={r.key} style={{ borderBottom:"1px solid rgba(255,255,255,.05)" }}>
+                            <td style={{ padding:"8px 8px 8px 16px" }}>
+                              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                                {r.isFabric
+                                  ? <span style={{ fontSize:10, fontWeight:800, color:"#818cf8", background:"rgba(129,140,248,.15)", padding:"2px 6px", borderRadius:4, fontFamily:"monospace" }}>{r.icon}</span>
+                                  : <span style={{ fontSize:14 }}>{r.icon}</span>
+                                }
+                                <span style={{ fontSize:12, fontWeight:700, color:"#e2e8f0", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:180 }} title={r.label}>{r.label}</span>
+                              </div>
                             </td>
-                            <td style={{ ...numCell, color:"#e2e8f0" }}>{cc.totalStock.toLocaleString()}</td>
-                            <td style={{ ...numCell, color:"#a78bfa" }}>{cc.wh.toLocaleString()}</td>
-                            <td style={{ ...numCell, color:"#fbbf24" }}>{cc.incoming.toLocaleString()}</td>
-                            <td style={{ ...numCell, color:"#fb923c" }}>{cc.commWh.toLocaleString()}</td>
-                            <td style={{ ...numCell, color:"#c084fc" }}>{cc.commOs.toLocaleString()}</td>
-                            <td style={{ ...numCell, color:"#f87171" }}>{cc.committed.toLocaleString()}</td>
-                            <td style={{ ...numCell, color:"#34d399" }}>{cc.ats.toLocaleString()}</td>
+                            <td style={{ ...numCell, color:"#e2e8f0" }}>{r.totalStock.toLocaleString()}</td>
+                            <td style={{ ...numCell, color:"#a78bfa" }}>{r.wh.toLocaleString()}</td>
+                            <td style={{ ...numCell, color:"#fbbf24" }}>{r.incoming.toLocaleString()}</td>
+                            <td style={{ ...numCell, color:"#fb923c" }}>{r.commWh.toLocaleString()}</td>
+                            <td style={{ ...numCell, color:"#c084fc" }}>{r.commOs.toLocaleString()}</td>
+                            <td style={{ ...numCell, color:"#f87171" }}>{r.committed.toLocaleString()}</td>
+                            <td style={{ ...numCell, color:"#34d399" }}>{r.ats.toLocaleString()}</td>
                             <td style={{ ...numCell }}>
-                              <span style={{ fontSize:12, fontWeight:800, color:apColor, background: ap >= 80 ? "rgba(239,68,68,.12)" : ap >= 60 ? "rgba(245,158,11,.12)" : "rgba(52,211,153,.12)", padding:"3px 8px", borderRadius:6 }}>{ap}%</span>
+                              <span style={{ fontSize:12, fontWeight:800, color:spColor, background: sp >= 80 ? "rgba(239,68,68,.12)" : sp >= 60 ? "rgba(245,158,11,.12)" : "rgba(52,211,153,.12)", padding:"3px 8px", borderRadius:6 }}>{sp}%</span>
                             </td>
-                            <td style={{ ...numCell, color:"#94a3b8" }}>{cc.skus}</td>
+                            <td style={{ ...numCell, color:"#94a3b8" }}>{r.skus}</td>
                           </tr>
                         );
                       })}
@@ -2108,7 +2152,8 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
                     </tfoot>
                   </table>
                 </div>
-              )}
+                );
+              })()}
             </div>
           );
         })}
@@ -2136,6 +2181,7 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
   const [search, setSearch] = useState("");
   const [sortMode, setSortMode] = useState("etd-asc");
   const [expanded, setExpanded] = useState({});
+  const [statusFilter, setStatusFilter] = useState("all"); // "all" | "producing" | "transit" | "arrived" | "noetd"
 
   // Find inventory item by base style and open the detail modal
   const handleStyleClick = useCallback((baseStyle) => {
@@ -2143,6 +2189,17 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
     const match = inventory.find(i => (i.sku || "").toUpperCase().split("-")[0] === baseStyle.toUpperCase());
     if (match) onStyleClick(match);
   }, [inventory, onStyleClick]);
+
+  // Status resolver — used for both filtering and display
+  const getStatus = useCallback((g) => {
+    const now = new Date();
+    if (g.etds.length === 0) return { key:"noetd", label:"NO ETD", emoji:"❓", bg:"#fef2f2", color:"#dc2626" };
+    const latestArr = getProdArrival(new Date(Math.max(...g.etds.map(d => d.getTime()))));
+    const etdMin = new Date(Math.min(...g.etds.map(d => d.getTime())));
+    if (latestArr < now) return { key:"arrived", label:"ARRIVED", emoji:"✅", bg:"#d1fae5", color:"#065f46" };
+    if (etdMin < now) return { key:"transit", label:"IN TRANSIT", emoji:"🚢", bg:"#fef3c7", color:"#92400e" };
+    return { key:"producing", label:"PRODUCING", emoji:"🏭", bg:"#dbeafe", color:"#1e40af" };
+  }, []);
 
   // Group production data by production PO
   const groups = useMemo(() => {
@@ -2163,6 +2220,12 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
   // Filter and sort
   const groupList = useMemo(() => {
     let list = Object.values(groups);
+
+    // Status filter
+    if (statusFilter !== "all") {
+      list = list.filter(g => getStatus(g).key === statusFilter);
+    }
+
     if (search) {
       const s = search.toLowerCase();
       list = list.filter(g =>
@@ -2195,7 +2258,17 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
       return sortDir === "asc" ? va - vb : vb - va;
     });
     return list;
-  }, [groups, search, sortMode, openOrdersData]);
+  }, [groups, search, sortMode, openOrdersData, statusFilter, getStatus]);
+
+  // Status counts (from unfiltered groups, for pill badges)
+  const statusCounts = useMemo(() => {
+    const counts = { all:0, producing:0, transit:0, arrived:0, noetd:0 };
+    Object.values(groups).forEach(g => {
+      counts.all++;
+      counts[getStatus(g).key]++;
+    });
+    return counts;
+  }, [groups, getStatus]);
 
   // Summary stats
   const totalPOs = groupList.length;
@@ -2214,16 +2287,6 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
     setExpanded(all);
   };
   const collapseAll = () => setExpanded({});
-
-  const getStatus = (g) => {
-    const now = new Date();
-    if (g.etds.length === 0) return { label:"NO ETD", emoji:"❓", bg:"#fef2f2", color:"#dc2626" };
-    const latestArr = getProdArrival(new Date(Math.max(...g.etds.map(d => d.getTime()))));
-    const etdMin = new Date(Math.min(...g.etds.map(d => d.getTime())));
-    if (latestArr < now) return { label:"ARRIVED", emoji:"✅", bg:"#d1fae5", color:"#065f46" };
-    if (etdMin < now) return { label:"IN TRANSIT", emoji:"🚢", bg:"#fef3c7", color:"#92400e" };
-    return { label:"PRODUCING", emoji:"🏭", bg:"#dbeafe", color:"#1e40af" };
-  };
 
   const getLinkedPOs = (style) => {
     if (!openOrdersData?.length) return [];
@@ -2279,6 +2342,37 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
         </div>
       </div>
 
+      {/* Status Filter Pills */}
+      <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
+        {[
+          { key:"all", label:"All", emoji:"📦", color:"#818cf8" },
+          { key:"producing", label:"Producing", emoji:"🏭", color:"#3b82f6" },
+          { key:"transit", label:"In Transit", emoji:"🚢", color:"#f59e0b" },
+          { key:"arrived", label:"Arrived", emoji:"✅", color:"#10b981" },
+          { key:"noetd", label:"No ETD", emoji:"❓", color:"#ef4444" },
+        ].map(f => {
+          const count = statusCounts[f.key];
+          const active = statusFilter === f.key;
+          return (
+            <button key={f.key} onClick={() => setStatusFilter(f.key)} style={{
+              display:"flex", alignItems:"center", gap:5, padding:"7px 12px", borderRadius:10, fontSize:12, fontWeight:700,
+              border: active ? `2px solid ${f.color}` : "2px solid rgba(255,255,255,.1)",
+              background: active ? `${f.color}22` : "rgba(255,255,255,.04)",
+              color: active ? f.color : "#94a3b8",
+              cursor:"pointer", transition:"all .15s", whiteSpace:"nowrap"
+            }}>
+              <span style={{ fontSize:13 }}>{f.emoji}</span>
+              {f.label}
+              <span style={{
+                fontSize:10, fontWeight:800, padding:"1px 6px", borderRadius:6, marginLeft:2,
+                background: active ? `${f.color}33` : "rgba(255,255,255,.08)",
+                color: active ? f.color : "#64748b"
+              }}>{count}</span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* Search + Sort + Actions */}
       <div style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:14, marginBottom:16 }}>
         <div style={{ position:"relative", marginBottom:10 }}>
@@ -2310,7 +2404,12 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
           <div style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:48, textAlign:"center" }}>
             <p style={{ fontSize:48, marginBottom:16 }}>🔍</p>
             <p style={{ fontSize:18, fontWeight:700, color:"#e2e8f0" }}>No production found</p>
-            <p style={{ fontSize:14, color:"#94a3b8" }}>Try adjusting your search terms</p>
+            <p style={{ fontSize:14, color:"#94a3b8" }}>Try adjusting your {statusFilter !== "all" ? "status filter or " : ""}search terms</p>
+            {statusFilter !== "all" && (
+              <button onClick={() => setStatusFilter("all")} style={{ marginTop:12, background:"rgba(129,140,248,.15)", color:"#818cf8", border:"1px solid rgba(129,140,248,.3)", padding:"8px 20px", borderRadius:10, fontWeight:700, fontSize:13, cursor:"pointer" }}>
+                Show All Statuses
+              </button>
+            )}
           </div>
         ) : groupList.map(g => {
           const isOpen = !!expanded[g.production];
