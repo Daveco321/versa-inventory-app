@@ -418,38 +418,39 @@ function classifyColor(colorDisplay, brandAbbr) {
 
 // ─── Color Summary Panel ──────────────────────────────────────
 function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColorFilter, onColorFilter, styleOverrides }) {
-  // Compute counts + build per-category SKU sets for click-to-filter
-  let cWhite = 0, cBlack = 0, cNavy = 0, cOther = 0, cFancy = 0;
-  let totalWH = 0, totalATS = 0;
-  const skuSets = { white: new Set(), black: new Set(), navy: new Set(), other_solids: new Set(), fancies: new Set() };
+  const [metric, setMetric] = useState("ats"); // "ats" | "wh" | "incoming" | "total"
+
+  // Compute per-category quantities for ALL metrics at once
+  const cats = ["white","black","navy","other_solids","fancies"];
+  const data = {}; cats.forEach(c => { data[c] = {wh:0,inc:0,ats:0,total:0}; });
+  const skuSets = {}; cats.forEach(c => { skuSets[c] = new Set(); });
   items.forEach(item => {
-    const qty = (item.total_warehouse || 0) + (item.incoming || 0);
-    if (qty <= 0) return;
-    totalWH += (item.total_warehouse || 0);
-    totalATS += (item.total_ats || 0);
+    const wh = item.total_warehouse || 0;
+    const inc = item.incoming || 0;
+    const ats = item.total_ats || 0;
+    if (wh + inc <= 0 && ats <= 0) return;
     const ci = getStyleColorInfo(item.sku, brandAbbr, colorMap, styleOverrides);
     const cat = classifyColor(ci ? ci.display : "", brandAbbr);
-    if (cat === "white") cWhite += qty;
-    else if (cat === "black") cBlack += qty;
-    else if (cat === "navy") cNavy += qty;
-    else if (cat === "other_solids") cOther += qty;
-    else cFancy += qty;
-    if (skuSets[cat]) skuSets[cat].add(item.sku.toUpperCase());
+    if (data[cat]) {
+      data[cat].wh += wh; data[cat].inc += inc; data[cat].ats += ats; data[cat].total += wh + inc;
+      skuSets[cat].add(item.sku.toUpperCase());
+    }
   });
 
+  const getVal = (cat) => metric === "ats" ? data[cat].ats : metric === "wh" ? data[cat].wh : metric === "incoming" ? data[cat].inc : data[cat].total;
+  const cWhite = getVal("white"), cBlack = getVal("black"), cNavy = getVal("navy"), cOther = getVal("other_solids"), cFancy = getVal("fancies");
   const total = cWhite + cBlack + cNavy + cOther + cFancy;
   const pct = v => total ? Math.round(v / total * 100) : 0;
   const bW = pct(cWhite), bB = pct(cBlack), bN = pct(cNavy), bO = pct(cOther), bF = pct(cFancy);
 
   const LABEL_MAP = { white:"White Solid", black:"Black Solid", navy:"Navy Solid", other_solids:"Other Solids", fancies:"Fancies" };
+  const METRIC_LABELS = { ats:"\u{1F4E6} ATS", wh:"\u{1F3ED} WH Stock", incoming:"\u{1F6A2} Incoming", total:"\u{1F4CA} Total" };
+  const METRIC_COLORS = { ats:["#16a34a","#f0fdf4","#bbf7d0"], wh:["#6d28d9","#f5f3ff","#ddd6fe"], incoming:["#d97706","#fffbeb","#fde68a"], total:["#0369a1","#e0f2fe","#bae6fd"] };
 
   const handleClick = (cat) => {
     if (!skuSets[cat] || skuSets[cat].size === 0) return;
-    if (activeColorFilter && activeColorFilter.cat === cat) {
-      onColorFilter(null);
-    } else {
-      onColorFilter({ cat, label: LABEL_MAP[cat], skus: skuSets[cat] });
-    }
+    if (activeColorFilter && activeColorFilter.cat === cat) onColorFilter(null);
+    else onColorFilter({ cat, label: LABEL_MAP[cat], skus: skuSets[cat] });
   };
 
   const rowStyle = (cat, span2) => ({
@@ -465,21 +466,35 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
     outline: activeColorFilter?.cat === cat ? "2px solid #6366f1" : "none"
   });
 
+  const mc = METRIC_COLORS[metric];
+  const toggleStyle = (m) => ({
+    padding:"4px 10px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer", transition:"all .15s",
+    background: metric === m ? mc[1] : "transparent", color: metric === m ? mc[0] : "#94a3b8",
+    border: `1px solid ${metric === m ? mc[2] : "transparent"}`
+  });
+
   return (
     <div style={{ background:"white",borderRadius:12,padding:"20px",marginBottom:16,border:"1px solid #e2e8f0",boxShadow:"0 2px 8px rgba(0,0,0,.06)" }}>
-      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8 }}>
+      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:8 }}>
         <div style={{ display:"flex",alignItems:"center",gap:10,flexWrap:"wrap" }}>
-          <span style={{ fontWeight:700,fontSize:15,color:"#0f172a" }}>📊 Color Summary</span>
+          <span style={{ fontWeight:700,fontSize:15,color:"#0f172a" }}>{"\u{1F4CA}"} Color Summary</span>
           {activeColorFilter && (
             <span style={{ background:"#dbeafe",color:"#1d4ed8",border:"1px solid #93c5fd",borderRadius:12,padding:"2px 10px",fontSize:11,fontWeight:700,display:"flex",alignItems:"center",gap:4 }}>
               Filtering: {activeColorFilter.label}
-              <span onClick={() => onColorFilter(null)} style={{ cursor:"pointer",color:"#6b7280",marginLeft:2 }}>✕</span>
+              <span onClick={() => onColorFilter(null)} style={{ cursor:"pointer",color:"#6b7280",marginLeft:2 }}>{"\u2715"}</span>
             </span>
           )}
         </div>
-        <span style={{ fontSize:11,color:"#6366f1",background:"#eef2ff",padding:"3px 10px",borderRadius:99,fontWeight:600 }}>
-          {total.toLocaleString()} total units
+        <span style={{ fontSize:12,color:mc[0],background:mc[1],padding:"3px 10px",borderRadius:99,fontWeight:700,border:`1px solid ${mc[2]}` }}>
+          {total.toLocaleString()} {METRIC_LABELS[metric]}
         </span>
+      </div>
+
+      {/* Metric toggle */}
+      <div style={{ display:"flex",gap:4,marginBottom:12,background:"#f8fafc",borderRadius:10,padding:3,border:"1px solid #e2e8f0" }}>
+        {(["ats","wh","incoming","total"]).map(m => (
+          <button key={m} onClick={() => setMetric(m)} style={toggleStyle(m)}>{METRIC_LABELS[m]}</button>
+        ))}
       </div>
 
       {/* Stacked bar */}
@@ -493,76 +508,88 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
 
       {/* Clickable grid */}
       <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:13 }}>
-        {[["white","⬜ White Solid",cWhite],["black","⬛ Black Solid",cBlack],["navy","🟦 Navy Solid",cNavy],["other_solids","🎨 Other Solids",cOther]].map(([cat, label, val]) => (
+        {[["white","\u2B1C White Solid",cWhite],["black","\u2B1B Black Solid",cBlack],["navy","\u{1F7E6} Navy Solid",cNavy],["other_solids","\u{1F3A8} Other Solids",cOther]].map(([cat, label, val]) => (
           <div key={cat} onClick={() => handleClick(cat)} style={rowStyle(cat)}>
             <span style={{ color:"#64748b" }}>{label}</span>
             <span style={{ fontWeight:700,color:"#1e293b" }}>{val.toLocaleString()}</span>
           </div>
         ))}
         <div onClick={() => handleClick("fancies")} style={rowStyle("fancies", true)}>
-          <span style={{ color:"#64748b" }}>✨ Fancies</span>
+          <span style={{ color:"#64748b" }}>{"\u2728"} Fancies</span>
           <span style={{ fontWeight:700,color:"#1e293b" }}>{cFancy.toLocaleString()}</span>
         </div>
-        <div style={{ display:"flex",justifyContent:"space-between",padding:"7px 10px",background:"#e0f2fe",borderRadius:6,border:"1px solid #bae6fd",gridColumn:"span 2" }}>
-          <span style={{ color:"#0369a1",fontWeight:600 }}>Total (WH+Inc)</span>
-          <span style={{ fontWeight:800,color:"#0369a1" }}>{total.toLocaleString()}</span>
-        </div>
-        <div style={{ display:"flex",justifyContent:"space-between",padding:"7px 10px",background:"#f5f3ff",borderRadius:6,border:"1px solid #ddd6fe",gridColumn:"span 2" }}>
-          <span style={{ color:"#6d28d9",fontWeight:600 }}>🏭 WH Stock</span>
-          <span style={{ fontWeight:800,color:"#6d28d9" }}>{totalWH.toLocaleString()}</span>
-        </div>
-        <div style={{ display:"flex",justifyContent:"space-between",padding:"7px 10px",background:"#f0fdf4",borderRadius:6,border:"1px solid #bbf7d0",gridColumn:"span 2" }}>
-          <span style={{ color:"#16a34a",fontWeight:600 }}>📦 ATS</span>
-          <span style={{ fontWeight:800,color:"#16a34a" }}>{totalATS.toLocaleString()}</span>
+        <div style={{ display:"flex",justifyContent:"space-between",padding:"7px 10px",background:mc[1],borderRadius:6,border:`1px solid ${mc[2]}`,gridColumn:"span 2" }}>
+          <span style={{ color:mc[0],fontWeight:600 }}>{METRIC_LABELS[metric]}</span>
+          <span style={{ fontWeight:800,color:mc[0] }}>{total.toLocaleString()}</span>
         </div>
       </div>
-      <p style={{ fontSize:11,color:"#94a3b8",margin:"8px 0 0",textAlign:"center" }}>Click any row to filter · Click again to clear</p>
+      <p style={{ fontSize:11,color:"#94a3b8",margin:"8px 0 0",textAlign:"center" }}>Click any row to filter {"\u00B7"} Click again to clear</p>
     </div>
   );
 }
 
 // ─── Fabric Summary Panel ─────────────────────────────────────
 function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFilter, styleOverrides }) {
+  const [metric, setMetric] = useState("ats");
+
   const fabricMap = {};
-  let totalWH = 0, totalATS = 0;
   items.forEach(item => {
-    const qty = (item.total_warehouse || 0) + (item.incoming || 0);
-    totalWH += (item.total_warehouse || 0);
-    totalATS += (item.total_ats || 0);
+    const wh = item.total_warehouse || 0;
+    const inc = item.incoming || 0;
+    const ats = item.total_ats || 0;
     const f = getFabricFromSKU(item.sku, styleOverrides);
     const key = f.code.toUpperCase();
-    if (!fabricMap[key]) fabricMap[key] = { code: f.code, description: f.description, units: 0, skus: new Set(), allSkus: new Set() };
-    fabricMap[key].units += qty;
+    if (!fabricMap[key]) fabricMap[key] = { code: f.code, description: f.description, wh:0, inc:0, ats:0, total:0, skus: new Set(), allSkus: new Set() };
+    fabricMap[key].wh += wh; fabricMap[key].inc += inc; fabricMap[key].ats += ats; fabricMap[key].total += wh + inc;
     fabricMap[key].skus.add(item.sku.split("-")[0].toUpperCase());
     fabricMap[key].allSkus.add(item.sku.toUpperCase());
   });
 
-  const rows = Object.values(fabricMap).sort((a, b) => b.units - a.units);
-  const totalUnits = rows.reduce((s, r) => s + r.units, 0);
+  const getUnits = (r) => metric === "ats" ? r.ats : metric === "wh" ? r.wh : metric === "incoming" ? r.inc : r.total;
+  const rows = Object.values(fabricMap).sort((a, b) => getUnits(b) - getUnits(a));
+  const totalUnits = rows.reduce((s, r) => s + getUnits(r), 0);
+
+  const METRIC_LABELS = { ats:"\u{1F4E6} ATS", wh:"\u{1F3ED} WH Stock", incoming:"\u{1F6A2} Incoming", total:"\u{1F4CA} Total" };
+  const METRIC_COLORS = { ats:["#16a34a","#f0fdf4","#bbf7d0"], wh:["#6d28d9","#f5f3ff","#ddd6fe"], incoming:["#d97706","#fffbeb","#fde68a"], total:["#0369a1","#e0f2fe","#bae6fd"] };
+  const mc = METRIC_COLORS[metric];
 
   const handleClick = (code) => {
     const row = fabricMap[code];
     if (!row) return;
-    if (activeFabricFilter && activeFabricFilter.code === code) {
-      onFabricFilter(null);
-    } else {
-      onFabricFilter({ code, label: code, skus: row.allSkus });
-    }
+    if (activeFabricFilter && activeFabricFilter.code === code) onFabricFilter(null);
+    else onFabricFilter({ code, label: code, skus: row.allSkus });
   };
+
+  const toggleStyle = (m) => ({
+    padding:"4px 10px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer", transition:"all .15s",
+    background: metric === m ? mc[1] : "transparent", color: metric === m ? mc[0] : "#94a3b8",
+    border: `1px solid ${metric === m ? mc[2] : "transparent"}`
+  });
 
   return (
     <div style={{ background:"white",borderRadius:12,padding:"20px",marginBottom:16,border:"1px solid #e2e8f0",boxShadow:"0 2px 8px rgba(0,0,0,.06)" }}>
-      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexWrap:"wrap",gap:8 }}>
+      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:8 }}>
         <div style={{ display:"flex",alignItems:"center",gap:10,flexWrap:"wrap" }}>
-          <span style={{ fontWeight:700,fontSize:15,color:"#0f172a" }}>🧵 Fabric Summary</span>
+          <span style={{ fontWeight:700,fontSize:15,color:"#0f172a" }}>{"\u{1F9F5}"} Fabric Summary</span>
           {activeFabricFilter && (
             <span style={{ background:"#dcfce7",color:"#15803d",border:"1px solid #86efac",borderRadius:12,padding:"2px 10px",fontSize:11,fontWeight:700,display:"flex",alignItems:"center",gap:4 }}>
               Filtering: {activeFabricFilter.label}
-              <span onClick={() => onFabricFilter(null)} style={{ cursor:"pointer",color:"#6b7280",marginLeft:2 }}>✕</span>
+              <span onClick={() => onFabricFilter(null)} style={{ cursor:"pointer",color:"#6b7280",marginLeft:2 }}>{"\u2715"}</span>
             </span>
           )}
         </div>
+        <span style={{ fontSize:12,color:mc[0],background:mc[1],padding:"3px 10px",borderRadius:99,fontWeight:700,border:`1px solid ${mc[2]}` }}>
+          {totalUnits.toLocaleString()} {METRIC_LABELS[metric]}
+        </span>
       </div>
+
+      {/* Metric toggle */}
+      <div style={{ display:"flex",gap:4,marginBottom:12,background:"#f8fafc",borderRadius:10,padding:3,border:"1px solid #e2e8f0" }}>
+        {(["ats","wh","incoming","total"]).map(m => (
+          <button key={m} onClick={() => setMetric(m)} style={toggleStyle(m)}>{METRIC_LABELS[m]}</button>
+        ))}
+      </div>
+
       <div style={{ overflowX:"auto" }}>
         <table style={{ width:"100%",borderCollapse:"collapse",fontSize:13,borderRadius:8,overflow:"hidden" }}>
           <thead>
@@ -575,8 +602,9 @@ function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFil
           </thead>
           <tbody>
             {rows.map(r => {
+              const units = getUnits(r);
               const isActive = activeFabricFilter?.code === r.code.toUpperCase();
-              const pct = totalUnits ? Math.round(r.units / totalUnits * 100) : 0;
+              const pct = totalUnits ? Math.round(units / totalUnits * 100) : 0;
               return (
                 <tr key={r.code} onClick={() => handleClick(r.code.toUpperCase())}
                   style={{ borderBottom:"1px solid #f1f5f9",cursor:"pointer",background: isActive ? "#f0fdf4" : "white",transition:"background .15s" }}
@@ -587,32 +615,22 @@ function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFil
                   </td>
                   <td style={{ padding:"8px 14px",color:"#374151" }}>{r.description}</td>
                   <td style={{ padding:"8px 14px",textAlign:"center",color:"#64748b" }}>{r.skus.size}</td>
-                  <td style={{ padding:"8px 14px",textAlign:"right",fontWeight:700,color:"#0f172a" }}>{r.units.toLocaleString()}</td>
+                  <td style={{ padding:"8px 14px",textAlign:"right",fontWeight:700,color:"#0f172a" }}>{units.toLocaleString()}</td>
                   <td style={{ padding:"8px 14px",textAlign:"right",color:"#94a3b8" }}>{pct}%</td>
                 </tr>
               );
             })}
           </tbody>
           <tfoot>
-            <tr style={{ background:"#f8fafc",borderTop:"2px solid #e2e8f0" }}>
-              <td colSpan={3} style={{ padding:"9px 14px",fontSize:13,fontWeight:700,color:"#0369a1" }}>Total (WH+Inc)</td>
-              <td style={{ padding:"9px 14px",textAlign:"right",fontSize:13,fontWeight:800,color:"#0369a1" }}>{totalUnits.toLocaleString()}</td>
-              <td style={{ padding:"9px 14px",textAlign:"right",fontSize:13,fontWeight:800,color:"#0369a1" }}>100%</td>
-            </tr>
-            <tr style={{ background:"#faf5ff" }}>
-              <td colSpan={3} style={{ padding:"7px 14px",fontSize:12,fontWeight:700,color:"#6d28d9" }}>🏭 WH Stock</td>
-              <td style={{ padding:"7px 14px",textAlign:"right",fontSize:12,fontWeight:800,color:"#6d28d9" }}>{totalWH.toLocaleString()}</td>
-              <td></td>
-            </tr>
-            <tr style={{ background:"#f0fdf4" }}>
-              <td colSpan={3} style={{ padding:"7px 14px",fontSize:12,fontWeight:700,color:"#16a34a" }}>📦 ATS</td>
-              <td style={{ padding:"7px 14px",textAlign:"right",fontSize:12,fontWeight:800,color:"#16a34a" }}>{totalATS.toLocaleString()}</td>
-              <td></td>
+            <tr style={{ background:mc[1],borderTop:"2px solid "+mc[2] }}>
+              <td colSpan={3} style={{ padding:"9px 14px",fontSize:13,fontWeight:700,color:mc[0] }}>{METRIC_LABELS[metric]}</td>
+              <td style={{ padding:"9px 14px",textAlign:"right",fontSize:13,fontWeight:800,color:mc[0] }}>{totalUnits.toLocaleString()}</td>
+              <td style={{ padding:"9px 14px",textAlign:"right",fontSize:13,fontWeight:800,color:mc[0] }}>100%</td>
             </tr>
           </tfoot>
         </table>
       </div>
-      <p style={{ fontSize:11,color:"#94a3b8",margin:"10px 0 0",textAlign:"center" }}>Click any row to filter · Click again to clear</p>
+      <p style={{ fontSize:11,color:"#94a3b8",margin:"10px 0 0",textAlign:"center" }}>Click any row to filter {"\u00B7"} Click again to clear</p>
     </div>
   );
 }
@@ -746,12 +764,10 @@ function BrandCard({ abbr, data, onClick, filterMode, brandCategoryFilter, style
             <p style={{ fontSize:10,color:"#16a34a",fontWeight:600 }}>SKUs</p>
             <p style={{ fontSize:18,fontWeight:800,color:"#166534" }}>{displayData.sku_count}</p>
           </div>
-          {filterMode !== "all" && (
-            <div style={{ background:"#faf5ff",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
-              <p style={{ fontSize:10,color:"#7c3aed",fontWeight:600 }}>WH Stock</p>
-              <p style={{ fontSize:18,fontWeight:800,color:"#5b21b6" }}>{(displayData.total_warehouse||0).toLocaleString()}</p>
-            </div>
-          )}
+          <div style={{ background:"#faf5ff",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
+            <p style={{ fontSize:10,color:"#7c3aed",fontWeight:600 }}>WH Stock</p>
+            <p style={{ fontSize:18,fontWeight:800,color:"#5b21b6" }}>{(displayData.total_warehouse||0).toLocaleString()}</p>
+          </div>
           <div style={{ background:"#eef2ff",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
             <p style={{ fontSize:10,color:"#4f46e5",fontWeight:600 }}>ATS</p>
             <p style={{ fontSize:18,fontWeight:800,color:"#3730a3" }}>{(displayData.total_ats||0).toLocaleString()}</p>
@@ -2368,10 +2384,8 @@ export default function VersaInventoryApp() {
             {/* Stats Bar */}
             <div style={{ display:"flex",gap:12,marginBottom:24,flexWrap:"wrap" }}>
               {[
-                ...(filterMode !== "all" ? [
-                  { label:"WH Stock", value:allItemsFiltered.reduce((s,i) => s+(i.total_warehouse||0),0).toLocaleString(), icon:"🏭", bg:"linear-gradient(135deg,#a78bfa,#7c3aed)" },
-                  { label:"Incoming", value:allItemsFiltered.reduce((s,i) => s+(i.incoming||0),0).toLocaleString(), icon:"🚢", bg:"linear-gradient(135deg,#fbbf24,#d97706)" },
-                ] : []),
+                { label:"WH Stock", value:allItemsFiltered.reduce((s,i) => s+(i.total_warehouse||0),0).toLocaleString(), icon:"🏭", bg:"linear-gradient(135deg,#a78bfa,#7c3aed)" },
+                { label:"Incoming", value:allItemsFiltered.reduce((s,i) => s+(i.incoming||0),0).toLocaleString(), icon:"🚢", bg:"linear-gradient(135deg,#fbbf24,#d97706)" },
                 { label:"Total ATS", value:allItemsFiltered.reduce((s,i) => s+(i.total_ats||0),0).toLocaleString(), icon:"✅", bg:"linear-gradient(135deg,#34d399,#10b981)" },
               ].map(s => (
                 <div key={s.label} style={{ flex:1,minWidth:160,background:s.bg,padding:"14px 18px",borderRadius:14,color:"#fff",display:"flex",alignItems:"center",gap:12 }}>
@@ -2537,12 +2551,10 @@ export default function VersaInventoryApp() {
               <p style={{ fontSize:12,color:"#64748b",marginTop:10,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
                 Showing <strong style={{ color:"#e2e8f0" }}>{filteredItems.length}</strong> of {brandData.items.length} styles
                 <span style={{ display:"inline-flex",gap:6,alignItems:"center",marginLeft:4 }}>
-                  {filterMode !== "all" && (
-                    <span style={{ fontSize:11,color:"#c4b5fd",background:"rgba(124,58,237,.15)",padding:"2px 8px",borderRadius:12,fontWeight:700,border:"1px solid rgba(124,58,237,.25)" }}>
-                      🏭 {filteredItems.reduce((s,i) => s + (i.total_warehouse||0), 0).toLocaleString()} WH
-                    </span>
-                  )}
-                  {filterMode !== "all" && filteredItems.reduce((s,i) => s + (i.incoming||0), 0) > 0 && (
+                  <span style={{ fontSize:11,color:"#c4b5fd",background:"rgba(124,58,237,.15)",padding:"2px 8px",borderRadius:12,fontWeight:700,border:"1px solid rgba(124,58,237,.25)" }}>
+                    🏭 {filteredItems.reduce((s,i) => s + (i.total_warehouse||0), 0).toLocaleString()} WH
+                  </span>
+                  {filteredItems.reduce((s,i) => s + (i.incoming||0), 0) > 0 && (
                     <span style={{ fontSize:11,color:"#fbbf24",background:"rgba(245,158,11,.12)",padding:"2px 8px",borderRadius:12,fontWeight:700,border:"1px solid rgba(245,158,11,.25)" }}>
                       🚢 {filteredItems.reduce((s,i) => s + (i.incoming||0), 0).toLocaleString()} Inc
                     </span>
