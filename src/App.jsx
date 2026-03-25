@@ -384,8 +384,8 @@ function classifyColor(colorDisplay, brandAbbr) {
   const c = colorDisplay.trim().toLowerCase();
   // Disqualifiers: presence of any of these forces fancies regardless of solid/sld
   const _hasPrint = /\bprint\b|\bprnt\b|\bgrnd\b|\bstripe\b|\bstripes\b|\bgeo\b|\bcheck\b/.test(c);
-  // Ben Sherman DOBBY rule: treat "dobby" like a solid; bucket by color word if present
-  if ((brandAbbr || "").toUpperCase() === "BEN" && !_hasPrint && /\bdobby\b/.test(c)) {
+  // DOBBY rule (all brands): treat "dobby" like a solid; bucket by color word if present
+  if (!_hasPrint && /\bdobby\b/.test(c)) {
     if (/\bwhite\b|\bivory\b|\bcream\b/.test(c)) return "white";
     if (/\bblack\b/.test(c)) return "black";
     if (/\bnavy\b/.test(c)) return "navy";
@@ -420,10 +420,13 @@ function classifyColor(colorDisplay, brandAbbr) {
 function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColorFilter, onColorFilter, styleOverrides }) {
   // Compute counts + build per-category SKU sets for click-to-filter
   let cWhite = 0, cBlack = 0, cNavy = 0, cOther = 0, cFancy = 0;
+  let totalWH = 0, totalATS = 0;
   const skuSets = { white: new Set(), black: new Set(), navy: new Set(), other_solids: new Set(), fancies: new Set() };
   items.forEach(item => {
     const qty = (item.total_warehouse || 0) + (item.incoming || 0);
     if (qty <= 0) return;
+    totalWH += (item.total_warehouse || 0);
+    totalATS += (item.total_ats || 0);
     const ci = getStyleColorInfo(item.sku, brandAbbr, colorMap, styleOverrides);
     const cat = classifyColor(ci ? ci.display : "", brandAbbr);
     if (cat === "white") cWhite += qty;
@@ -501,8 +504,16 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
           <span style={{ fontWeight:700,color:"#1e293b" }}>{cFancy.toLocaleString()}</span>
         </div>
         <div style={{ display:"flex",justifyContent:"space-between",padding:"7px 10px",background:"#e0f2fe",borderRadius:6,border:"1px solid #bae6fd",gridColumn:"span 2" }}>
-          <span style={{ color:"#0369a1",fontWeight:600 }}>Total</span>
+          <span style={{ color:"#0369a1",fontWeight:600 }}>Total (WH+Inc)</span>
           <span style={{ fontWeight:800,color:"#0369a1" }}>{total.toLocaleString()}</span>
+        </div>
+        <div style={{ display:"flex",justifyContent:"space-between",padding:"7px 10px",background:"#f5f3ff",borderRadius:6,border:"1px solid #ddd6fe",gridColumn:"span 2" }}>
+          <span style={{ color:"#6d28d9",fontWeight:600 }}>🏭 WH Stock</span>
+          <span style={{ fontWeight:800,color:"#6d28d9" }}>{totalWH.toLocaleString()}</span>
+        </div>
+        <div style={{ display:"flex",justifyContent:"space-between",padding:"7px 10px",background:"#f0fdf4",borderRadius:6,border:"1px solid #bbf7d0",gridColumn:"span 2" }}>
+          <span style={{ color:"#16a34a",fontWeight:600 }}>📦 ATS</span>
+          <span style={{ fontWeight:800,color:"#16a34a" }}>{totalATS.toLocaleString()}</span>
         </div>
       </div>
       <p style={{ fontSize:11,color:"#94a3b8",margin:"8px 0 0",textAlign:"center" }}>Click any row to filter · Click again to clear</p>
@@ -513,8 +524,11 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
 // ─── Fabric Summary Panel ─────────────────────────────────────
 function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFilter, styleOverrides }) {
   const fabricMap = {};
+  let totalWH = 0, totalATS = 0;
   items.forEach(item => {
     const qty = (item.total_warehouse || 0) + (item.incoming || 0);
+    totalWH += (item.total_warehouse || 0);
+    totalATS += (item.total_ats || 0);
     const f = getFabricFromSKU(item.sku, styleOverrides);
     const key = f.code.toUpperCase();
     if (!fabricMap[key]) fabricMap[key] = { code: f.code, description: f.description, units: 0, skus: new Set(), allSkus: new Set() };
@@ -581,9 +595,19 @@ function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFil
           </tbody>
           <tfoot>
             <tr style={{ background:"#f8fafc",borderTop:"2px solid #e2e8f0" }}>
-              <td colSpan={3} style={{ padding:"9px 14px",fontSize:13,fontWeight:700,color:"#0369a1" }}>Total</td>
+              <td colSpan={3} style={{ padding:"9px 14px",fontSize:13,fontWeight:700,color:"#0369a1" }}>Total (WH+Inc)</td>
               <td style={{ padding:"9px 14px",textAlign:"right",fontSize:13,fontWeight:800,color:"#0369a1" }}>{totalUnits.toLocaleString()}</td>
               <td style={{ padding:"9px 14px",textAlign:"right",fontSize:13,fontWeight:800,color:"#0369a1" }}>100%</td>
+            </tr>
+            <tr style={{ background:"#faf5ff" }}>
+              <td colSpan={3} style={{ padding:"7px 14px",fontSize:12,fontWeight:700,color:"#6d28d9" }}>🏭 WH Stock</td>
+              <td style={{ padding:"7px 14px",textAlign:"right",fontSize:12,fontWeight:800,color:"#6d28d9" }}>{totalWH.toLocaleString()}</td>
+              <td></td>
+            </tr>
+            <tr style={{ background:"#f0fdf4" }}>
+              <td colSpan={3} style={{ padding:"7px 14px",fontSize:12,fontWeight:700,color:"#16a34a" }}>📦 ATS</td>
+              <td style={{ padding:"7px 14px",textAlign:"right",fontSize:12,fontWeight:800,color:"#16a34a" }}>{totalATS.toLocaleString()}</td>
+              <td></td>
             </tr>
           </tfoot>
         </table>
@@ -697,7 +721,18 @@ function ImageWithFallback({ src, alt, style, className, onClick }) {
 }
 
 // ─── Brand Card ──────────────────────────
-function BrandCard({ abbr, data, onClick, filterMode }) {
+function BrandCard({ abbr, data, onClick, filterMode, brandCategoryFilter, styleOverrides }) {
+  // When a category filter is active, recompute totals from only matching items
+  let displayData = data;
+  if (brandCategoryFilter && brandCategoryFilter !== "all" && data.items) {
+    const filtered = data.items.filter(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand, styleOverrides) === brandCategoryFilter);
+    displayData = {
+      ...data,
+      sku_count: filtered.length,
+      total_ats: filtered.reduce((s, i) => s + (i.total_ats || 0), 0),
+      total_warehouse: filtered.reduce((s, i) => s + (i.total_warehouse || 0), 0),
+    };
+  }
   return (
     <div onClick={onClick} className="brand-card">
       <div style={{ height:120, display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(135deg,#f8fafc,#f1f5f9)",borderRadius:"12px 12px 0 0",padding:12,overflow:"hidden" }}>
@@ -709,17 +744,17 @@ function BrandCard({ abbr, data, onClick, filterMode }) {
         <div style={{ display:"flex",justifyContent:"space-between",gap:8 }}>
           <div style={{ background:"#f0fdf4",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
             <p style={{ fontSize:10,color:"#16a34a",fontWeight:600 }}>SKUs</p>
-            <p style={{ fontSize:18,fontWeight:800,color:"#166534" }}>{data.sku_count}</p>
+            <p style={{ fontSize:18,fontWeight:800,color:"#166534" }}>{displayData.sku_count}</p>
           </div>
           {filterMode !== "all" && (
             <div style={{ background:"#faf5ff",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
               <p style={{ fontSize:10,color:"#7c3aed",fontWeight:600 }}>WH Stock</p>
-              <p style={{ fontSize:18,fontWeight:800,color:"#5b21b6" }}>{(data.total_warehouse||0).toLocaleString()}</p>
+              <p style={{ fontSize:18,fontWeight:800,color:"#5b21b6" }}>{(displayData.total_warehouse||0).toLocaleString()}</p>
             </div>
           )}
           <div style={{ background:"#eef2ff",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
             <p style={{ fontSize:10,color:"#4f46e5",fontWeight:600 }}>ATS</p>
-            <p style={{ fontSize:18,fontWeight:800,color:"#3730a3" }}>{(data.total_ats||0).toLocaleString()}</p>
+            <p style={{ fontSize:18,fontWeight:800,color:"#3730a3" }}>{(displayData.total_ats||0).toLocaleString()}</p>
           </div>
         </div>
       </div>
@@ -2395,7 +2430,7 @@ export default function VersaInventoryApp() {
               ) : (
                 <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:16 }}>
                   {filteredBrands.map(([abbr, data]) => (
-                    <BrandCard key={abbr} abbr={abbr} data={data} onClick={() => goToInventory(abbr)} filterMode={filterMode} />
+                    <BrandCard key={abbr} abbr={abbr} data={data} onClick={() => goToInventory(abbr)} filterMode={filterMode} brandCategoryFilter={brandCategoryFilter} styleOverrides={styleOverrides} />
                   ))}
                 </div>
               )}
