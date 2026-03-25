@@ -1967,27 +1967,21 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
   return (
     <div style={{ paddingBottom:16 }}>
       {/* Global Summary Row */}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:8 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(2, 1fr)", gap:8, marginBottom:16 }}>
         {[
           { label:"Total Stock", val:gTotals.totalStock, color:"#e2e8f0", icon:"📦" },
           { label:"Warehouse", val:gTotals.wh, color:"#a78bfa", icon:"🏭" },
           { label:"Overseas", val:gTotals.incoming, color:"#fbbf24", icon:"🚢" },
-        ].map(s => (
-          <div key={s.label} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12, padding:"12px 8px", textAlign:"center" }}>
-            <div style={{ fontSize:10, marginBottom:2 }}>{s.icon}</div>
-            <div style={{ fontSize:18, fontWeight:800, color:s.color }}>{s.val.toLocaleString()}</div>
-            <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>{s.label}</div>
-          </div>
-        ))}
-      </div>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:8, marginBottom:16 }}>
-        {[
-          { label:"Comm (WH)", val:gTotals.commWh, color:"#fb923c", icon:"📋" },
-          { label:"Comm (OS)", val:gTotals.commOs, color:"#c084fc", icon:"📋" },
           { label:"Total Committed", val:gTotals.committed, color:"#f87171", icon:"📋" },
+          { label:"Comm (WH)", val:gTotals.commWh, color:"#fb923c", icon:"🏭" },
+          { label:"Comm (OS)", val:gTotals.commOs, color:"#c084fc", icon:"🚢" },
           { label:"ATS", val:gTotals.ats, color:"#34d399", icon:"✅" },
-        ].map(s => (
-          <div key={s.label} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12, padding:"12px 8px", textAlign:"center" }}>
+        ].map((s, i) => (
+          <div key={s.label} style={{
+            background:"linear-gradient(135deg,rgba(30,41,59,.9),rgba(15,23,42,.9))",
+            border:"1px solid rgba(255,255,255,.1)", borderRadius:12, padding:"12px 10px", textAlign:"center",
+            ...(i === 6 ? { gridColumn:"span 2" } : {})
+          }}>
             <div style={{ fontSize:10, marginBottom:2 }}>{s.icon}</div>
             <div style={{ fontSize:18, fontWeight:800, color:s.color }}>{s.val.toLocaleString()}</div>
             <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>{s.label}</div>
