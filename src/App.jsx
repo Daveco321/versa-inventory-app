@@ -1828,10 +1828,17 @@ function fmtDateShort(d) {
   return d.toLocaleDateString("en-US", { month:"short", day:"numeric", year:"2-digit" });
 }
 
-function ProductionRecapView({ productionData, openOrdersData, styleOverrides }) {
+function ProductionRecapView({ productionData, openOrdersData, styleOverrides, inventory, onStyleClick }) {
   const [search, setSearch] = useState("");
   const [sortMode, setSortMode] = useState("etd-asc");
   const [expanded, setExpanded] = useState({});
+
+  // Find inventory item by base style and open the detail modal
+  const handleStyleClick = useCallback((baseStyle) => {
+    if (!inventory?.length || !onStyleClick) return;
+    const match = inventory.find(i => (i.sku || "").toUpperCase().split("-")[0] === baseStyle.toUpperCase());
+    if (match) onStyleClick(match);
+  }, [inventory, onStyleClick]);
 
   // Group production data by production PO
   const groups = useMemo(() => {
@@ -2047,7 +2054,7 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides })
                         <img src={imgUrl} alt={l.style} style={{ width:40, height:40, objectFit:"cover", borderRadius:8, border:"1px solid rgba(255,255,255,.1)", flexShrink:0 }}
                           onError={e => { e.target.style.display = "none"; }} />
                         <div style={{ flex:1, minWidth:0 }}>
-                          <div style={{ fontWeight:700, fontFamily:"monospace", color:"#818cf8", fontSize:13 }}>{l.style}</div>
+                          <div onClick={(e) => { e.stopPropagation(); handleStyleClick(l.style); }} style={{ fontWeight:700, fontFamily:"monospace", color:"#818cf8", fontSize:13, cursor:"pointer", textDecoration:"underline", textDecorationStyle:"dotted", textUnderlineOffset:3 }}>{l.style}</div>
                           <div style={{ fontSize:11, color:"#64748b", display:"flex", gap:8, flexWrap:"wrap", marginTop:2 }}>
                             <span>{l.brand}</span>
                             <span>ETD: {l.etd ? fmtDateShort(l.etd) : "—"}</span>
@@ -2922,7 +2929,7 @@ export default function VersaInventoryApp() {
 
         {/* PRODUCTION TAB */}
         {activeTab === "production" && (
-          <ProductionRecapView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} />
+          <ProductionRecapView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} inventory={inventory} onStyleClick={(item) => setSelectedItem(item)} />
         )}
       </main>
 
