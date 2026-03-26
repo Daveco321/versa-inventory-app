@@ -1178,7 +1178,9 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
   const fit = getFitFromSKU(item.sku, styleOverrides);
   const sp = getSizePack(item.sku, item.brand_abbr || item.brand, prepackDefaults, styleOverrides);
   const totalStock = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
-  const ats = item.total_ats || 0;
+  // Use the pre-computed total_ats from rebuildBrands (already includes incoming - committed - allocated)
+  // Falls back to manual recomputation for raw items that haven't been processed
+  const ats = typeof item.total_ats === "number" ? item.total_ats : (totalStock + (item.incoming||0) - Math.abs(item.committed||0) - Math.abs(item.allocated||0));
   const [showFullImage, setShowFullImage] = useState(false);
   const [showAllocations, setShowAllocations] = useState(false);
   const isOverseas = filterMode === "incoming";
@@ -1252,7 +1254,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
             </div>
             <div style={{ flex:1,display:"flex",flexDirection:"column",gap:8 }}>
               <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>
-                <div style={{ background:"linear-gradient(135deg,#10b981,#059669)",color:"#fff",padding:10,borderRadius:10 }}>
+                <div style={{ background: ats < 0 ? "linear-gradient(135deg,#ef4444,#dc2626)" : "linear-gradient(135deg,#10b981,#059669)",color:"#fff",padding:10,borderRadius:10 }}>
                   <p style={{ fontSize:10,opacity:.85 }}>ATS</p>
                   <p style={{ fontSize:22,fontWeight:800 }}>{ats.toLocaleString()}</p>
                 </div>
@@ -3332,7 +3334,7 @@ export default function VersaInventoryApp() {
 
         {/* PRODUCTION TAB */}
         {activeTab === "production" && (
-          <ProductionRecapView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} inventory={inventory} onStyleClick={(item) => setSelectedItem(item)} />
+          <ProductionRecapView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} inventory={allItems} onStyleClick={(item) => setSelectedItem(item)} />
         )}
 
         {/* ANALYTICS TAB */}
