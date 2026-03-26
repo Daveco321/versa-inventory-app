@@ -228,21 +228,10 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
           osDed = ded;
         } else if (assign === 'warehouse') {
           osDed = 0;
-        } else if (assign === 'fifo') {
+        } else {
+          // FIFO default: warehouse absorbs first, remainder spills to overseas
           const whAbsorbed = Math.min(ded, wh);
           osDed = Math.max(0, ded - whAbsorbed);
-        } else if (wh <= 0) {
-          osDed = ded;
-        } else if (adjustedIncoming > 0) {
-          const totalAvail = wh + adjustedIncoming;
-          if (ded > totalAvail) {
-            osDed = ded - wh;
-          } else {
-            const neg = (wh - ded) < 0;
-            const covers = adjustedIncoming >= ded;
-            const margin = ded > wh && Math.abs(adjustedIncoming - ded) <= ded * 0.05;
-            if (margin || (neg && covers)) osDed = ded;
-          }
         }
       }
       return { ...item, incoming: adjustedIncoming, _suppressed_incoming: suppressedQty, total_ats: adjustedIncoming - osDed, total_warehouse: 0, jtw:0,tr:0,dcw:0,qa:0, _overseas_deducted: osDed, _display_mode:"overseas" };
@@ -259,18 +248,12 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
         apply = 0;
       } else if (assign === 'warehouse') {
         apply = ded;
-      } else if (assign === 'fifo') {
+      } else if (incoming > 0) {
+        // FIFO: warehouse absorbs what it can, remainder spills to overseas
         apply = Math.min(ded, wh);
-      } else if (ded > 0 && incoming > 0) {
-        const totalAvail = wh + incoming;
-        if (ded > totalAvail) {
-          apply = wh; // Over-allocated — drain warehouse
-        } else {
-          const neg = (wh - ded) < 0;
-          const covers = incoming >= ded;
-          const margin = ded > wh && Math.abs(incoming - ded) <= ded * 0.05;
-          if (margin || (neg && covers)) apply = 0;
-        }
+      } else {
+        // No incoming — full hit to warehouse (can go negative)
+        apply = ded;
       }
       const sell = wh - apply;
       return { ...item, total_ats: sell, total_warehouse: wh, incoming: 0, _display_mode:"ats" };
@@ -1172,7 +1155,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
 }
 
 // ─── Product Detail Modal ────────────────
-function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, colorMap, allocationData, apoData, openOrdersData, suppressionOverrides, styleOverrides, prepackDefaults }) {
+function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, colorMap, allocationData, apoData, openOrdersData, suppressionOverrides, styleOverrides, prepackDefaults, deductionAssignments }) {
   if (!item) return null;
   const fabric = getFabricFromSKU(item.sku, styleOverrides);
   const fit = getFitFromSKU(item.sku, styleOverrides);
@@ -1424,12 +1407,15 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
                 const incoming = item.incoming||0;
                 let overseasDed = 0;
                 if (totalDed > 0) {
-                  if (wh <= 0) overseasDed = totalDed;
-                  else if (incoming > 0) {
-                    const neg = (wh - totalDed) < 0;
-                    const covers = incoming >= totalDed;
-                    const margin = totalDed > wh && Math.abs(incoming - totalDed) <= totalDed * 0.05;
-                    if (margin || (neg && covers)) overseasDed = totalDed;
+                  const _pAssign = (deductionAssignments || {})[item.sku] || null;
+                  if (_pAssign === 'overseas') {
+                    overseasDed = totalDed;
+                  } else if (_pAssign === 'warehouse') {
+                    overseasDed = 0;
+                  } else {
+                    // FIFO default: warehouse absorbs first, remainder to overseas
+                    const whAbsorbed = Math.min(totalDed, wh);
+                    overseasDed = Math.max(0, totalDed - whAbsorbed);
                   }
                 }
                 let remaining = overseasDed;
@@ -1840,7 +1826,7 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
       const totalStock = wh + incoming;
       const ats = item.total_ats || 0;
 
-      // ── Split committed into WH vs Overseas using same heuristic as rebuildBrands ──
+      // ── Split committed into WH vs Overseas using FIFO (same as rebuildBrands) ──
       let commWh = committed, commOs = 0;
       if (committed > 0) {
         const assign = (deductionAssignments || {})[item.sku] || null;
@@ -1848,27 +1834,10 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
           commWh = 0; commOs = committed;
         } else if (assign === 'warehouse') {
           commWh = committed; commOs = 0;
-        } else if (assign === 'fifo') {
+        } else {
+          // FIFO default: warehouse absorbs first, remainder to overseas
           commWh = Math.min(committed, wh);
           commOs = Math.max(0, committed - wh);
-        } else if (wh <= 0 && incoming > 0) {
-          commWh = 0; commOs = committed;
-        } else if (incoming > 0) {
-          const totalAvail = wh + incoming;
-          if (committed > totalAvail) {
-            commWh = wh; commOs = committed - wh;
-          } else {
-            const neg = (wh - committed) < 0;
-            const covers = incoming >= committed;
-            const margin = committed > wh && Math.abs(incoming - committed) <= committed * 0.05;
-            if (margin || (neg && covers)) {
-              commWh = 0; commOs = committed;
-            } else {
-              commWh = committed; commOs = 0;
-            }
-          }
-        } else {
-          commWh = committed; commOs = 0;
         }
       }
 
@@ -3390,7 +3359,7 @@ export default function VersaInventoryApp() {
 
       {/* ─── MODALS ────────────────────────── */}
       {selectedItem && (
-        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} colorMap={colorMap} allocationData={allocationData} apoData={apoData} openOrdersData={openOrdersData} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} prepackDefaults={prepackDefaults} />
+        <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} colorMap={colorMap} allocationData={allocationData} apoData={apoData} openOrdersData={openOrdersData} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} prepackDefaults={prepackDefaults} deductionAssignments={deductionAssignments} />
       )}
       {showCart && (
         <CartModal cart={cart} onClose={() => setShowCart(false)}
