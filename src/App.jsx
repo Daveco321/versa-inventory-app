@@ -208,7 +208,7 @@ function sortBrands(entries) {
   });
 }
 
-function rebuildBrands(inventory, filterMode = "all", prodData = [], suppressionOverrides = new Set(), deductionAssignments = {}, styleOverrides = {}) {
+function rebuildBrands(inventory, filterMode = "all", prodData = [], suppressionOverrides = new Set(), deductionAssignments = {}, styleOverrides = {}, warehouseFilter = "all") {
   const brands = {};
   let source = [...inventory];
 
@@ -238,7 +238,13 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
     }).filter(Boolean);
   } else if (filterMode === "ats") {
     source = source.map(item => {
-      const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+      const fullWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+      // Warehouse sub-filter: show only selected warehouse's qty
+      const wh = warehouseFilter === "all" ? fullWh
+        : warehouseFilter === "jtw" ? (item.jtw||0)
+        : warehouseFilter === "tr" ? (item.tr||0)
+        : warehouseFilter === "dcw" ? (item.dcw||0)
+        : warehouseFilter === "qa" ? (item.qa||0) : fullWh;
       if (wh <= 0) return null;
       const ded = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
       const incoming = item.incoming || 0;
@@ -250,13 +256,27 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
         apply = ded;
       } else if (incoming > 0) {
         // FIFO: warehouse absorbs what it can, remainder spills to overseas
-        apply = Math.min(ded, wh);
+        // Use fullWh for FIFO calc so deduction routing is accurate regardless of sub-filter
+        apply = Math.min(ded, fullWh);
       } else {
         // No incoming — full hit to warehouse (can go negative)
         apply = ded;
       }
-      const sell = wh - apply;
-      return { ...item, total_ats: sell, total_warehouse: wh, incoming: 0, _display_mode:"ats" };
+      // When sub-filtered, scale the deduction proportionally to this warehouse's share
+      let whApply = apply;
+      if (warehouseFilter !== "all" && fullWh > 0) {
+        whApply = Math.round(apply * (wh / fullWh));
+      }
+      const sell = wh - whApply;
+      // Override individual warehouse fields based on sub-filter
+      const displayItem = warehouseFilter === "all" ? item : {
+        ...item,
+        jtw: warehouseFilter === "jtw" ? (item.jtw||0) : 0,
+        tr: warehouseFilter === "tr" ? (item.tr||0) : 0,
+        dcw: warehouseFilter === "dcw" ? (item.dcw||0) : 0,
+        qa: warehouseFilter === "qa" ? (item.qa||0) : 0,
+      };
+      return { ...displayItem, total_ats: sell, total_warehouse: wh, incoming: 0, _display_mode:"ats" };
     }).filter(Boolean);
   } else {
     // "all" mode: recalculate total_ats client-side (matches main catalog formula)
@@ -400,7 +420,7 @@ function classifyColor(colorDisplay, brandAbbr) {
 }
 
 // ─── Color Summary Panel ──────────────────────────────────────
-function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColorFilter, onColorFilter, styleOverrides }) {
+function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColorFilter, onColorFilter, styleOverrides, warehouseFilter }) {
   const [metric, setMetric] = useState("ats"); // "ats" | "wh" | "incoming" | "total"
 
   // Compute per-category quantities for ALL metrics at once
@@ -427,7 +447,8 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
   const bW = pct(cWhite), bB = pct(cBlack), bN = pct(cNavy), bO = pct(cOther), bF = pct(cFancy);
 
   const LABEL_MAP = { white:"White Solid", black:"Black Solid", navy:"Navy Solid", other_solids:"Other Solids", fancies:"Fancies" };
-  const METRIC_LABELS = { ats:"\u{1F4E6} ATS", wh:"\u{1F3ED} WH Stock", incoming:"\u{1F6A2} Incoming", total:"\u{1F4CA} Total" };
+  const whLabel = warehouseFilter && warehouseFilter !== "all" ? `\u{1F3ED} ${warehouseFilter.toUpperCase()}` : "\u{1F3ED} WH Stock";
+  const METRIC_LABELS = { ats:"\u{1F4E6} ATS", wh:whLabel, incoming:"\u{1F6A2} Incoming", total:"\u{1F4CA} Total" };
   const METRIC_COLORS = { ats:["#16a34a","#f0fdf4","#bbf7d0"], wh:["#6d28d9","#f5f3ff","#ddd6fe"], incoming:["#d97706","#fffbeb","#fde68a"], total:["#0369a1","#e0f2fe","#bae6fd"] };
 
   const handleClick = (cat) => {
@@ -512,7 +533,7 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
 }
 
 // ─── Fabric Summary Panel ─────────────────────────────────────
-function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFilter, styleOverrides }) {
+function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFilter, styleOverrides, warehouseFilter }) {
   const [metric, setMetric] = useState("ats");
 
   const fabricMap = {};
@@ -532,7 +553,8 @@ function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFil
   const rows = Object.values(fabricMap).sort((a, b) => getUnits(b) - getUnits(a));
   const totalUnits = rows.reduce((s, r) => s + getUnits(r), 0);
 
-  const METRIC_LABELS = { ats:"\u{1F4E6} ATS", wh:"\u{1F3ED} WH Stock", incoming:"\u{1F6A2} Incoming", total:"\u{1F4CA} Total" };
+  const whLabel = warehouseFilter && warehouseFilter !== "all" ? `\u{1F3ED} ${warehouseFilter.toUpperCase()}` : "\u{1F3ED} WH Stock";
+  const METRIC_LABELS = { ats:"\u{1F4E6} ATS", wh:whLabel, incoming:"\u{1F6A2} Incoming", total:"\u{1F4CA} Total" };
   const METRIC_COLORS = { ats:["#16a34a","#f0fdf4","#bbf7d0"], wh:["#6d28d9","#f5f3ff","#ddd6fe"], incoming:["#d97706","#fffbeb","#fde68a"], total:["#0369a1","#e0f2fe","#bae6fd"] };
   const mc = METRIC_COLORS[metric];
 
@@ -722,7 +744,7 @@ function ImageWithFallback({ src, alt, style, className, onClick }) {
 }
 
 // ─── Brand Card ──────────────────────────
-function BrandCard({ abbr, data, onClick, filterMode, brandCategoryFilter, styleOverrides }) {
+function BrandCard({ abbr, data, onClick, filterMode, brandCategoryFilter, styleOverrides, warehouseFilter }) {
   // When a category filter is active, recompute totals from only matching items
   let displayData = data;
   if (brandCategoryFilter && brandCategoryFilter !== "all" && data.items) {
@@ -748,7 +770,7 @@ function BrandCard({ abbr, data, onClick, filterMode, brandCategoryFilter, style
             <p style={{ fontSize:18,fontWeight:800,color:"#166534" }}>{displayData.sku_count}</p>
           </div>
           <div style={{ background:"#faf5ff",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
-            <p style={{ fontSize:10,color:"#7c3aed",fontWeight:600 }}>WH Stock</p>
+            <p style={{ fontSize:10,color:"#7c3aed",fontWeight:600 }}>{warehouseFilter && warehouseFilter !== "all" ? warehouseFilter.toUpperCase() : "WH Stock"}</p>
             <p style={{ fontSize:18,fontWeight:800,color:"#5b21b6" }}>{(displayData.total_warehouse||0).toLocaleString()}</p>
           </div>
           <div style={{ background:"#eef2ff",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
@@ -762,12 +784,12 @@ function BrandCard({ abbr, data, onClick, filterMode, brandCategoryFilter, style
 }
 
 // ─── Product Card ────────────────────────
-function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRules, suppressionOverrides, styleOverrides }) {
+function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRules, suppressionOverrides, styleOverrides, warehouseFilter }) {
   const fabric = getFabricFromSKU(item.sku, styleOverrides);
   const fit = getFitFromSKU(item.sku, styleOverrides);
   const ats = item.total_ats || 0;
   const isOverseas = filterMode === "incoming";
-  const atsLabel = isOverseas ? "Overseas ATS" : filterMode === "ats" ? "WH ATS" : "ATS";
+  const atsLabel = isOverseas ? "Overseas ATS" : filterMode === "ats" ? (warehouseFilter && warehouseFilter !== "all" ? `${warehouseFilter.toUpperCase()} ATS` : "WH ATS") : "ATS";
   const atsColor = ats > 0 ? (isOverseas ? "#d97706" : "#16a34a") : "#dc2626";
   const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap, styleOverrides);
   const custCode = (item.sku || "").substring(0, 2).toUpperCase();
@@ -2479,6 +2501,7 @@ export default function VersaInventoryApp() {
   const [currentBrand, setCurrentBrand] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null);
   const [filterMode, setFilterMode] = useState("all");
+  const [warehouseFilter, setWarehouseFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState("ats-desc");
   const [syncStatus, setSyncStatus] = useState({ text: "⏳ Connecting...", type: "loading" });
@@ -2770,9 +2793,9 @@ export default function VersaInventoryApp() {
   // Rebuild brands when filterMode or suppression-relevant data changes
   useEffect(() => {
     if (inventory.length > 0) {
-      setBrands(rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments, styleOverrides));
+      setBrands(rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter));
     }
-  }, [filterMode, inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides]);
+  }, [filterMode, inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter]);
 
   // ─── Navigation with Browser History ────────────────────────
   const goToBrands = useCallback(() => { 
@@ -2870,6 +2893,8 @@ export default function VersaInventoryApp() {
       if (prev === "incoming" && (sortBy === "arrival-asc" || sortBy === "arrival-desc")) {
         setSortBy("ats-desc");
       }
+      // Reset warehouse sub-filter when leaving ATS mode
+      if (prev === "ats") setWarehouseFilter("all");
       return next;
     });
   }, [sortBy]);
@@ -3011,7 +3036,7 @@ export default function VersaInventoryApp() {
               background: filterMode === "all" ? "linear-gradient(135deg,#10b981,#059669)" : filterMode === "incoming" ? "linear-gradient(135deg,#f59e0b,#d97706)" : "linear-gradient(135deg,#3b82f6,#4f46e5)",
               color:"#fff",border:"none",padding:"9px 16px",borderRadius:10,fontWeight:700,fontSize:13,cursor:"pointer",transition:"all .2s",whiteSpace:"nowrap"
             }}>
-              {filterMode === "all" ? "📦 All Inventory" : filterMode === "incoming" ? "🚢 Overseas Only" : "🏭 Warehouse ATS"}
+              {filterMode === "all" ? "📦 All Inventory" : filterMode === "incoming" ? "🚢 Overseas Only" : warehouseFilter !== "all" ? `🏭 ${warehouseFilter.toUpperCase()}` : "🏭 Warehouse ATS"}
             </button>
             {/* Export */}
             <button onClick={() => setShowExport(true)} style={{ background:"rgba(255,255,255,.08)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,.1)",padding:"9px 16px",borderRadius:10,fontWeight:600,fontSize:13,cursor:"pointer" }}>
@@ -3030,6 +3055,35 @@ export default function VersaInventoryApp() {
         </div>
       </header>
 
+      {/* ─── WAREHOUSE SUB-FILTER (ATS mode only) ─── */}
+      {filterMode === "ats" && (
+        <div style={{
+          background:"rgba(15,23,42,.92)",backdropFilter:"blur(12px)",
+          borderBottom:"1px solid rgba(99,102,241,.2)",
+          padding:"8px 24px",position:"sticky",top:56,zIndex:99,
+          display:"flex",alignItems:"center",gap:8,justifyContent:"center",flexWrap:"wrap"
+        }}>
+          <span style={{ fontSize:11,color:"#94a3b8",fontWeight:600,marginRight:4 }}>Warehouse:</span>
+          {[
+            { key:"all", label:"All Warehouses", icon:"📦" },
+            { key:"jtw", label:"JTW", icon:"🏭" },
+            { key:"tr",  label:"TR",  icon:"🏭" },
+            { key:"dcw", label:"DCW", icon:"🏭" },
+            { key:"qa",  label:"QA",  icon:"🔍" },
+          ].map(wf => (
+            <button key={wf.key} onClick={() => setWarehouseFilter(wf.key)} style={{
+              background: warehouseFilter === wf.key ? "linear-gradient(135deg,#3b82f6,#4f46e5)" : "rgba(255,255,255,.06)",
+              color: warehouseFilter === wf.key ? "#fff" : "#94a3b8",
+              border: warehouseFilter === wf.key ? "1.5px solid #818cf8" : "1.5px solid rgba(255,255,255,.1)",
+              padding:"6px 14px",borderRadius:8,fontWeight:700,fontSize:12,cursor:"pointer",
+              transition:"all .15s",whiteSpace:"nowrap"
+            }}>
+              {wf.icon} {wf.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* ─── CONTENT ───────────────────────── */}
       <main style={{ maxWidth:1280,margin:"0 auto",padding:"24px 20px 100px",minHeight:"calc(100vh - 68px)" }}>
         
@@ -3045,7 +3099,7 @@ export default function VersaInventoryApp() {
             {/* Stats Bar */}
             <div style={{ display:"flex",gap:12,marginBottom:24,flexWrap:"wrap" }}>
               {[
-                { label:"WH Stock", value:allItemsFiltered.reduce((s,i) => s+(i.total_warehouse||0),0).toLocaleString(), icon:"🏭", bg:"linear-gradient(135deg,#a78bfa,#7c3aed)" },
+                { label: warehouseFilter !== "all" ? `${warehouseFilter.toUpperCase()} Stock` : "WH Stock", value:allItemsFiltered.reduce((s,i) => s+(i.total_warehouse||0),0).toLocaleString(), icon:"🏭", bg:"linear-gradient(135deg,#a78bfa,#7c3aed)" },
                 { label:"Incoming", value:allItemsFiltered.reduce((s,i) => s+(i.incoming||0),0).toLocaleString(), icon:"🚢", bg:"linear-gradient(135deg,#fbbf24,#d97706)" },
                 { label:"Total ATS", value:allItemsFiltered.reduce((s,i) => s+(i.total_ats||0),0).toLocaleString(), icon:"✅", bg:"linear-gradient(135deg,#34d399,#10b981)" },
               ].map(s => (
@@ -3086,7 +3140,7 @@ export default function VersaInventoryApp() {
               <h2 style={{ fontSize:18,fontWeight:700,color:"#e2e8f0",marginBottom:20 }}>
                 Select a Brand
                 <span style={{ fontSize:13,fontWeight:500,color:"#64748b",marginLeft:8 }}>
-                  {filterMode === "incoming" ? "🚢 Overseas" : filterMode === "ats" ? "🏭 Warehouse ATS" : "📦 All"}
+                  {filterMode === "incoming" ? "🚢 Overseas" : filterMode === "ats" ? (warehouseFilter !== "all" ? `🏭 ${warehouseFilter.toUpperCase()} Only` : "🏭 Warehouse ATS") : "📦 All"}
                 </span>
                 {brandCategoryFilter !== "all" && (
                   <span style={{ fontSize:12,fontWeight:700,color:"#818cf8",marginLeft:8,background:"rgba(99,102,241,.15)",padding:"3px 10px",borderRadius:20,border:"1px solid rgba(99,102,241,.3)" }}>
@@ -3105,7 +3159,7 @@ export default function VersaInventoryApp() {
               ) : (
                 <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:16 }}>
                   {filteredBrands.map(([abbr, data]) => (
-                    <BrandCard key={abbr} abbr={abbr} data={data} onClick={() => goToInventory(abbr)} filterMode={filterMode} brandCategoryFilter={brandCategoryFilter} styleOverrides={styleOverrides} />
+                    <BrandCard key={abbr} abbr={abbr} data={data} onClick={() => goToInventory(abbr)} filterMode={filterMode} brandCategoryFilter={brandCategoryFilter} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} />
                   ))}
                 </div>
               )}
@@ -3163,7 +3217,7 @@ export default function VersaInventoryApp() {
               return (
                 <div style={{ display:"flex",gap:10,marginBottom:20,flexWrap:"wrap" }}>
                   <div style={{ flex:1,minWidth:100,background:"linear-gradient(135deg,#a78bfa,#7c3aed)",padding:"12px 16px",borderRadius:12,color:"#fff" }}>
-                    <p style={{ fontSize:10,opacity:.8,fontWeight:600 }}>🏭 WH Stock</p>
+                    <p style={{ fontSize:10,opacity:.8,fontWeight:600 }}>{warehouseFilter !== "all" ? `🏭 ${warehouseFilter.toUpperCase()} Stock` : "🏭 WH Stock"}</p>
                     <p style={{ fontSize:22,fontWeight:800 }}>{wh.toLocaleString()}</p>
                   </div>
                   <div style={{ flex:1,minWidth:100,background:"linear-gradient(135deg,#fbbf24,#d97706)",padding:"12px 16px",borderRadius:12,color:"#fff" }}>
@@ -3213,7 +3267,7 @@ export default function VersaInventoryApp() {
                 Showing <strong style={{ color:"#e2e8f0" }}>{filteredItems.length}</strong> of {brandData.items.length} styles
                 <span style={{ display:"inline-flex",gap:6,alignItems:"center",marginLeft:4 }}>
                   <span style={{ fontSize:11,color:"#c4b5fd",background:"rgba(124,58,237,.15)",padding:"2px 8px",borderRadius:12,fontWeight:700,border:"1px solid rgba(124,58,237,.25)" }}>
-                    🏭 {filteredItems.reduce((s,i) => s + (i.total_warehouse||0), 0).toLocaleString()} WH
+                    🏭 {filteredItems.reduce((s,i) => s + (i.total_warehouse||0), 0).toLocaleString()} {warehouseFilter !== "all" ? warehouseFilter.toUpperCase() : "WH"}
                   </span>
                   {filteredItems.reduce((s,i) => s + (i.incoming||0), 0) > 0 && (
                     <span style={{ fontSize:11,color:"#fbbf24",background:"rgba(245,158,11,.12)",padding:"2px 8px",borderRadius:12,fontWeight:700,border:"1px solid rgba(245,158,11,.25)" }}>
@@ -3250,7 +3304,7 @@ export default function VersaInventoryApp() {
                     padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,
                     border: `1px solid ${filterMode === "incoming" ? "rgba(245,158,11,.3)" : "rgba(59,130,246,.3)"}`
                   }}>
-                    {filterMode === "incoming" ? "🚢 Overseas Only" : "🏭 Warehouse ATS"}
+                    {filterMode === "incoming" ? "🚢 Overseas Only" : warehouseFilter !== "all" ? `🏭 ${warehouseFilter.toUpperCase()} Only` : "🏭 Warehouse ATS"}
                   </span>
                 )}
                 {searchQuery && (
@@ -3270,6 +3324,7 @@ export default function VersaInventoryApp() {
                 activeColorFilter={colorCategoryFilter}
                 onColorFilter={setColorCategoryFilter}
                 styleOverrides={styleOverrides}
+                warehouseFilter={warehouseFilter}
               />
             )}
 
@@ -3281,6 +3336,7 @@ export default function VersaInventoryApp() {
                 activeFabricFilter={fabricCodeFilter}
                 onFabricFilter={setFabricCodeFilter}
                 styleOverrides={styleOverrides}
+                warehouseFilter={warehouseFilter}
               />
             )}
 
@@ -3293,7 +3349,7 @@ export default function VersaInventoryApp() {
             ) : (
               <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16 }}>
                 {filteredItems.map(item => (
-                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} />
+                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} />
                 ))}
               </div>
             )}
