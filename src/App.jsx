@@ -1211,7 +1211,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
     const oBase = (o.style || o.baseStyle || "").toUpperCase().split("-")[0];
     return oBase === baseStyle;
   });
-  const openOrdersTotal = openOrders.reduce((s, o) => s + (parseInt(o.openQty) || 0), 0);
+  const openOrdersTotal = openOrders.reduce((s, o) => s + (parseInt(o.openQty) || 0) + (parseInt(o.pickQty) || 0), 0);
 
   const committed = Math.abs(item.committed || 0);
   const allocated = Math.abs(item.allocated || 0);
@@ -1351,17 +1351,24 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
               {openOrders.length > 0 ? (
                 <>
                   <div style={{ background:"#fefce8",padding:"3px 10px 2px",display:"grid",gridTemplateColumns:"1fr auto auto",fontSize:10,fontWeight:600,color:"#a16207",gap:0 }}>
-                    <span>Customer</span><span style={{ textAlign:"right" }}>Order #</span><span style={{ textAlign:"right",paddingLeft:12 }}>Open Qty</span>
+                    <span>Customer</span><span style={{ textAlign:"right" }}>Order #</span><span style={{ textAlign:"right",paddingLeft:12 }}>Qty</span>
                   </div>
                   {openOrders.map((o, i) => {
                     const rawCust = (o.customer || "").toUpperCase().trim();
                     const custCode = rawCust.length <= 4 ? rawCust : rawCust.substring(0, 2);
                     const custFull = CUSTOMER_CODES[custCode] || o.customerFull || custCode || "—";
+                    const rawQty = parseInt(o.openQty) || 0;
+                    const pickQty = parseInt(o.pickQty) || 0;
+                    const qty = rawQty + pickQty;
+                    const isOnPick = pickQty > 0;
                     return (
-                      <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr auto auto",padding:"5px 10px",fontSize:11,borderTop:"1px solid #fef3c7",background:i%2===0?"#fff":"#fffbeb",gap:0 }}>
-                        <span style={{ fontWeight:600,color:"#1f2937" }}>{custFull}</span>
+                      <div key={i} style={{ display:"grid",gridTemplateColumns:"1fr auto auto",padding:"5px 10px",fontSize:11,borderTop:"1px solid #fef3c7",background:i%2===0?"#fff":"#fffbeb",gap:0,alignItems:"center" }}>
+                        <span style={{ fontWeight:600,color:"#1f2937",display:"flex",alignItems:"center",gap:4,flexWrap:"wrap" }}>
+                          {custFull}
+                          {isOnPick && <span style={{ display:"inline-block",background:"#f3e8ff",color:"#7c3aed",fontSize:8,fontWeight:800,padding:"2px 5px",borderRadius:4,border:"1px solid #ddd6fe",whiteSpace:"nowrap" }}>{"\uD83C\uDFAB"} ON PICK</span>}
+                        </span>
                         <span style={{ textAlign:"right",color:"#6b7280",fontFamily:"monospace",fontSize:10 }}>{o.orderNo || o.ctrlNo || "—"}</span>
-                        <span style={{ textAlign:"right",fontWeight:700,fontFamily:"monospace",paddingLeft:12 }}>{(parseInt(o.openQty)||0).toLocaleString()}</span>
+                        <span style={{ textAlign:"right",fontWeight:700,fontFamily:"monospace",paddingLeft:12,color:isOnPick?"#7c3aed":"inherit" }}>{qty.toLocaleString()}</span>
                       </div>
                     );
                   })}
@@ -2285,7 +2292,7 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
     if (!openOrdersData?.length) return [];
     return openOrdersData.filter(o => {
       const oBase = (o.style || o.baseStyle || "").toUpperCase().split("-")[0];
-      return oBase === style && (o.openQty || o.open_qty || 0) > 0;
+      return oBase === style && ((o.openQty || o.open_qty || 0) > 0 || (parseInt(o.pickQty) || 0) > 0);
     });
   };
 
@@ -2461,9 +2468,10 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
                               {custPOs.slice(0, 4).map((o, oi) => {
                                 const poNum = o.orderNo || o.po_number || "PO";
                                 const isPipeline = o.isPipeline || o.is_pipeline;
+                                const isOnPick = (parseInt(o.pickQty) || 0) > 0;
                                 return (
-                                  <span key={oi} style={{ fontSize:9, fontWeight:700, background: isPipeline ? "#fef3c7" : "#f0fdf4", color: isPipeline ? "#92400e" : "#16a34a", padding:"2px 6px", borderRadius:4, fontFamily:"monospace" }}>
-                                    {poNum}{isPipeline ? " B" : ""}
+                                  <span key={oi} style={{ fontSize:9, fontWeight:700, background: isOnPick ? "#f3e8ff" : isPipeline ? "#fef3c7" : "#f0fdf4", color: isOnPick ? "#7c3aed" : isPipeline ? "#92400e" : "#16a34a", padding:"2px 6px", borderRadius:4, fontFamily:"monospace", border: isOnPick ? "1px solid #ddd6fe" : "none" }}>
+                                    {poNum}{isPipeline ? " B" : ""}{isOnPick ? " 🎟️" : ""}
                                   </span>
                                 );
                               })}
