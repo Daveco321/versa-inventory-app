@@ -1788,13 +1788,14 @@ function getMatchingBanners(sku, brandAbbr, bannerRules) {
   const brandUp = (brandAbbr || '').toUpperCase().trim();
   const cat = getDetailedCategory(sku, brandAbbr);
   const fit = extractFitCode(sku);
+  const fab = base.length >= 6 ? base.substring(4, 6) : '';
 
   return bannerRules.filter(r => {
     // Visibility: mobile app is admin only
     const vis = r.visibility || 'both';
     if (vis === 'catalog') return false;
 
-    // SKU-specific match
+    // SKU-specific match (ONLY these SKUs — bypasses everything below)
     const rSkus = r.skus || [];
     if (rSkus.length > 0) {
       return rSkus.some(s => {
@@ -1803,6 +1804,17 @@ function getMatchingBanners(sku, brandAbbr, bannerRules) {
       });
     }
 
+    // "Also Apply To" SKUs — additive: matches these IN ADDITION to dimensions
+    const rAlsoSkus = r.alsoSkus || [];
+    if (rAlsoSkus.length > 0) {
+      const alsoMatch = rAlsoSkus.some(s => {
+        const su = s.toUpperCase().trim();
+        return su && (su === skuUpper || su === base || skuUpper.startsWith(su));
+      });
+      if (alsoMatch) return true;
+    }
+
+    // Dimension matching (all specified dimensions must match)
     const rCat = r.category || 'any';
     if (rCat !== 'any' && rCat !== cat) return false;
     const rFits = _ruleFits(r);
@@ -1811,6 +1823,8 @@ function getMatchingBanners(sku, brandAbbr, bannerRules) {
     if (rCusts.length > 0) return false; // mobile has no customer context
     const rBrands = _ruleBrands(r);
     if (rBrands.length > 0 && (!brandUp || !rBrands.map(b => b.toUpperCase()).includes(brandUp))) return false;
+    const rFabs = _ruleFabrics(r);
+    if (rFabs.length > 0 && (!fab || !rFabs.map(f => f.toUpperCase()).includes(fab))) return false;
 
     return true;
   });
