@@ -811,7 +811,9 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRule
   const atsColor = ats > 0 ? (isOverseas ? "#d97706" : "#16a34a") : "#dc2626";
   const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap, styleOverrides);
   const custCode = (item.sku || "").substring(0, 2).toUpperCase();
-  const custName = CUSTOMER_CODES[custCode] || custCode;
+  let custName = CUSTOMER_CODES[custCode] || custCode;
+  // Chaps accessories: display CT (Costco Taiwan) as Burlington
+  if (custCode === "CT" && (item.brand_abbr || item.brand || "").toUpperCase() === "CHAPS" && getItemCategory(item.sku, item.brand_abbr || item.brand) === "accessories") custName = "BURLINGTON";
   const [prodOpen, setProdOpen] = useState(false);
 
   // Production data — suppression-aware
@@ -1250,7 +1252,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
             <p style={{ fontSize:12,color:"#6b7280",display:"flex",alignItems:"center",gap:6 }}>
               {item.brand_full}
               <span style={{ fontSize:10,fontWeight:700,background:"#f0fdf4",color:"#15803d",padding:"1px 6px",borderRadius:4,border:"1px solid #bbf7d0" }}>
-                {CUSTOMER_CODES[(item.sku||"").substring(0,2).toUpperCase()] || (item.sku||"").substring(0,2).toUpperCase()}
+                {(() => { const c = (item.sku||"").substring(0,2).toUpperCase(); const n = CUSTOMER_CODES[c]||c; return (c==="CT" && (item.brand_abbr||item.brand||"").toUpperCase()==="CHAPS" && getItemCategory(item.sku,item.brand_abbr||item.brand)==="accessories") ? "BURLINGTON" : n; })()}
               </span>
             </p>
             {colorInfo && (
