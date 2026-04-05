@@ -10,7 +10,7 @@ const DEFAULT_LOGO = "https://versamens.com/wp-content/uploads/2025/02/ac65455c-
 
 const CUSTOMER_CODES = {"AF":"AAFES","BK":"BELK","BJ":"BJS","BL":"BLOOMINGDALE","BO":"BOSCOV","BU":"BURLINGTON","CC":"COSTCO CANADA","CU":"COSTCO USA","CM":"COSTCO MEXICO","CT":"COSTCO TAIWAN","FM":"FORMAN MILLS","HA":"HAMRICKS","JC":"JC PENNY","MB":"MACYS BACKSTAGE","MC":"MACYS.COM","MA":"MACYS","MW":"MENS WEARHOUSE","NO":"NORDSTROM","RO":"ROSS","SK":"SAKS","TJ":"TJX","VE":"VETERANS","WN":"WINNERS","KH":"KOHLS","WA":"WALMART (PEERLESS)","NC":"NAUTICA.COM","CY":"CENTURY 21","TK":"TKX","TG":"TARGET","WM":"WALMART","AM":"AMAZON","SE":"SEARS & KMART","PH":"PETER HARRIS","TM":"TJX (with size UPC)","VG":"VERSA GROUP","PS":"PRICE SMART","BF":"Beall's Florida","BI":"Beall's Inc (Outlet)","PB":"Porta Bella","DD":"DD'S Discount","HP":"HALF PRICE","TT":"TIKTOK","VW":"Big Lots/Variety","VP":"Versa Group (Purchase)","PR":"PRATO","MS":"ME SALVE","BR":"BRANDS for LESS","PM":"PROMODA","CI":"CITI TRENDS","CB":"Centric Brands","RM":"ROSS (with size UPC)","JT":"JC PENNY (SHIRT-TIE set)"};
 
-const BRAND_IMAGE_PREFIX = {NAUTICA:"NA",DKNY:"DK",EB:"EB",REEBOK:"RB",VINCE:"VC",BEN:"BE",USPA:"US",CHAPS:"CH",LUCKY:"LB",JNY:"JN",BEENE:"GB",NICOLE:"NM",SHAQ:"SH",TAYION:"TA",STRAHAN:"MS",VD:"VD",VERSA:"VR",CHEROKEE:"CK",AMERICA:"AC",BLO:"BL",DN:"D9",KL:"KL",NE:"NE"};
+const BRAND_IMAGE_PREFIX = {NAUTICA:"NA",DKNY:"DK",EB:"EB",REEBOK:"RB",VINCE:"VC",BEN:"BE",USPA:"US",CHAPS:"CH",LUCKY:"LB",JNY:"JN",BEENE:"GB",NICOLE:"NM",SHAQ:"SH",TAYION:"TA",STRAHAN:"MS",VD:"VD",VERSA:"VR",CHEROKEE:"CK",AMERICA:"AC",BLO:"BL",BLACK:"BL",DN:"D9",KL:"KL",RG:"RG",NE:"NE"};
 
 const BRAND_MAPPING = {
   NAUTICA:{full_name:"Nautica",logo:"https://versamens.com/wp-content/uploads/2025/07/nautica-logo-1-1-1024x576.png"},
@@ -33,17 +33,19 @@ const BRAND_MAPPING = {
   CHEROKEE:{full_name:"Cherokee",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T141858.534-2-1024x576.png"},
   AMERICA:{full_name:"American Crew",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/AmericanCrew-logo-1280x720.png"},
   BLO:{full_name:"Bloomingdales",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Bloomingdales-logo-1280x720.png"},
+  BLACK:{full_name:"Black Label",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/black-label-logo.png"},
   DN:{full_name:"Divine 9",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Divine9-logo-spaced-1280x720.png"},
   KL:{full_name:"Karl Lagerfeld Paris",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/klp-wht-blue-back-1-1024x576.png"},
+  RG:{full_name:"Robert Graham",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/robert-graham-logo-dark.png"},
   NE:{full_name:"Neiman Marcus",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Neiman_Marcus-Logo.wine-copy-1024x576.png"},
 };
 
-const BRAND_ORDER = ["NAUTICA","DKNY","EB","VINCE","KL","CHAPS","USPA","LUCKY","BEN","BEENE","NE","JNY","NICOLE","VD","REEBOK","SHAQ","TAYION","STRAHAN","VERSA","AMERICA","BLO","DN"];
+const BRAND_ORDER = ["NAUTICA","DKNY","EB","VINCE","KL","CHAPS","USPA","LUCKY","BEN","BEENE","NE","JNY","NICOLE","VD","REEBOK","SHAQ","TAYION","STRAHAN","VERSA","AMERICA","BLO","BLACK","RG","DN"];
 
 const SKU_BRAND_CODE_MAP = {};
 Object.entries(BRAND_IMAGE_PREFIX).forEach(([brand, prefix]) => { SKU_BRAND_CODE_MAP[prefix] = brand; });
 
-const FABRIC_RULES = {AW:"4 Way Stretch",CA:"Cataonic 95% Polyester / 5% Spandex",TD:"CVC Dobby 60% Polyester / 40% Cotton",CH:"Chambray TC Stretch",CS:"Cooling Stretch",CV:"Cotton / Poly CVC",DS:"4 Way Stretch Dobby 95% Polyester / 5% Spandex",OX:"Pinpoint Oxford 65%/35% Poly/Cotton",PP:"100% Polyester 150D",SA:"150D Sateen 100% Polyester",LN:"100% Slab Linen",ST:"97% Cotton 3% Spandex",SW:"97% Cotton 3% Stretch Twill",SU:"Stretch Supershirt (95% Polyester, 5% Spandex)",TR:"Traveler Stretch",TW:"4 Way Stretch Twill",TS:"TC Stretch (77% Polyester / 20% Cotton / 3% Spandex)",WS:"4 Way Stretch (95%,5%) Sateen",PC:"TC Poplin 65%/35% Poly/Cotton",PT:"97% Poly 3% Stretch 150D",VS:"Viscose (31%) Stretch",VP:"50% Viscose 50% Polyester",LP:"Linen Polyester/Spandex",MR:"50% Microfiber 50% Rayon",CT:"100% Cotton",CP:"98% Cotton / 2% Spandex",BP:"50% Bamboo / 50% Polyester",TC:"TC Stretch (52P, 45C, 3S %)",SC:"60% Cotton, 38% Poly, 2% Spandex",BM:"30% Rayon Bamboo / 30% Microfiber / 36% Poly / 4% Spandex Twill",VM:"62% Poly 35% Viscose Bamboo 3% Spandex",SP:"52% Poly 45% Cotton 3% Spandex CVC Yarn Dye",TP:"Solid Twill 21% Rayon / 75.5% Poly / 3.5% Spandex",LC:"Linen 51% Cotton / 49% Poly",CX:"97% Cotton / 3% Polyester",WF:"96% Poly 4% Spandex Waffle",FT:"97% Poly / 3% Spandex Flax Texture",CE:"88% Polyester / 7% Cellulose / 5% Spandex Tech",PK:"100% Polyester Knit",PD:"60% Cotton / 40% Polyester Dobby",PY:"50% Cotton / 47% Polyester / 3% Spandex CVC Oxford",UP:"95% Poly / 5% Spandex Perforated",NY:"78% Nylon / 22% Spandex",CL:"35% Lyocell / 35% Cotton / 27% Nylon / 3% Spandex",PM:"50% Polyester / 50% Microfiber",PX:"95% Polyester / 5% Spandex Core",CN:"71% Cotton / 27% Nylon / 2% Spandex",MP:"74% Modal / 26% Polyester",LE:"100% Linen",PE:"96% Polyester / 4% Spandex End on End",OC:"100% Cotton Oxford",CD:"100% Cotton Dobby",CY:"100% Cotton Yarn Dye",CW:"100% Cotton Twill",CJ:"100% Cotton Jacquard",LT:"45% Cotton / 55% Linen",DP:"95% Polyester / 5% Spandex Knit Performance",PR:"87% Polyamide / 13% Elastic",PS:"94% Polyester / 6% Spandex Knit",CG:"100% Cotton Poplin 105gsm",PA:"88% Polyester / 12% Spandex Seamless Lux Knit",PN:"88% Polyester / 12% Spandex Non-Seamless",CF:"100% Cotton 50s 2 Ply",CB:"100% Cotton 80s 2 Ply (Bloomingdale)",KN:"Knits",WT:"Woven Tops",SD:"Sweaters",SF:"Flannel (Shackets)",SB:"Trucker (Shackets)",CO:"Corduroy (Shackets)",YD:"Yarn Dye"};
+const FABRIC_RULES = {AW:"4 Way Stretch",CA:"Cataonic 95% Polyester / 5% Spandex",TD:"CVC Dobby 60% Polyester / 40% Cotton",CH:"Chambray TC Stretch",CS:"Cooling Stretch",CV:"Cotton / Poly CVC",DS:"4 Way Stretch Dobby 95% Polyester / 5% Spandex",OX:"Pinpoint Oxford 65%/35% Poly/Cotton",PP:"100% Polyester 150D",SA:"150D Sateen 100% Polyester",LN:"100% Slab Linen",ST:"97% Cotton 3% Spandex",SW:"97% Cotton 3% Stretch Twill",SU:"Stretch Supershirt (95% Polyester, 5% Spandex)",TR:"Traveler Stretch",TW:"4 Way Stretch Twill",TS:"TC Stretch (77% Polyester / 20% Cotton / 3% Spandex)",WS:"4 Way Stretch (95%,5%) Sateen",PC:"TC Poplin 65%/35% Poly/Cotton",PT:"97% Poly 3% Stretch 150D",VS:"Viscose (31%) Stretch",VP:"50% Viscose 50% Polyester",LP:"Linen Polyester/Spandex",MR:"50% Microfiber 50% Rayon",CT:"100% Cotton",CP:"98% Cotton / 2% Spandex",BP:"50% Bamboo / 50% Polyester",TC:"TC Stretch (52P, 45C, 3S %)",SC:"60% Cotton, 38% Poly, 2% Spandex",BM:"30% Rayon Bamboo / 30% Microfiber / 36% Poly / 4% Spandex Twill",VM:"62% Poly 35% Viscose Bamboo 3% Spandex",SP:"52% Poly 45% Cotton 3% Spandex CVC Yarn Dye",TP:"Solid Twill 21% Rayon / 75.5% Poly / 3.5% Spandex",LC:"Linen 51% Cotton / 49% Poly",CX:"97% Cotton / 3% Polyester",WF:"96% Poly 4% Spandex Waffle",FT:"97% Poly / 3% Spandex Flax Texture",CE:"88% Polyester / 7% Cellulose / 5% Spandex Tech",PK:"100% Polyester Knit",PD:"60% Cotton / 40% Polyester Dobby",PY:"50% Cotton / 47% Polyester / 3% Spandex CVC Oxford",UP:"95% Poly / 5% Spandex Perforated",NY:"78% Nylon / 22% Spandex",CL:"35% Lyocell / 35% Cotton / 27% Nylon / 3% Spandex",PM:"50% Polyester / 50% Microfiber",PX:"95% Polyester / 5% Spandex Core",CN:"71% Cotton / 27% Nylon / 2% Spandex",MP:"74% Modal / 26% Polyester",LE:"100% Linen",PE:"96% Polyester / 4% Spandex End on End",OC:"100% Cotton Oxford",CD:"100% Cotton Dobby",CY:"100% Cotton Yarn Dye",CW:"100% Cotton Twill",CJ:"100% Cotton Jacquard",LT:"45% Cotton / 55% Linen",DP:"95% Polyester / 5% Spandex Knit Performance",PR:"87% Polyamide / 13% Elastic",PS:"94% Polyester / 6% Spandex Knit",CG:"100% Cotton Poplin 105gsm",PA:"88% Polyester / 12% Spandex Seamless Lux Knit",PN:"88% Polyester / 12% Spandex Non-Seamless",CF:"100% Cotton 50s 2 Ply",CB:"100% Cotton 80s 2 Ply (Bloomingdale)",KN:"Knits",WT:"Woven Tops",SD:"Sweaters",SF:"Flannel (Over-Shirt)",SB:"Trucker (Over-Shirt)",CO:"Corduroy (Over-Shirt)",SL:"Twill Over-Shirt",YD:"65% Polyester / 35% Cotton Yarn Dye",KS:"Knit Sport Coat",LA:"8% Lyocell / 88% Polyester / 4% Spandex 120GSM",NP:"78% Nylon / 22% Spandex 180GSM Premium Nylon",PB:"100% Polyester Imitation Cotton 130GSM",PF:"92% Polyester / 8% Spandex 150GSM Jacquard Stripe",PG:"73% Polyester / 5% Spandex / 22% Recycled Fiber 130GSM",PH:"100% Polyester Polo Mesh Sweater",PO:"100% Polyester Polo",PJ:"100% Polyester Polo Jersey",PL:"100% Polyester Polo Sweater Knit",PU:"92% Polyester / 8% Spandex 150GSM Lux Twisted Dobby",PV:"94% Polyester / 6% Spandex 210GSM",PW:"100% Polyester Polo Waffle",PZ:"94% Polyester / 6% Spandex 210GSM",SE:"88% Polyester / 12% Spandex 180GSM",TB:"Tencel Rayon Blend",WB:"Wool Tencel Rayon Blend"};
 
 const FIT_CODES = {SL:"Slim Fit Long Sleeve",RF:"Regular Fit Long Sleeve",BT:"Big & Tall Long Sleeve",BB:"Big Long Sleeve",TT:"Tall Long Sleeve",TF:"Tailored Fit Long Sleeve",MF:"Modern Fit Long Sleeve",SS:"Slim Fit Short Sleeve",SR:"Regular Fit Short Sleeve",SB:"Short Sleeve Big",ST:"Short Sleeve Tall",SE:"Slim Fit Extended Button",SH:"Slim Fit Hook & Eye",CE:"Classic Fit Extended Button",CH:"Classic Fit Hook & Eye",CR:"Classic Fit Reg Button",SF:"Straight Fit Reg Button",SC:"Straight Fit Hook & Eye",RR:"Relaxed Fit Reg Button",CF:"Classic Fit",AF:"Athletic Fit"};
 
@@ -53,7 +55,7 @@ const BANNER_RULES_SEED = [
   { id:'seed-pants', text:'PANTS', bgColor:'rgba(107,114,128,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'pants', fits:[], customers:[], brands:[], skus:[] },
   { id:'seed-sport', text:'SPORTSWEAR', bgColor:'rgba(234,88,12,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'sportswear', fits:[], customers:[], brands:[], skus:[] },
   { id:'seed-acc-chaps', text:'TIE & HANKY', bgColor:'rgba(168,85,247,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'accessories', fits:[], customers:[], brands:['CHAPS'], skus:[] },
-  { id:'seed-acc-shaq', text:'TIE & SHIRT', bgColor:'rgba(168,85,247,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'accessories', fits:[], customers:[], brands:['SHAQ'], skus:[] },
+  { id:'seed-acc-shaq', text:'TIE', bgColor:'rgba(168,85,247,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'accessories', fits:[], customers:[], brands:['SHAQ'], skus:[] },
 ];
 
 // ═══════════════════════════════════════════
@@ -108,6 +110,11 @@ function getFabricFromSKU(sku, styleOverrides) {
   if (brand === "CH" && code === "YD") desc = "50% Microfiber / 50% Polyester Yarn Dye";
   if (brand === "CH" && code === "PT") desc = "97% Polyester / 3% Spandex (150D STRETCH)";
   if (brand === "BE" && code === "YD") desc = "77% Poly / 20% Cotton / 3% Spandex";
+  // USPA: CD fabric is different from generic Cotton Dobby
+  if (brand === "US" && code === "CD") desc = "65% Polyester / 35% Cotton";
+  // PP on pants → different description than PP on shirts
+  const base = sku.split("-")[0].toUpperCase();
+  if (code === "PP" && base.length >= 9 && base[6] === "P" && /\d/.test(base[7])) desc = "100% Polyester Woven Pant";
   return { code, description: desc };
 }
 
@@ -296,13 +303,16 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
   source.forEach(item => {
     if (!item.sku) return;
     let brand = item.brand || "UNKNOWN";
+    // Resolve ATS tab-name aliases (e.g. "NM" tab → "NICOLE" platform key)
+    const BRAND_ALIASES = { NM: "NICOLE" };
+    if (BRAND_ALIASES[brand]) brand = BRAND_ALIASES[brand];
     const skuUp = item.sku.toUpperCase();
     // VP prefix = Versa Group Purchase — always VERSA (matches main catalog)
     if (skuUp.startsWith("VP")) brand = "VERSA";
     else if (skuUp.startsWith("LUCK")) brand = "LUCKY";
     else if (item.sku.length >= 4) {
       const code = item.sku.substring(2,4).toUpperCase();
-      if (SKU_BRAND_CODE_MAP[code]) brand = SKU_BRAND_CODE_MAP[code];
+      if (SKU_BRAND_CODE_MAP[code] && !BRAND_MAPPING[brand]) brand = SKU_BRAND_CODE_MAP[code];
     }
     item.brand = brand;
     item.brand_abbr = brand;
@@ -326,6 +336,7 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
 
 // ─── Product Category Helpers (mirrors main catalog) ─────────
 const SPORTSWEAR_COLLARS = new Set(["Z","U","M","N","O","R"]);
+const SPORTSWEAR_FABRICS = new Set(["PH","PJ","PL","PO","PW","TH","HE"]);
 const SHORT_SLEEVE_FIT_CODES = new Set(["SS","SR","SB","ST"]);
 const BT_FIT_CODES = new Set(["BT","BB","TT","SB","ST"]);
 // Young Men fabric codes — positions 4-5 of base SKU (mirrors main catalog)
@@ -334,6 +345,11 @@ const YOUNG_MEN_FABRIC_CODES = new Set(["KN","WT","SD","SF","SB","SL","BC","BR",
 function isBigAndTall(sku) {
   if (!sku) return false;
   const base = sku.split("-")[0].toUpperCase();
+  // Von Dutch special B&T prefixes: WBJ, BTC, BTS, WBK (after customer+brand code)
+  if (base.length >= 7 && base.substring(2, 4) === "VD") {
+    const vdSuffix = base.substring(4);
+    if (vdSuffix.startsWith("WBJ") || vdSuffix.startsWith("BTC") || vdSuffix.startsWith("BTS") || vdSuffix.startsWith("WBK")) return true;
+  }
   if (base.length < 11) return false;
   return BT_FIT_CODES.has(base.substring(9, 11));
 }
@@ -365,6 +381,8 @@ function getItemCategory(sku, brandAbbr) {
   // Pants: position 6 is 'P' followed by 2 digits, position 9 is a letter
   if (base.length >= 10 && base[6] === "P" && /\d/.test(base[7]) && /\d/.test(base[8]) && /[A-Z]/.test(base[9])) return "pants";
   if (base.length >= 11 && SPORTSWEAR_COLLARS.has(base.slice(-1))) return "sportswear";
+  // Sportswear by fabric code: polo/tee/henley fabrics are sportswear regardless of collar code
+  if (base.length >= 6 && SPORTSWEAR_FABRICS.has(base.substring(4, 6))) return "sportswear";
   const brand = (brandAbbr || "").toUpperCase();
   if (brand === "CHAPS" && base.startsWith("CTH")) return "accessories";
   if (brand === "SHAQ" && base.length >= 3 && /T/.test(base.slice(0, 3))) return "accessories";
@@ -1872,12 +1890,14 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
 
       // Brand resolution
       let brand = item.brand || "UNKNOWN";
+      const _BA2 = { NM: "NICOLE" };
+      if (_BA2[brand]) brand = _BA2[brand];
       const skuUp = item.sku.toUpperCase();
       if (skuUp.startsWith("VP")) brand = "VERSA";
       else if (skuUp.startsWith("LUCK")) brand = "LUCKY";
       else if (item.sku.length >= 4) {
         const code = item.sku.substring(2,4).toUpperCase();
-        if (SKU_BRAND_CODE_MAP[code]) brand = SKU_BRAND_CODE_MAP[code];
+        if (SKU_BRAND_CODE_MAP[code] && !BRAND_MAPPING[brand]) brand = SKU_BRAND_CODE_MAP[code];
       }
       if (styleOverrides) {
         const ov = getStyleOverride(item.sku, styleOverrides);
