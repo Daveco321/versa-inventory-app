@@ -215,9 +215,25 @@ function sortBrands(entries) {
   });
 }
 
-function rebuildBrands(inventory, filterMode = "all", prodData = [], suppressionOverrides = new Set(), deductionAssignments = {}, styleOverrides = {}, warehouseFilter = "all") {
+function rebuildBrands(inventory, filterMode = "all", prodData = [], suppressionOverrides = new Set(), deductionAssignments = {}, styleOverrides = {}, warehouseFilter = "all", allocationData = []) {
   const brands = {};
   let source = [...inventory];
+
+  // Apply virtual warehouse allocations to item.allocated (matches desktop applyManualAllocationsToInventory)
+  if (allocationData.length > 0) {
+    const allocTotals = {};
+    allocationData.forEach(a => {
+      const sku = (a.sku || "").toUpperCase();
+      if (sku) allocTotals[sku] = (allocTotals[sku] || 0) + (parseInt(a.qty) || 0);
+    });
+    source = source.map(item => {
+      const allocQty = allocTotals[(item.sku || "").toUpperCase()] || 0;
+      if (allocQty > 0) {
+        return { ...item, allocated: (item.allocated || 0) - allocQty };
+      }
+      return item;
+    });
+  }
 
   if (filterMode === "incoming") {
     source = source.filter(i => (i.incoming || 0) > 0).map(item => {
@@ -2837,9 +2853,9 @@ export default function VersaInventoryApp() {
   // Rebuild brands when filterMode or suppression-relevant data changes
   useEffect(() => {
     if (inventory.length > 0) {
-      setBrands(rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter));
+      setBrands(rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData));
     }
-  }, [filterMode, inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter]);
+  }, [filterMode, inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData]);
 
   // ─── Navigation with Browser History ────────────────────────
   const goToBrands = useCallback(() => { 
