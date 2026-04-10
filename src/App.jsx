@@ -45,6 +45,9 @@ const BRAND_ORDER = ["NAUTICA","DKNY","EB","VINCE","KL","CHAPS","USPA","LUCKY","
 const SKU_BRAND_CODE_MAP = {};
 Object.entries(BRAND_IMAGE_PREFIX).forEach(([brand, prefix]) => { SKU_BRAND_CODE_MAP[prefix] = brand; });
 
+// Cache-bust version — updated whenever style overrides reload from S3
+let _imageCacheVersion = Date.now();
+
 const FABRIC_RULES = {AW:"4 Way Stretch",CA:"Cataonic 95% Polyester / 5% Spandex",TD:"CVC Dobby 60% Polyester / 40% Cotton",CH:"Chambray TC Stretch",CS:"Cooling Stretch",CV:"Cotton / Poly CVC",DS:"4 Way Stretch Dobby 95% Polyester / 5% Spandex",OX:"Pinpoint Oxford 65%/35% Poly/Cotton",PP:"100% Polyester 150D",SA:"150D Sateen 100% Polyester",LN:"100% Slab Linen",ST:"97% Cotton 3% Spandex",SW:"97% Cotton 3% Stretch Twill",SU:"Stretch Supershirt (95% Polyester, 5% Spandex)",TR:"Traveler Stretch",TW:"4 Way Stretch Twill",TS:"TC Stretch (77% Polyester / 20% Cotton / 3% Spandex)",WS:"4 Way Stretch (95%,5%) Sateen",PC:"TC Poplin 65%/35% Poly/Cotton",PT:"97% Poly 3% Stretch 150D",VS:"Viscose (31%) Stretch",VP:"50% Viscose 50% Polyester",LP:"Linen Polyester/Spandex",MR:"50% Microfiber 50% Rayon",CT:"100% Cotton",CP:"98% Cotton / 2% Spandex",BP:"50% Bamboo / 50% Polyester",TC:"TC Stretch (52P, 45C, 3S %)",SC:"60% Cotton, 38% Poly, 2% Spandex",BM:"30% Rayon Bamboo / 30% Microfiber / 36% Poly / 4% Spandex Twill",VM:"62% Poly 35% Viscose Bamboo 3% Spandex",SP:"52% Poly 45% Cotton 3% Spandex CVC Yarn Dye",TP:"Solid Twill 21% Rayon / 75.5% Poly / 3.5% Spandex",LC:"Linen 51% Cotton / 49% Poly",CX:"97% Cotton / 3% Polyester",WF:"96% Poly 4% Spandex Waffle",FT:"97% Poly / 3% Spandex Flax Texture",CE:"88% Polyester / 7% Cellulose / 5% Spandex Tech",PK:"100% Polyester Knit",PD:"60% Cotton / 40% Polyester Dobby",PY:"50% Cotton / 47% Polyester / 3% Spandex CVC Oxford",UP:"95% Poly / 5% Spandex Perforated",NY:"78% Nylon / 22% Spandex",CL:"35% Lyocell / 35% Cotton / 27% Nylon / 3% Spandex",PM:"50% Polyester / 50% Microfiber",PX:"95% Polyester / 5% Spandex Core",CN:"71% Cotton / 27% Nylon / 2% Spandex",MP:"74% Modal / 26% Polyester",LE:"100% Linen",PE:"96% Polyester / 4% Spandex End on End",OC:"100% Cotton Oxford",CD:"100% Cotton Dobby",CY:"100% Cotton Yarn Dye",CW:"100% Cotton Twill",CJ:"100% Cotton Jacquard",LT:"45% Cotton / 55% Linen",DP:"95% Polyester / 5% Spandex Knit Performance",PR:"87% Polyamide / 13% Elastic",PS:"94% Polyester / 6% Spandex Knit",CG:"100% Cotton Poplin 105gsm",PA:"88% Polyester / 12% Spandex Seamless Lux Knit",PN:"88% Polyester / 12% Spandex Non-Seamless",CF:"100% Cotton 50s 2 Ply",CB:"100% Cotton 80s 2 Ply (Bloomingdale)",KN:"Knits",WT:"Woven Tops",SD:"Sweaters",SF:"Flannel (Over-Shirt)",SB:"Trucker (Over-Shirt)",CO:"Corduroy (Over-Shirt)",SL:"Twill Over-Shirt",YD:"65% Polyester / 35% Cotton Yarn Dye",KS:"Knit Sport Coat",LA:"8% Lyocell / 88% Polyester / 4% Spandex 120GSM",NP:"78% Nylon / 22% Spandex 180GSM Premium Nylon",PB:"100% Polyester Imitation Cotton 130GSM",PF:"92% Polyester / 8% Spandex 150GSM Jacquard Stripe",PG:"73% Polyester / 5% Spandex / 22% Recycled Fiber 130GSM",PH:"100% Polyester Polo Mesh Sweater",PO:"100% Polyester Polo",PJ:"100% Polyester Polo Jersey",PL:"100% Polyester Polo Sweater Knit",PU:"92% Polyester / 8% Spandex 150GSM Lux Twisted Dobby",PV:"94% Polyester / 6% Spandex 210GSM",PW:"100% Polyester Polo Waffle",PZ:"94% Polyester / 6% Spandex 210GSM",SE:"88% Polyester / 12% Spandex 180GSM",TB:"Tencel Rayon Blend",WB:"Wool Tencel Rayon Blend"};
 
 const FIT_CODES = {SL:"Slim Fit Long Sleeve",RF:"Regular Fit Long Sleeve",BT:"Big & Tall Long Sleeve",BB:"Big Long Sleeve",TT:"Tall Long Sleeve",TF:"Tailored Fit Long Sleeve",MF:"Modern Fit Long Sleeve",SS:"Slim Fit Short Sleeve",SR:"Regular Fit Short Sleeve",SB:"Short Sleeve Big",ST:"Short Sleeve Tall",SE:"Slim Fit Extended Button",SH:"Slim Fit Hook & Eye",CE:"Classic Fit Extended Button",CH:"Classic Fit Hook & Eye",CR:"Classic Fit Reg Button",SF:"Straight Fit Reg Button",SC:"Straight Fit Hook & Eye",RR:"Relaxed Fit Reg Button",CF:"Classic Fit",AF:"Athletic Fit"};
@@ -86,11 +89,18 @@ function getImageUrl(item, styleOverrides) {
   // Check for base64 image override first (matches desktop priority)
   if (styleOverrides) {
     const ov = getStyleOverride(item.sku, styleOverrides);
-    if (ov && ov.image) return ov.image;
+    if (ov && ov.image) {
+      // Add cache-buster to S3/HTTP URLs so updated images aren't served stale from browser cache
+      if (ov.image.startsWith('http')) {
+        const sep = ov.image.includes('?') ? '&' : '?';
+        return `${ov.image}${sep}v=${_imageCacheVersion}`;
+      }
+      return ov.image; // base64 data URLs pass through unchanged
+    }
   }
   const baseStyle = (item.sku || "").split("-")[0].toUpperCase();
   const brand = item.brand_abbr || item.brand || "";
-  return `${API_URL}/image/${baseStyle}?brand=${brand}`;
+  return `${API_URL}/image/${baseStyle}?brand=${brand}&v=${_imageCacheVersion}`;
 }
 
 function getFabricFromSKU(sku, styleOverrides) {
@@ -2775,7 +2785,7 @@ export default function VersaInventoryApp() {
     const loadStyleOverrides = async () => {
       try {
         const c = new AbortController(); setTimeout(() => c.abort(), 10000);
-        const resp = await fetch(`${API_URL}/overrides`, { signal: c.signal });
+        const resp = await fetch(`${API_URL}/overrides`, { signal: c.signal, headers: { 'Cache-Control': 'no-cache' } });
         if (!resp.ok) return;
         const json = await resp.json();
         const raw = json.overrides || {};
@@ -2788,7 +2798,9 @@ export default function VersaInventoryApp() {
           Object.entries(raw).forEach(([sku, ov]) => { map[sku.toUpperCase()] = ov; });
         }
         setStyleOverrides(map);
-        console.log("✓ Style overrides loaded:", Object.keys(map).length);
+        _imageCacheVersion = Date.now(); // bust browser cache for all image URLs
+        _bgPreloadStarted = false; // allow background preloader to re-run with fresh URLs
+        console.log("✓ Style overrides loaded:", Object.keys(map).length, "| cache version:", _imageCacheVersion);
       } catch (e) { console.warn("Style overrides unavailable:", e.message); }
     };
     loadStyleOverrides();
@@ -2819,7 +2831,7 @@ export default function VersaInventoryApp() {
     };
     loadDeductionAssignments();
 
-    // Auto-refresh inventory every 5 minutes
+    // Auto-refresh inventory + style overrides every 5 minutes
     const refreshInterval = setInterval(async () => {
       try {
         const resp = await fetch(`${API_URL}/sync`);
@@ -2832,6 +2844,8 @@ export default function VersaInventoryApp() {
           try { localStorage.setItem("versa_inventory_v2", JSON.stringify(result.inventory)); } catch (e) {}
         }
       } catch (e) { /* silent retry next interval */ }
+      // Also refresh style overrides so new S3 images are picked up
+      loadStyleOverrides();
     }, 300000); // 5 min
 
     // Daily refresh for production data and color map
