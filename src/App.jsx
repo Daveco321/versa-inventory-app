@@ -828,7 +828,7 @@ function BrandCard({ abbr, data, onClick, filterMode, brandCategoryFilter, style
 }
 
 // ─── Product Card ────────────────────────
-function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRules, suppressionOverrides, styleOverrides, warehouseFilter }) {
+function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRules, suppressionOverrides, styleOverrides, warehouseFilter, deductionAssignments }) {
   const fabric = getFabricFromSKU(item.sku, styleOverrides);
   const fit = getFitFromSKU(item.sku, styleOverrides);
   const ats = item.total_ats || 0;
@@ -893,7 +893,27 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRule
         )}
 
         {/* Production badge — normal mode only (not flow) */}
-        {!isFlow && hasProd && (
+        {!isFlow && hasProd && (() => {
+          // Compute FIFO waterfall deduction per PO (mirrors detail modal logic)
+          const totalDed = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
+          const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+          const incoming = item.incoming||0;
+          let overseasDed = 0;
+          if (totalDed > 0) {
+            const assign = (deductionAssignments || {})[item.sku] || null;
+            if (assign === 'overseas') overseasDed = totalDed;
+            else if (assign === 'warehouse') overseasDed = 0;
+            else { const whAbsorbed = Math.min(totalDed, wh); overseasDed = Math.max(0, totalDed - whAbsorbed); }
+          }
+          let remaining = overseasDed;
+          const prodRows = [...prods].sort((a,b)=>(a.arrival||new Date("2099"))-(b.arrival||new Date("2099"))).map(p => {
+            const ded = Math.min(remaining, p.units||0);
+            const flowAts = (p.units||0) - ded;
+            remaining -= ded;
+            return { ...p, deducted: ded, flowAts };
+          });
+          const hasAnyDed = totalDed > 0;
+          return (
           <div style={{ marginBottom:8 }} onClick={e => { e.stopPropagation(); setProdOpen(o => !o); }}>
             <div style={{ display:"flex",alignItems:"center",gap:6,background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:prodOpen ? "8px 8px 0 0" : 8,padding:"5px 10px",cursor:"pointer",fontSize:11,color:"#166534",transition:"all .2s" }}>
               <span>🏭</span>
@@ -903,14 +923,31 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRule
               <span style={{ fontSize:10,transition:"transform .2s",transform: prodOpen ? "rotate(180deg)" : "none" }}>▼</span>
             </div>
             {prodOpen && (
-              <div style={{ background:"#f9fffe",border:"1px solid #bbf7d0",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"8px 10px",fontSize:11 }}>
-                {prods.map((p, i) => (
-                  <div key={i} style={{ ...(i > 0 ? { borderTop:"1px solid #dcfce7",paddingTop:7,marginTop:7 } : {}) }}>
-                    <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4 }}>
-                      <span style={{ fontWeight:700,color:"#15803d",fontSize:12 }}>{(p.units||0).toLocaleString()} units</span>
+              <div style={{ background:"#f9fffe",border:"1px solid #bbf7d0",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"0",fontSize:11 }}>
+                {/* Deduction summary header */}
+                {hasAnyDed && (
+                  <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 10px",background:"#fef2f2",borderBottom:"1px solid #fecaca",fontSize:10 }}>
+                    <span style={{ color:"#991b1b",fontWeight:700 }}>Committed: {Math.abs(item.committed||0).toLocaleString()} · Allocated: {Math.abs(item.allocated||0).toLocaleString()}</span>
+                    {overseasDed > 0 && <span style={{ color:"#dc2626",fontWeight:700 }}>OS Ded: {overseasDed.toLocaleString()}</span>}
+                  </div>
+                )}
+                {/* Column headers */}
+                <div style={{ display:"grid",gridTemplateColumns: hasAnyDed ? "1fr auto auto auto" : "1fr auto",padding:"4px 10px",background:"#f0fdf4",fontSize:9,fontWeight:700,color:"#166534",gap:6,borderBottom:"1px solid #dcfce7" }}>
+                  <span>PO</span>
+                  <span style={{ textAlign:"right" }}>Units</span>
+                  {hasAnyDed && <span style={{ textAlign:"right" }}>Ded</span>}
+                  {hasAnyDed && <span style={{ textAlign:"right" }}>ATS</span>}
+                </div>
+                {prodRows.map((p, i) => (
+                  <div key={i} style={{ borderBottom:"1px solid #dcfce7" }}>
+                    <div style={{ display:"grid",gridTemplateColumns: hasAnyDed ? "1fr auto auto auto" : "1fr auto",padding:"5px 10px",fontSize:10,gap:6,alignItems:"center",background:i%2===0?"#fff":"#f9fafb" }}>
+                      <span style={{ fontWeight:600,color:"#1f2937",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }} title={p.production || ""}>{p.production || "—"}</span>
+                      <span style={{ textAlign:"right",fontFamily:"monospace",fontWeight:700 }}>{(p.units||0).toLocaleString()}</span>
+                      {hasAnyDed && <span style={{ textAlign:"right",fontFamily:"monospace",color:p.deducted>0?"#dc2626":"#9ca3af" }}>{p.deducted>0?`-${p.deducted.toLocaleString()}`:"—"}</span>}
+                      {hasAnyDed && <span style={{ textAlign:"right",fontFamily:"monospace",fontWeight:800,color:"#166534" }}>{p.flowAts.toLocaleString()}</span>}
                     </div>
-                    <div style={{ display:"flex",alignItems:"center",gap:5,fontSize:10,color:"#6b7280" }}>
-                      <span style={{ background:"#dcfce7",color:"#166534",fontWeight:600,padding:"1px 6px",borderRadius:99 }}>Ex-Factory {formatDateShort(p.etd) || "—"}</span>
+                    <div style={{ display:"flex",alignItems:"center",gap:5,padding:"2px 10px 5px",fontSize:10,color:"#6b7280" }}>
+                      <span style={{ background:"#dcfce7",color:"#166534",fontWeight:600,padding:"1px 6px",borderRadius:99 }}>Ex-Fac {formatDateShort(p.etd) || "—"}</span>
                       <span style={{ color:"#9ca3af" }}>→</span>
                       <span style={{ background:"#dcfce7",color:"#166534",fontWeight:600,padding:"1px 6px",borderRadius:99 }}>Arrival {formatDateShort(p.arrival) || "—"}</span>
                     </div>
@@ -919,7 +956,8 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRule
               </div>
             )}
           </div>
-        )}
+          );
+        })()}
 
         <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center" }}>
           <span style={{ fontSize:13,fontWeight:700,color:atsColor }}>
@@ -3571,7 +3609,7 @@ export default function VersaInventoryApp() {
                             </div>
                           </div>
                         )}
-                        <ProductCard key={item._flow_key || `${item.sku}_${idx}`} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} />
+                        <ProductCard key={item._flow_key || `${item.sku}_${idx}`} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} deductionAssignments={deductionAssignments} />
                       </Fragment>
                     );
                   });
@@ -3580,7 +3618,7 @@ export default function VersaInventoryApp() {
             ) : (
               <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16 }}>
                 {filteredItems.map(item => (
-                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} />
+                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} deductionAssignments={deductionAssignments} />
                 ))}
               </div>
             )}
