@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from "react";
 
 // ═══════════════════════════════════════════
 // CONSTANTS & CONFIG
@@ -833,8 +833,9 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRule
   const fit = getFitFromSKU(item.sku, styleOverrides);
   const ats = item.total_ats || 0;
   const isOverseas = filterMode === "incoming";
-  const atsLabel = isOverseas ? "Overseas ATS" : filterMode === "ats" ? (warehouseFilter && warehouseFilter !== "all" ? `${warehouseFilter.toUpperCase()} ATS` : "WH ATS") : "ATS";
-  const atsColor = ats > 0 ? (isOverseas ? "#d97706" : "#16a34a") : "#dc2626";
+  const isFlow = item._flow;
+  const atsLabel = isFlow ? "Flow ATS" : isOverseas ? "Overseas ATS" : filterMode === "ats" ? (warehouseFilter && warehouseFilter !== "all" ? `${warehouseFilter.toUpperCase()} ATS` : "WH ATS") : "ATS";
+  const atsColor = ats > 0 ? (isOverseas || isFlow ? "#d97706" : "#16a34a") : "#dc2626";
   const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap, styleOverrides);
   const custCode = (item.sku || "").substring(0, 2).toUpperCase();
   let custName = CUSTOMER_CODES[custCode] || custCode;
@@ -842,18 +843,19 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRule
   if (custCode === "CT" && (item.brand_abbr || item.brand || "").toUpperCase() === "CHAPS" && getItemCategory(item.sku, item.brand_abbr || item.brand) === "accessories") custName = "BURLINGTON";
   const [prodOpen, setProdOpen] = useState(false);
 
-  // Production data — suppression-aware
+  // Production data — suppression-aware (skip for flow items which already have PO info)
   const rawWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
-  const prods = getEarliestDates(item.sku, prodData, rawWh, suppressionOverrides).productions;
+  const prods = !isFlow ? getEarliestDates(item.sku, prodData, rawWh, suppressionOverrides).productions : [];
   const hasProd = prods.length > 0;
   const totalProdUnits = prods.reduce((s, p) => s + (p.units || 0), 0);
   const nearestArrival = prods.length > 0 ? prods[0].arrival : null;
 
   return (
-    <div onClick={onClick} className="product-card" style={{ background:"#fff",borderRadius:14,overflow:"hidden",border: isOverseas ? "2px solid #fcd34d" : "2px solid #e5e7eb" }}>
+    <div onClick={onClick} className="product-card" style={{ background:"#fff",borderRadius:14,overflow:"hidden",border: isFlow ? "2px solid #fbbf24" : isOverseas ? "2px solid #fcd34d" : "2px solid #e5e7eb" }}>
       <div style={{ position:"relative",overflow:"hidden" }}>
         <ImageWithFallback src={resolveImageUrl(item, styleOverrides)} alt={item.sku} style={{ width:"100%",height:220,objectFit:"cover",background:"#f3f4f6" }} />
-        {isOverseas && <span style={{ position:"absolute",top:8,right:8,background:"rgba(217,119,6,.9)",color:"#fff",padding:"3px 8px",borderRadius:8,fontSize:10,fontWeight:700 }}>🚢 Overseas</span>}
+        {isFlow && <span style={{ position:"absolute",top:8,right:8,background:"rgba(180,83,9,.9)",color:"#fff",padding:"3px 8px",borderRadius:8,fontSize:10,fontWeight:700 }}>📊 Flow</span>}
+        {isOverseas && !isFlow && <span style={{ position:"absolute",top:8,right:8,background:"rgba(217,119,6,.9)",color:"#fff",padding:"3px 8px",borderRadius:8,fontSize:10,fontWeight:700 }}>🚢 Overseas</span>}
         {/* Dynamic banners from Banner Rules */}
         <BannerBadges sku={item.sku} brandAbbr={item.brand_abbr || item.brand} bannerRules={bannerRules} />
       </div>
@@ -874,8 +876,24 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRule
         )}
         <p style={{ fontSize:11,color:"#9ca3af",marginBottom:8 }}>{fit} · {fabric.description.length > 30 ? fabric.description.substring(0,28)+"..." : fabric.description}</p>
 
-        {/* Production badge — matches main catalog */}
-        {hasProd && (
+        {/* Flow mode info badge — replaces production badge for flow items */}
+        {isFlow && item._flow_production && (
+          <div style={{ background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:8,padding:"6px 10px",marginBottom:8,fontSize:11,display:"flex",justifyContent:"space-between",alignItems:"center" }}>
+            <span style={{ color:"#92400e",fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"45%" }} title={item._flow_production}>{item._flow_production}</span>
+            <span style={{ color:"#78716c",fontSize:10 }}>
+              Produced: <strong style={{ color:"#92400e" }}>{(item._flow_units||0).toLocaleString()}</strong>
+              {item._flow_deducted > 0 && <span style={{ color:"#dc2626" }}> (-{item._flow_deducted.toLocaleString()})</span>}
+            </span>
+          </div>
+        )}
+        {isFlow && !item._flow_production && (
+          <div style={{ background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,padding:"6px 10px",marginBottom:8,fontSize:11,color:"#991b1b",fontWeight:600 }}>
+            No Production Data
+          </div>
+        )}
+
+        {/* Production badge — normal mode only (not flow) */}
+        {!isFlow && hasProd && (
           <div style={{ marginBottom:8 }} onClick={e => { e.stopPropagation(); setProdOpen(o => !o); }}>
             <div style={{ display:"flex",alignItems:"center",gap:6,background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:prodOpen ? "8px 8px 0 0" : 8,padding:"5px 10px",cursor:"pointer",fontSize:11,color:"#166534",transition:"all .2s" }}>
               <span>🏭</span>
@@ -2571,6 +2589,7 @@ export default function VersaInventoryApp() {
   const [currentBrand, setCurrentBrand] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null);
   const [filterMode, setFilterMode] = useState("all");
+  const [flowMode, setFlowMode] = useState(false);
   const [warehouseFilter, setWarehouseFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState("ats-desc");
@@ -2967,6 +2986,8 @@ export default function VersaInventoryApp() {
       if (prev === "incoming" && (sortBy === "arrival-asc" || sortBy === "arrival-desc")) {
         setSortBy("ats-desc");
       }
+      // Reset flow mode when leaving overseas view
+      if (prev === "incoming") setFlowMode(false);
       // Reset warehouse sub-filter when leaving ATS mode
       if (prev === "ats") setWarehouseFilter("all");
       return next;
@@ -3021,8 +3042,72 @@ export default function VersaInventoryApp() {
       const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0), suppressionOverrides).arrival || new Date("1970");
       return db - da;
     });
+
+    // ── FLOW MODE: Expand overseas items by production order ──
+    // Production data provides DATES and PO names; QUANTITIES come from the ATS file.
+    if (flowMode && filterMode === "incoming") {
+      let flowItems = [];
+      items.forEach(item => {
+        // Get real warehouse qty from raw inventory (incoming mode zeros jtw/tr/dcw/qa)
+        const rawItem = inventory.find(d => d.sku === item.sku);
+        const rawWh = rawItem ? (rawItem.jtw||0)+(rawItem.tr||0)+(rawItem.dcw||0)+(rawItem.qa||0) : 0;
+        const prods = getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides);
+        if (prods.length > 0) {
+          const sortedProds = [...prods].sort((a, b) => (a.arrival || new Date("2099")) - (b.arrival || new Date("2099")));
+          const atsIncoming = item.incoming || 0;
+          const overseasDed = item._overseas_deducted || 0;
+          const totalProdUnits = sortedProds.reduce((s, p) => s + (p.units||0), 0);
+          let remaining = overseasDed;
+          let allocatedSoFar = 0;
+          sortedProds.forEach((p, idx) => {
+            let scaledUnits;
+            if (idx === sortedProds.length - 1) {
+              scaledUnits = atsIncoming - allocatedSoFar;
+            } else {
+              scaledUnits = totalProdUnits > 0 ? Math.round((p.units||0) / totalProdUnits * atsIncoming) : atsIncoming;
+            }
+            allocatedSoFar += scaledUnits;
+            const deductFromThis = Math.min(remaining, scaledUnits);
+            const flowAts = scaledUnits - deductFromThis;
+            remaining -= deductFromThis;
+            flowItems.push({
+              ...item,
+              total_ats: flowAts,
+              _flow: true,
+              _flow_key: `${item.sku}__flow_${idx}`,
+              _flow_production: p.production,
+              _flow_po: p.poName,
+              _flow_units: scaledUnits,
+              _flow_deducted: deductFromThis,
+              _flow_etd: p.etd,
+              _flow_arrival: p.arrival
+            });
+          });
+        } else {
+          flowItems.push({
+            ...item,
+            _flow: true,
+            _flow_key: `${item.sku}__flow_noprod`,
+            _flow_production: "",
+            _flow_po: "No Production Data",
+            _flow_units: item.total_ats,
+            _flow_deducted: 0,
+            _flow_etd: null,
+            _flow_arrival: null
+          });
+        }
+      });
+      items = flowItems;
+      // Re-sort flow items by date
+      if (sortBy === "arrival-asc" || sortBy === "ats-desc") {
+        items.sort((a, b) => (a._flow_arrival || new Date("2099")) - (b._flow_arrival || new Date("2099")));
+      } else if (sortBy === "arrival-desc") {
+        items.sort((a, b) => (b._flow_arrival || new Date("1970")) - (a._flow_arrival || new Date("1970")));
+      }
+    }
+
     return items;
-  }, [brandData, categoryFilter, colorCategoryFilter, fabricCodeFilter, searchQuery, fitFilter, fabricFilter, sortBy, productionData, suppressionOverrides, styleOverrides]);
+  }, [brandData, categoryFilter, colorCategoryFilter, fabricCodeFilter, searchQuery, fitFilter, fabricFilter, sortBy, productionData, suppressionOverrides, styleOverrides, flowMode, filterMode, deductionAssignments, inventory]);
 
   // Items with only category filter applied — used by Color/Fabric summary panels
   // so their counts reflect the active category (e.g. Long Sleeve) without being
@@ -3155,6 +3240,35 @@ export default function VersaInventoryApp() {
               {wf.icon} {wf.label}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* ─── FLOW MODE TOGGLE (Overseas mode only) ─── */}
+      {filterMode === "incoming" && activeTab === "inventory" && view === "inventory" && (
+        <div style={{
+          background:"rgba(15,23,42,.92)",backdropFilter:"blur(12px)",
+          borderBottom:`1px solid ${flowMode ? "rgba(245,158,11,.4)" : "rgba(245,158,11,.15)"}`,
+          padding:"8px 24px",position:"sticky",top:56,zIndex:99,
+          display:"flex",alignItems:"center",gap:10,justifyContent:"center",flexWrap:"wrap"
+        }}>
+          <button onClick={() => {
+            setFlowMode(f => {
+              const next = !f;
+              if (next && sortBy !== "arrival-asc" && sortBy !== "arrival-desc") setSortBy("arrival-asc");
+              return next;
+            });
+          }} style={{
+            background: flowMode ? "linear-gradient(135deg,#f59e0b,#d97706)" : "linear-gradient(135deg,#fef3c7,#fde68a)",
+            color: flowMode ? "#fff" : "#92400e",
+            border: flowMode ? "2px solid #b45309" : "2px solid #f59e0b",
+            padding:"7px 18px",borderRadius:10,fontWeight:700,fontSize:12,cursor:"pointer",
+            transition:"all .2s",whiteSpace:"nowrap"
+          }}>
+            {flowMode ? "📊 Flow Mode ON" : "📊 Create a Flow"}
+          </button>
+          <span style={{ fontSize:11,color:"#94a3b8",fontWeight:500 }}>
+            {flowMode ? "Styles expanded by production order" : "Expands styles by PO with delivery dates"}
+          </span>
         </div>
       )}
 
@@ -3338,7 +3452,7 @@ export default function VersaInventoryApp() {
 
 
               <p style={{ fontSize:12,color:"#64748b",marginTop:10,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
-                Showing <strong style={{ color:"#e2e8f0" }}>{filteredItems.length}</strong> of {brandData.items.length} styles
+                Showing <strong style={{ color:"#e2e8f0" }}>{filteredItems.length}</strong> {flowMode && filterMode === "incoming" ? "flow rows" : `of ${brandData.items.length} styles`}
                 <span style={{ display:"inline-flex",gap:6,alignItems:"center",marginLeft:4 }}>
                   <span style={{ fontSize:11,color:"#c4b5fd",background:"rgba(124,58,237,.15)",padding:"2px 8px",borderRadius:12,fontWeight:700,border:"1px solid rgba(124,58,237,.25)" }}>
                     🏭 {filteredItems.reduce((s,i) => s + (i.total_warehouse||0), 0).toLocaleString()} {warehouseFilter !== "all" ? warehouseFilter.toUpperCase() : "WH"}
@@ -3381,6 +3495,17 @@ export default function VersaInventoryApp() {
                     {filterMode === "incoming" ? "🚢 Overseas Only" : warehouseFilter !== "all" ? `🏭 ${warehouseFilter.toUpperCase()} Only` : "🏭 Warehouse ATS"}
                   </span>
                 )}
+                {flowMode && filterMode === "incoming" && (
+                  <span style={{
+                    display:"inline-flex",alignItems:"center",gap:4,
+                    background:"rgba(180,83,9,.15)",color:"#f59e0b",
+                    padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,
+                    border:"1px solid rgba(245,158,11,.4)"
+                  }}>
+                    📊 Flow Mode
+                    <button onClick={() => setFlowMode(false)} style={{ background:"none",border:"none",color:"#f59e0b",cursor:"pointer",fontSize:12,padding:0,lineHeight:1,marginLeft:2 }}>✕</button>
+                  </span>
+                )}
                 {searchQuery && (
                   <button onClick={() => setSearchQuery("")}
                     style={{ fontSize:11,color:"#818cf8",background:"none",border:"none",cursor:"pointer",fontWeight:600 }}>Clear search</button>
@@ -3419,6 +3544,38 @@ export default function VersaInventoryApp() {
               <div style={{ textAlign:"center",padding:60,color:"#64748b" }}>
                 <p style={{ fontSize:48,marginBottom:12 }}>🔍</p>
                 <p style={{ fontSize:16 }}>No products match your filters</p>
+              </div>
+            ) : flowMode && filterMode === "incoming" ? (
+              /* ── Flow Mode Grid: grouped by delivery date ── */
+              <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16 }}>
+                {(() => {
+                  let lastDateStr = null;
+                  const useEtd = sortBy.startsWith("etd");
+                  return filteredItems.map((item, idx) => {
+                    const dateObj = useEtd ? item._flow_etd : item._flow_arrival;
+                    const dateStr = dateObj ? formatDateShort(dateObj) : "No Date";
+                    const etdStr = item._flow_etd ? formatDateShort(item._flow_etd) : "—";
+                    const arrStr = item._flow_arrival ? formatDateShort(item._flow_arrival) : "—";
+                    const showSep = dateStr !== lastDateStr;
+                    if (showSep) lastDateStr = dateStr;
+                    return (
+                      <Fragment key={item._flow_key || `flow_${idx}`}>
+                        {showSep && (
+                          <div style={{ gridColumn:"1 / -1",margin:"12px 0 4px" }}>
+                            <div style={{ display:"flex",alignItems:"center",gap:12 }}>
+                              <div style={{ flex:1,height:2,background:"linear-gradient(90deg,#f59e0b,#fbbf24,transparent)" }} />
+                              <span style={{ fontWeight:700,fontSize:13,color:"#92400e",whiteSpace:"nowrap",padding:"6px 16px",background:"linear-gradient(135deg,#fef3c7,#fde68a)",borderRadius:99,border:"1px solid #f59e0b" }}>
+                                📅 Ex-Factory: {etdStr} → Arrival: {arrStr}
+                              </span>
+                              <div style={{ flex:1,height:2,background:"linear-gradient(90deg,transparent,#fbbf24,#f59e0b)" }} />
+                            </div>
+                          </div>
+                        )}
+                        <ProductCard key={item._flow_key || `${item.sku}_${idx}`} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} />
+                      </Fragment>
+                    );
+                  });
+                })()}
               </div>
             ) : (
               <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16 }}>
