@@ -48,7 +48,7 @@ Object.entries(BRAND_IMAGE_PREFIX).forEach(([brand, prefix]) => { SKU_BRAND_CODE
 // Cache-bust version — updated whenever style overrides reload from S3
 let _imageCacheVersion = Date.now();
 
-const FABRIC_RULES = {AW:"4 Way Stretch",CA:"Cataonic 95% Polyester / 5% Spandex",TD:"CVC Dobby 60% Polyester / 40% Cotton",CH:"Chambray TC Stretch",CS:"Cooling Stretch",CV:"Cotton / Poly CVC",DS:"4 Way Stretch Dobby 95% Polyester / 5% Spandex",OX:"Pinpoint Oxford 65%/35% Poly/Cotton",PP:"100% Polyester 150D",SA:"150D Sateen 100% Polyester",LN:"100% Slab Linen",ST:"97% Cotton 3% Spandex",SW:"97% Cotton 3% Stretch Twill",SU:"Stretch Supershirt (95% Polyester, 5% Spandex)",TR:"Traveler Stretch",TW:"4 Way Stretch Twill",TS:"TC Stretch (77% Polyester / 20% Cotton / 3% Spandex)",WS:"4 Way Stretch (95%,5%) Sateen",PC:"TC Poplin 65%/35% Poly/Cotton",PT:"97% Poly 3% Stretch 150D",VS:"Viscose (31%) Stretch",VP:"50% Viscose 50% Polyester",LP:"Linen Polyester/Spandex",MR:"50% Microfiber 50% Rayon",CT:"100% Cotton",CP:"98% Cotton / 2% Spandex",BP:"50% Bamboo / 50% Polyester",TC:"TC Stretch (52P, 45C, 3S %)",SC:"60% Cotton, 38% Poly, 2% Spandex",BM:"30% Rayon Bamboo / 30% Microfiber / 36% Poly / 4% Spandex Twill",VM:"62% Poly 35% Viscose Bamboo 3% Spandex",SP:"52% Poly 45% Cotton 3% Spandex CVC Yarn Dye",TP:"Solid Twill 21% Rayon / 75.5% Poly / 3.5% Spandex",LC:"Linen 51% Cotton / 49% Poly",CX:"97% Cotton / 3% Polyester",WF:"96% Poly 4% Spandex Waffle",FT:"97% Poly / 3% Spandex Flax Texture",CE:"88% Polyester / 7% Cellulose / 5% Spandex Tech",PK:"100% Polyester Knit",PD:"60% Cotton / 40% Polyester Dobby",PY:"50% Cotton / 47% Polyester / 3% Spandex CVC Oxford",UP:"95% Poly / 5% Spandex Perforated",NY:"78% Nylon / 22% Spandex",CL:"35% Lyocell / 35% Cotton / 27% Nylon / 3% Spandex",PM:"50% Polyester / 50% Microfiber",PX:"95% Polyester / 5% Spandex Core",CN:"71% Cotton / 27% Nylon / 2% Spandex",MP:"74% Modal / 26% Polyester",LE:"100% Linen",PE:"96% Polyester / 4% Spandex End on End",OC:"100% Cotton Oxford",CD:"100% Cotton Dobby",CY:"100% Cotton Yarn Dye",CW:"100% Cotton Twill",CJ:"100% Cotton Jacquard",LT:"45% Cotton / 55% Linen",DP:"95% Polyester / 5% Spandex Knit Performance",PR:"87% Polyamide / 13% Elastic",PS:"94% Polyester / 6% Spandex Knit",CG:"100% Cotton Poplin 105gsm",PA:"88% Polyester / 12% Spandex Seamless Lux Knit",PN:"88% Polyester / 12% Spandex Non-Seamless",CF:"100% Cotton 50s 2 Ply",CB:"100% Cotton 80s 2 Ply (Bloomingdale)",KN:"Knits",WT:"Woven Tops",SD:"Sweaters",SF:"Flannel (Over-Shirt)",SB:"Trucker (Over-Shirt)",CO:"Corduroy (Over-Shirt)",SL:"Twill Over-Shirt",YD:"65% Polyester / 35% Cotton Yarn Dye",KS:"Knit Sport Coat",LA:"8% Lyocell / 88% Polyester / 4% Spandex 120GSM",NP:"78% Nylon / 22% Spandex 180GSM Premium Nylon",PB:"100% Polyester Imitation Cotton 130GSM",PF:"92% Polyester / 8% Spandex 150GSM Jacquard Stripe",PG:"73% Polyester / 5% Spandex / 22% Recycled Fiber 130GSM",PH:"100% Polyester Polo Mesh Sweater",PO:"100% Polyester Polo",PJ:"100% Polyester Polo Jersey",PL:"100% Polyester Polo Sweater Knit",PU:"92% Polyester / 8% Spandex 150GSM Lux Twisted Dobby",PV:"94% Polyester / 6% Spandex 210GSM",PW:"100% Polyester Polo Waffle",PZ:"94% Polyester / 6% Spandex 210GSM",SE:"88% Polyester / 12% Spandex 180GSM",TB:"Tencel Rayon Blend",WB:"Wool Tencel Rayon Blend"};
+const FABRIC_RULES = {AW:"4 Way Stretch",CA:"Cataonic 95% Polyester / 5% Spandex",TD:"CVC Dobby 60% Polyester / 40% Cotton",CH:"Chambray TC Stretch",CS:"Cooling Stretch",CV:"Cotton / Poly CVC",DS:"4 Way Stretch Dobby 95% Polyester / 5% Spandex",OX:"Pinpoint Oxford 65%/35% Poly/Cotton",PP:"100% Polyester 150D",SA:"150D Sateen 100% Polyester",LN:"100% Slab Linen",ST:"97% Cotton 3% Spandex",SW:"97% Cotton 3% Stretch Twill",SU:"Stretch Supershirt (95% Polyester, 5% Spandex)",TR:"Traveler Stretch",TW:"4 Way Stretch Twill",TS:"TC Stretch (77% Polyester / 20% Cotton / 3% Spandex)",WS:"4 Way Stretch (95%,5%) Sateen",PC:"TC Poplin 65%/35% Poly/Cotton",PT:"97% Poly 3% Stretch 150D",VS:"Viscose (31%) Stretch",VP:"50% Viscose 50% Polyester",LP:"Linen Polyester/Spandex",MR:"50% Microfiber 50% Rayon",CT:"100% Cotton",CP:"98% Cotton / 2% Spandex",BP:"50% Bamboo / 50% Polyester",TC:"TC Stretch (52P, 45C, 3S %)",SC:"60% Cotton, 38% Poly, 2% Spandex",BM:"30% Rayon Bamboo / 30% Microfiber / 36% Poly / 4% Spandex Twill",VM:"62% Poly 35% Viscose Bamboo 3% Spandex",SP:"52% Poly 45% Cotton 3% Spandex CVC Yarn Dye",TP:"Solid Twill 21% Rayon / 75.5% Poly / 3.5% Spandex",LC:"Linen 51% Cotton / 49% Poly",CX:"97% Cotton / 3% Polyester",WF:"96% Poly 4% Spandex Waffle",FT:"97% Poly / 3% Spandex Flax Texture",CE:"88% Polyester / 7% Cellulose / 5% Spandex Tech",PK:"100% Polyester Knit",PD:"60% Cotton / 40% Polyester Dobby",PY:"50% Cotton / 47% Polyester / 3% Spandex CVC Oxford",UP:"95% Poly / 5% Spandex Perforated",NY:"78% Nylon / 22% Spandex",CL:"35% Lyocell / 35% Cotton / 27% Nylon / 3% Spandex",PM:"50% Polyester / 50% Microfiber",PX:"95% Polyester / 5% Spandex Core",CN:"71% Cotton / 27% Nylon / 2% Spandex",MP:"74% Modal / 26% Polyester",LE:"100% Linen",PE:"96% Polyester / 4% Spandex End on End",OC:"100% Cotton Oxford",CD:"100% Cotton Dobby",CY:"100% Cotton Yarn Dye",CW:"100% Cotton Twill",CJ:"100% Cotton Jacquard",LT:"45% Cotton / 55% Linen",DP:"95% Polyester / 5% Spandex Knit Performance",PR:"87% Polyamide / 13% Elastic",PS:"94% Polyester / 6% Spandex Knit",CG:"100% Cotton Poplin 105gsm",PA:"88% Polyester / 12% Spandex Seamless Lux Knit",PN:"88% Polyester / 12% Spandex Non-Seamless",CF:"100% Cotton 50s 2 Ply",CB:"100% Cotton 80s 2 Ply (Bloomingdale)",KN:"Knits",WT:"Woven Tops",SD:"Sweaters",SF:"Flannel (Over-Shirt)",SB:"Trucker (Over-Shirt)",CO:"Corduroy (Over-Shirt)",SL:"Twill Over-Shirt",YD:"65% Polyester / 35% Cotton Yarn Dye",KS:"Knit Sport Coat",LA:"8% Lyocell / 88% Polyester / 4% Spandex 120GSM",NP:"78% Nylon / 22% Spandex 180GSM Premium Nylon",PB:"100% Polyester Imitation Cotton 130GSM",PF:"92% Polyester / 8% Spandex 150GSM Jacquard Stripe",PG:"73% Polyester / 5% Spandex / 22% Recycled Fiber 130GSM",PH:"100% Polyester Polo Mesh Sweater",PO:"100% Polyester Polo",PJ:"100% Polyester Polo Jersey",PL:"100% Polyester Polo Sweater Knit",PU:"92% Polyester / 8% Spandex 150GSM Lux Twisted Dobby",PV:"94% Polyester / 6% Spandex 210GSM",PW:"100% Polyester Polo Waffle",PZ:"94% Polyester / 6% Spandex 210GSM",SE:"88% Polyester / 12% Spandex 180GSM",TB:"Tencel Rayon Blend",WB:"Wool Tencel Rayon Blend",TH:"T-Shirt",HE:"Henley",BC:"Carpenters (Bottoms)",BR:"Ripstops (Bottoms)",BH:"Heavy Weight (Bottoms)",BA:"Pinstripe (Bottoms)"};
 
 const FIT_CODES = {SL:"Slim Fit Long Sleeve",RF:"Regular Fit Long Sleeve",BT:"Big & Tall Long Sleeve",BB:"Big Long Sleeve",TT:"Tall Long Sleeve",TF:"Tailored Fit Long Sleeve",MF:"Modern Fit Long Sleeve",SS:"Slim Fit Short Sleeve",SR:"Regular Fit Short Sleeve",SB:"Short Sleeve Big",ST:"Short Sleeve Tall",SE:"Slim Fit Extended Button",SH:"Slim Fit Hook & Eye",CE:"Classic Fit Extended Button",CH:"Classic Fit Hook & Eye",CR:"Classic Fit Reg Button",SF:"Straight Fit Reg Button",SC:"Straight Fit Hook & Eye",RR:"Relaxed Fit Reg Button",CF:"Classic Fit",AF:"Athletic Fit"};
 
@@ -178,7 +178,6 @@ function matchPrepackDefault(sku, brandAbbr, prepackDefaults) {
   const skuUpper = sku.toUpperCase().trim();
   const base = skuUpper.split('-')[0];
   const brandUp = (brandAbbr || '').toUpperCase().trim();
-  const cat = getDetailedCategory(sku, brandAbbr);
   const fit = extractFitCode(sku);
   const fab = base.length >= 6 ? base.substring(4, 6).toUpperCase() : '';
 
@@ -191,11 +190,16 @@ function matchPrepackDefault(sku, brandAbbr, prepackDefaults) {
   );
   if (skuMatch) return skuMatch;
 
-  // Score-based dimension matching
-  let bestRule = null, bestScore = -1;
+  // Score-based dimension matching with Specific/Umbrella tiers.
+  // TIER A (Specific) = rule has BOTH category AND fabrics set — always beats Umbrella.
+  // TIER B (Umbrella) = everything else. Tiebreaker: weighted dimension count.
+  //   brand = 2, customer = 2 (harder constraints — "who the item is FOR")
+  //   category = 1, fit = 1, fabric = 1 (softer constraints — "what the item IS")
+  let bestRule = null, bestFabSpec = -1, bestScore = -1;
   for (const d of prepackDefaults) {
     const rCat = d.category || 'any';
-    if (rCat !== cat && rCat !== 'any') continue;
+    // Inclusive category match — a BC Carpenter matches 'pants', 'sportswear', AND 'young_men' rules
+    if (rCat !== 'any' && !matchesCategory(sku, brandAbbr, rCat)) continue;
     const rFits = _ruleFits(d);
     if (rFits.length > 0 && !rFits.includes(fit)) continue;
     const rCusts = _ruleCustomers(d);
@@ -204,12 +208,20 @@ function matchPrepackDefault(sku, brandAbbr, prepackDefaults) {
     if (rBrands.length > 0 && (!brandUp || !rBrands.map(b => b.toUpperCase()).includes(brandUp))) continue;
     const rFabs = _ruleFabrics(d);
     if (rFabs.length > 0 && (!fab || !rFabs.map(f => f.toUpperCase()).includes(fab))) continue;
+
+    const isSpecific = (rCat !== 'any' && rFabs.length > 0) ? 1 : 0;
     let score = 0;
-    if (rCat !== 'any') score++;
-    if (rFits.length > 0) score++;
-    if (rBrands.length > 0) score++;
-    if (rFabs.length > 0) score++;
-    if (score > bestScore) { bestScore = score; bestRule = d; }
+    if (rCat !== 'any')       score += 1;
+    if (rFits.length > 0)     score += 1;
+    if (rBrands.length > 0)   score += 2;
+    if (rFabs.length > 0)     score += 1;
+
+    if (isSpecific > bestFabSpec ||
+        (isSpecific === bestFabSpec && score > bestScore)) {
+      bestFabSpec = isSpecific;
+      bestScore = score;
+      bestRule = d;
+    }
   }
   return bestRule;
 }
@@ -363,6 +375,8 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
 // ─── Product Category Helpers (mirrors main catalog) ─────────
 const SPORTSWEAR_COLLARS = new Set(["Z","U","M","N","O","R"]);
 const SPORTSWEAR_FABRICS = new Set(["PH","PJ","PL","PO","PW","TH","HE"]);
+// "(Bottoms)" fabric codes from Style Rules — these are sportswear bottoms (count as pants too)
+const SPORTSWEAR_BOTTOM_CODES = new Set(["BC","BR","BH","BA"]);
 const SHORT_SLEEVE_FIT_CODES = new Set(["SS","SR","SB","ST"]);
 const BT_FIT_CODES = new Set(["BT","BB","TT","SB","ST"]);
 // Young Men fabric codes — positions 4-5 of base SKU (mirrors main catalog)
@@ -387,10 +401,47 @@ function isYoungMen(sku) {
   return YOUNG_MEN_FABRIC_CODES.has(base.substring(4, 6));
 }
 
+// Inclusive: an item can be BOTH sportswear and young_men (polo fabrics, bottoms, etc.)
+function isSportswear(sku, brandAbbr) {
+  if (!sku) return false;
+  if (getItemCategory(sku, brandAbbr) === "sportswear") return true;
+  return isYoungMen(sku);
+}
+
+// Inclusive: BC/BR/BH/BA (sportswear bottoms) are pants too, not just P##X items
+function isPants(sku, brandAbbr) {
+  if (!sku) return false;
+  if (getItemCategory(sku, brandAbbr) === "pants") return true;
+  const base = sku.split("-")[0].toUpperCase();
+  if (base.length >= 6 && SPORTSWEAR_BOTTOM_CODES.has(base.substring(4, 6))) return true;
+  return false;
+}
+
+// Inclusive category match: a single SKU can appear in multiple filters
+// (e.g. a BC Carpenter matches 'pants', 'sportswear', AND 'young_men').
+// For exclusive categories (long_sleeve, short_sleeve, big_tall, accessories),
+// the detailed category resolution determines the single bucket each item falls in —
+// a YM item is 'young_men', never long/short sleeve, even though it has a fit code.
+function matchesCategory(sku, brandAbbr, category) {
+  if (!category || category === "all" || category === "any") return true;
+  if (category === "sportswear") return isSportswear(sku, brandAbbr);
+  if (category === "pants")      return isPants(sku, brandAbbr);
+  if (category === "young_men")  return isYoungMen(sku);
+  return getDetailedCategory(sku, brandAbbr) === category;
+}
+
+// Does this SKU use SHIRT image conventions (brand-folder URL, shirts Dropbox pattern)?
+// False for pants, sportswear, accessories, AND YM items (BC/BR/BH/BA/KN/etc.).
+// Prevents YM/Sportswear bottoms from being routed to shirt brand-folder images.
+function isShirtForImaging(sku, brandAbbr) {
+  return getItemCategory(sku, brandAbbr) === "shirts" && !isYoungMen(sku);
+}
+
 function isShortSleeve(sku, styleOverrides) {
   if (!sku) return false;
-  // Pants can never be short sleeve — fit code collision (e.g. SR) doesn't apply to pants
-  if (getItemCategory(sku) === "pants") return false;
+  // Bottoms can never be short sleeve — includes P##X dress pants AND sportswear bottoms.
+  // Fit code "SR" means "Slim Fit/Reg Button" on a sportswear bottom, not "Short Sleeve Regular".
+  if (isPants(sku)) return false;
   // Check override fit label first (matches desktop)
   if (styleOverrides) {
     const ov = getStyleOverride(sku, styleOverrides);
@@ -404,8 +455,15 @@ function isShortSleeve(sku, styleOverrides) {
 function getItemCategory(sku, brandAbbr) {
   if (!sku) return "shirts";
   const base = sku.split("-")[0].toUpperCase();
-  // Pants: position 6 is 'P' followed by 2 digits, position 9 is a letter
-  if (base.length >= 10 && base[6] === "P" && /\d/.test(base[7]) && /\d/.test(base[8]) && /[A-Z]/.test(base[9])) return "pants";
+  // Brand code lives at positions 2-3 of the base SKU.
+  const skuBrand = base.length >= 4 ? base.substring(2, 4) : "";
+  // Pants: US POLO ONLY — uses P##X serial pattern (e.g. "CUUSPPP01SLS").
+  // Per business rule: other brands don't use P## convention; their pants are
+  // identified by fabric code ("(Bottoms)" codes from Style Rules — BC/BR/BH/BA),
+  // handled by isPants() via SPORTSWEAR_BOTTOM_CODES.
+  if (skuBrand === "US"
+      && base.length >= 10 && base[6] === "P"
+      && /\d/.test(base[7]) && /\d/.test(base[8]) && /[A-Z]/.test(base[9])) return "pants";
   if (base.length >= 11 && SPORTSWEAR_COLLARS.has(base.slice(-1))) return "sportswear";
   // Sportswear by fabric code: polo/tee/henley fabrics are sportswear regardless of collar code
   if (base.length >= 6 && SPORTSWEAR_FABRICS.has(base.substring(4, 6))) return "sportswear";
@@ -792,7 +850,7 @@ function BrandCard({ abbr, data, onClick, filterMode, brandCategoryFilter, style
   // When a category filter is active, recompute totals from only matching items
   let displayData = data;
   if (brandCategoryFilter && brandCategoryFilter !== "all" && data.items) {
-    const filtered = data.items.filter(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand, styleOverrides) === brandCategoryFilter);
+    const filtered = data.items.filter(i => matchesCategory(i.sku, i.brand_abbr || i.brand, brandCategoryFilter));
     displayData = {
       ...data,
       sku_count: filtered.length,
@@ -1868,7 +1926,6 @@ function getMatchingBanners(sku, brandAbbr, bannerRules) {
   const skuUpper = sku.toUpperCase().trim();
   const base = skuUpper.split('-')[0];
   const brandUp = (brandAbbr || '').toUpperCase().trim();
-  const cat = getDetailedCategory(sku, brandAbbr);
   const fit = extractFitCode(sku);
   const fab = base.length >= 6 ? base.substring(4, 6) : '';
 
@@ -1898,7 +1955,8 @@ function getMatchingBanners(sku, brandAbbr, bannerRules) {
 
     // Dimension matching (all specified dimensions must match)
     const rCat = r.category || 'any';
-    if (rCat !== 'any' && rCat !== cat) return false;
+    // Inclusive category match — a BC Carpenter matches 'pants', 'sportswear', AND 'young_men' rules
+    if (rCat !== 'any' && !matchesCategory(sku, brandAbbr, rCat)) return false;
     const rFits = _ruleFits(r);
     if (rFits.length > 0 && !rFits.includes(fit)) return false;
     const rCusts = _ruleCustomers(r);
@@ -2663,7 +2721,7 @@ export default function VersaInventoryApp() {
   // allItems filtered by the brands-view category pill — used by stats bar
   const allItemsFiltered = useMemo(() => {
     if (brandCategoryFilter === "all") return allItems;
-    return allItems.filter(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand, styleOverrides) === brandCategoryFilter);
+    return allItems.filter(i => matchesCategory(i.sku, i.brand_abbr || i.brand, brandCategoryFilter));
   }, [allItems, brandCategoryFilter, styleOverrides]);
 
   // Filter brand cards when a category is selected on the brands view
@@ -2671,7 +2729,7 @@ export default function VersaInventoryApp() {
     const entries = sortBrands(Object.entries(brands));
     if (brandCategoryFilter === "all") return entries;
     return entries.filter(([, data]) =>
-      (data.items || []).some(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand, styleOverrides) === brandCategoryFilter)
+      (data.items || []).some(i => matchesCategory(i.sku, i.brand_abbr || i.brand, brandCategoryFilter))
     );
   }, [brands, brandCategoryFilter, styleOverrides]);
 
@@ -3037,9 +3095,9 @@ export default function VersaInventoryApp() {
   const filteredItems = useMemo(() => {
     if (!brandData) return [];
     let items = [...brandData.items];
-    // Category filter
+    // Category filter — inclusive: items can match multiple categories (e.g. BC bottom matches pants+sportswear+young_men)
     if (categoryFilter !== "all") {
-      items = items.filter(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand, styleOverrides) === categoryFilter);
+      items = items.filter(i => matchesCategory(i.sku, i.brand_abbr || i.brand, categoryFilter));
     }
     // Color category filter (from Color Summary panel click)
     if (colorCategoryFilter) {
@@ -3153,7 +3211,7 @@ export default function VersaInventoryApp() {
   const categoryFilteredItems = useMemo(() => {
     if (!brandData) return [];
     if (categoryFilter === "all") return brandData.items;
-    return brandData.items.filter(i => getDetailedCategory(i.sku, i.brand_abbr || i.brand, styleOverrides) === categoryFilter);
+    return brandData.items.filter(i => matchesCategory(i.sku, i.brand_abbr || i.brand, categoryFilter));
   }, [brandData, categoryFilter, styleOverrides]);
 
   // Get unique fits/fabrics for filters
