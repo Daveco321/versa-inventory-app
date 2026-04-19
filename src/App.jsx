@@ -2718,6 +2718,65 @@ export default function VersaInventoryApp() {
     return Object.values(brands).flatMap(b => b.items || []);
   }, [brands]);
 
+  // ─── 🎵 April 19 Easter Egg ──────────────────────────────────────────
+  // Plays a hidden audio track once per session on April 19 (EST timezone).
+  // Uses sessionStorage so it fires once per new app-load, not on every rerender
+  // within the same session. Uses localStorage (keyed by date) as a secondary
+  // guard so a refresh on the same day doesn't replay.
+  // Muted auto-play is required by iOS/Android — we attach a one-time user-gesture
+  // listener that unmutes and plays on first tap.
+  useEffect(() => {
+    try {
+      // Get today's date in America/New_York (EST/EDT) — the Intl API handles DST automatically
+      const nowNY = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(new Date()); // e.g. "2026-04-19"
+
+      const parts = nowNY.split('-');
+      const month = parseInt(parts[1], 10);
+      const day   = parseInt(parts[2], 10);
+
+      // Only fire on April 19
+      if (month !== 4 || day !== 19) return;
+
+      // Guard: once per session (new load), and once per calendar day
+      const sessionKey = 'easterEggPlayed_session';
+      const dateKey    = 'easterEggPlayed_' + nowNY;
+      if (sessionStorage.getItem(sessionKey) === '1') return;
+      if (localStorage.getItem(dateKey) === '1') return;
+
+      const audioUrl = 'https://nauticaslimfit.s3.us-east-2.amazonaws.com/Easter+Eggs/videoplayback.m4a';
+      const audio = new Audio(audioUrl);
+      audio.preload = 'auto';
+
+      const markPlayed = () => {
+        sessionStorage.setItem(sessionKey, '1');
+        localStorage.setItem(dateKey, '1');
+      };
+
+      // Attempt 1: direct play (works if browser autoplay policy allows)
+      audio.play()
+        .then(markPlayed)
+        .catch(() => {
+          // Autoplay blocked — wait for first user interaction, then play once
+          const onFirstInteraction = () => {
+            audio.play().then(markPlayed).catch(() => {});
+            window.removeEventListener('touchstart', onFirstInteraction);
+            window.removeEventListener('click', onFirstInteraction);
+            window.removeEventListener('keydown', onFirstInteraction);
+          };
+          window.addEventListener('touchstart', onFirstInteraction, { once: true, passive: true });
+          window.addEventListener('click', onFirstInteraction, { once: true });
+          window.addEventListener('keydown', onFirstInteraction, { once: true });
+        });
+    } catch (e) {
+      // Silently ignore — an easter egg should never break the app
+    }
+  }, []); // Empty deps — fire exactly once on mount
+
   // allItems filtered by the brands-view category pill — used by stats bar
   const allItemsFiltered = useMemo(() => {
     if (brandCategoryFilter === "all") return allItems;
