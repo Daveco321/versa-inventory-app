@@ -48,6 +48,60 @@ Object.entries(BRAND_IMAGE_PREFIX).forEach(([brand, prefix]) => { SKU_BRAND_CODE
 // Cache-bust version — updated whenever style overrides reload from S3
 let _imageCacheVersion = Date.now();
 
+// ═══════════════════════════════════════════
+// SAVED TRANSFERS (view-only, from web app's localStorage)
+// ═══════════════════════════════════════════
+// Reads the same `versa_saved_transfers` key that the web app writes to.
+// Purely informational — the mobile app never creates, edits, or deletes
+// transfers. It just surfaces "heads-up, a transfer is pending on this SKU"
+// on the style tile. Same 96h auto-expire window as the web app so stale
+// transfers don't linger.
+const TRANSFER_STORAGE_KEY = "versa_saved_transfers";
+const TRANSFER_EXPIRY_MS   = 96 * 60 * 60 * 1000; // 96 hours
+
+function loadSavedTransfers() {
+  try {
+    const raw = localStorage.getItem(TRANSFER_STORAGE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(arr)) return [];
+    const cutoff = Date.now() - TRANSFER_EXPIRY_MS;
+    // Drop anything older than 96h from view. We don't rewrite localStorage
+    // here — the web app owns the data; we just filter what we render.
+    return arr.filter(t => {
+      const ts = new Date(t.savedAt).getTime();
+      return !isNaN(ts) && ts > cutoff;
+    });
+  } catch (_) { return []; }
+}
+
+// Build a quick-lookup index: { SKU_UPPER -> [{qty, warehouseCode, savedAt, refNumber}, ...] }
+// Cheaper than scanning the full list per-card in a long scrolling grid.
+function buildTransferIndex(savedTransfers) {
+  const idx = {};
+  (savedTransfers || []).forEach(t => {
+    (t.lineItems || []).forEach(li => {
+      const sku = (li.sku || "").toUpperCase();
+      const qty = parseInt(li.qty) || 0;
+      if (!sku || qty <= 0) return;
+      if (!idx[sku]) idx[sku] = [];
+      idx[sku].push({
+        qty,
+        warehouseCode: (t.shipTo && t.shipTo.warehouseCode) || "—",
+        savedAt: t.savedAt,
+        refNumber: t.refNumber
+      });
+    });
+  });
+  // Newest first within each SKU
+  Object.keys(idx).forEach(k => idx[k].sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt)));
+  return idx;
+}
+
+function getTransfersForSku(sku, transferIndex) {
+  if (!sku || !transferIndex) return [];
+  return transferIndex[sku.toUpperCase()] || [];
+}
+
 const FABRIC_RULES = {AW:"4 Way Stretch",CA:"Cataonic 95% Polyester / 5% Spandex",TD:"CVC Dobby 60% Polyester / 40% Cotton",CH:"Chambray TC Stretch",CS:"Cooling Stretch",CV:"Cotton / Poly CVC",DS:"4 Way Stretch Dobby 95% Polyester / 5% Spandex",OX:"Pinpoint Oxford 65%/35% Poly/Cotton",PP:"100% Polyester 150D",SA:"150D Sateen 100% Polyester",LN:"100% Slab Linen",ST:"97% Cotton 3% Spandex",SW:"97% Cotton 3% Stretch Twill",SU:"Stretch Supershirt (95% Polyester, 5% Spandex)",TR:"Traveler Stretch",TW:"4 Way Stretch Twill",TS:"TC Stretch (77% Polyester / 20% Cotton / 3% Spandex)",WS:"4 Way Stretch (95%,5%) Sateen",PC:"TC Poplin 65%/35% Poly/Cotton",PT:"97% Poly 3% Stretch 150D",VS:"Viscose (31%) Stretch",VP:"50% Viscose 50% Polyester",LP:"Linen Polyester/Spandex",MR:"50% Microfiber 50% Rayon",CT:"100% Cotton",CP:"98% Cotton / 2% Spandex",BP:"50% Bamboo / 50% Polyester",TC:"TC Stretch (52P, 45C, 3S %)",SC:"60% Cotton, 38% Poly, 2% Spandex",BM:"30% Rayon Bamboo / 30% Microfiber / 36% Poly / 4% Spandex Twill",VM:"62% Poly 35% Viscose Bamboo 3% Spandex",SP:"52% Poly 45% Cotton 3% Spandex CVC Yarn Dye",TP:"Solid Twill 21% Rayon / 75.5% Poly / 3.5% Spandex",LC:"Linen 51% Cotton / 49% Poly",CX:"97% Cotton / 3% Polyester",WF:"96% Poly 4% Spandex Waffle",FT:"97% Poly / 3% Spandex Flax Texture",CE:"88% Polyester / 7% Cellulose / 5% Spandex Tech",PK:"100% Polyester Knit",PD:"60% Cotton / 40% Polyester Dobby",PY:"50% Cotton / 47% Polyester / 3% Spandex CVC Oxford",UP:"95% Poly / 5% Spandex Perforated",NY:"78% Nylon / 22% Spandex",CL:"35% Lyocell / 35% Cotton / 27% Nylon / 3% Spandex",PM:"50% Polyester / 50% Microfiber",PX:"95% Polyester / 5% Spandex Core",CN:"71% Cotton / 27% Nylon / 2% Spandex",MP:"74% Modal / 26% Polyester",LE:"100% Linen",PE:"96% Polyester / 4% Spandex End on End",OC:"100% Cotton Oxford",CD:"100% Cotton Dobby",CY:"100% Cotton Yarn Dye",CW:"100% Cotton Twill",CJ:"100% Cotton Jacquard",LT:"45% Cotton / 55% Linen",DP:"95% Polyester / 5% Spandex Knit Performance",PR:"87% Polyamide / 13% Elastic",PS:"94% Polyester / 6% Spandex Knit",CG:"100% Cotton Poplin 105gsm",PA:"88% Polyester / 12% Spandex Seamless Lux Knit",PN:"88% Polyester / 12% Spandex Non-Seamless",CF:"100% Cotton 50s 2 Ply",CB:"100% Cotton 80s 2 Ply (Bloomingdale)",KN:"Knits",WT:"Woven Tops",SD:"Sweaters",SF:"Flannel (Over-Shirt)",SB:"Trucker (Over-Shirt)",CO:"Corduroy (Over-Shirt)",SL:"Twill Over-Shirt",YD:"65% Polyester / 35% Cotton Yarn Dye",KS:"Knit Sport Coat",LA:"8% Lyocell / 88% Polyester / 4% Spandex 120GSM",NP:"78% Nylon / 22% Spandex 180GSM Premium Nylon",PB:"100% Polyester Imitation Cotton 130GSM",PF:"92% Polyester / 8% Spandex 150GSM Jacquard Stripe",PG:"73% Polyester / 5% Spandex / 22% Recycled Fiber 130GSM",PH:"100% Polyester Polo Mesh Sweater",PO:"100% Polyester Polo",PJ:"100% Polyester Polo Jersey",PL:"100% Polyester Polo Sweater Knit",PU:"92% Polyester / 8% Spandex 150GSM Lux Twisted Dobby",PV:"94% Polyester / 6% Spandex 210GSM",PW:"100% Polyester Polo Waffle",PZ:"94% Polyester / 6% Spandex 210GSM",SE:"88% Polyester / 12% Spandex 180GSM",TB:"Tencel Rayon Blend",WB:"Wool Tencel Rayon Blend",TH:"T-Shirt",HE:"Henley",BC:"Carpenters (Bottoms)",BR:"Ripstops (Bottoms)",BH:"Heavy Weight (Bottoms)",BA:"Pinstripe (Bottoms)"};
 
 const FIT_CODES = {SL:"Slim Fit Long Sleeve",RF:"Regular Fit Long Sleeve",BT:"Big & Tall Long Sleeve",BB:"Big Long Sleeve",TT:"Tall Long Sleeve",TF:"Tailored Fit Long Sleeve",MF:"Modern Fit Long Sleeve",SS:"Slim Fit Short Sleeve",SR:"Regular Fit Short Sleeve",SB:"Short Sleeve Big",ST:"Short Sleeve Tall",SE:"Slim Fit Extended Button",SH:"Slim Fit Hook & Eye",CE:"Classic Fit Extended Button",CH:"Classic Fit Hook & Eye",CR:"Classic Fit Reg Button",SF:"Straight Fit Reg Button",SC:"Straight Fit Hook & Eye",RR:"Relaxed Fit Reg Button",CF:"Classic Fit",AF:"Athletic Fit"};
@@ -886,7 +940,7 @@ function BrandCard({ abbr, data, onClick, filterMode, brandCategoryFilter, style
 }
 
 // ─── Product Card ────────────────────────
-function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRules, suppressionOverrides, styleOverrides, warehouseFilter, deductionAssignments }) {
+function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRules, suppressionOverrides, styleOverrides, warehouseFilter, deductionAssignments, transferIndex }) {
   const fabric = getFabricFromSKU(item.sku, styleOverrides);
   const fit = getFitFromSKU(item.sku, styleOverrides);
   const ats = item.total_ats || 0;
@@ -900,6 +954,10 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRule
   // Chaps accessories: display CT (Costco Taiwan) as Burlington
   if (custCode === "CT" && (item.brand_abbr || item.brand || "").toUpperCase() === "CHAPS" && getItemCategory(item.sku, item.brand_abbr || item.brand) === "accessories") custName = "BURLINGTON";
   const [prodOpen, setProdOpen] = useState(false);
+
+  // Pending transfers for this SKU (view-only heads-up — not a deduction)
+  const transferHits = getTransfersForSku(item.sku, transferIndex);
+  const transferTotalQty = transferHits.reduce((s, h) => s + h.qty, 0);
 
   // Production data — suppression-aware (skip for flow items which already have PO info)
   const rawWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
@@ -1016,6 +1074,36 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRule
           </div>
           );
         })()}
+
+        {/* Transfer badge — view only, shows pending transfers for this SKU */}
+        {transferHits.length > 0 && (
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ display:"flex",alignItems:"center",gap:6,background:"#ecfdf5",border:"1px solid #6ee7b7",borderRadius: transferHits.length > 1 ? "8px 8px 0 0" : 8,padding:"5px 10px",fontSize:11,color:"#047857" }}>
+              <span>🚚</span>
+              <span style={{ fontWeight:700 }}>{transferHits.length === 1 ? "Pending Transfer" : `Pending Transfers (${transferHits.length})`}</span>
+              <span style={{ fontSize:8,background:"#10b981",color:"#fff",padding:"1px 6px",borderRadius:99,fontWeight:700,letterSpacing:0.4 }}>VIEW ONLY</span>
+              {transferHits.length === 1 && (
+                <>
+                  <span style={{ fontFamily:"monospace",fontWeight:800,color:"#065f46",marginLeft:"auto" }}>{transferHits[0].warehouseCode}</span>
+                  <span style={{ color:"#10b981",fontSize:10 }}>{formatDateShort(transferHits[0].savedAt)}</span>
+                  <span style={{ fontWeight:700,color:"#047857" }}>{transferHits[0].qty.toLocaleString()}</span>
+                </>
+              )}
+              {transferHits.length > 1 && <span style={{ marginLeft:"auto",fontWeight:700,color:"#047857" }}>{transferTotalQty.toLocaleString()} units</span>}
+            </div>
+            {transferHits.length > 1 && (
+              <div style={{ background:"#f0fdf4",border:"1px solid #6ee7b7",borderTop:"none",borderRadius:"0 0 8px 8px" }}>
+                {transferHits.map((h, i) => (
+                  <div key={i} style={{ display:"grid",gridTemplateColumns:"auto 1fr auto",padding:"4px 10px",fontSize:10,gap:8,alignItems:"center",borderBottom: i < transferHits.length-1 ? "1px solid #a7f3d0" : "none",background: i%2===0 ? "#fff" : "#f9fffe" }}>
+                    <span style={{ fontFamily:"monospace",fontWeight:800,color:"#065f46" }}>{h.warehouseCode}</span>
+                    <span style={{ color:"#6b7280" }}>{formatDateShort(h.savedAt)}</span>
+                    <span style={{ textAlign:"right",fontFamily:"monospace",fontWeight:700,color:"#047857" }}>{h.qty.toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center" }}>
           <span style={{ fontSize:13,fontWeight:700,color:atsColor }}>
@@ -2714,6 +2802,24 @@ export default function VersaInventoryApp() {
   const [showExport, setShowExport] = useState(false);
   const [activeTab, setActiveTab] = useState("inventory"); // "inventory" | "production" | "analytics"
 
+  // ─── Saved Transfers (view-only, sourced from web app's localStorage) ───
+  // Mobile app never writes to this — it just reads `versa_saved_transfers`
+  // and surfaces pending transfers on the style tile. Refreshes on mount
+  // and when the tab regains focus (so newly-saved web-app transfers appear
+  // without a full page reload).
+  const [savedTransfers, setSavedTransfers] = useState(() => loadSavedTransfers());
+  useEffect(() => {
+    const refresh = () => setSavedTransfers(loadSavedTransfers());
+    window.addEventListener("focus", refresh);
+    window.addEventListener("storage", refresh); // fires when another tab/window updates the key
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, []);
+  // Re-index only when the transfers list actually changes — avoids per-card scans
+  const transferIndex = useMemo(() => buildTransferIndex(savedTransfers), [savedTransfers]);
+
   const allItems = useMemo(() => {
     return Object.values(brands).flatMap(b => b.items || []);
   }, [brands]);
@@ -3726,7 +3832,7 @@ export default function VersaInventoryApp() {
                             </div>
                           </div>
                         )}
-                        <ProductCard key={item._flow_key || `${item.sku}_${idx}`} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} deductionAssignments={deductionAssignments} />
+                        <ProductCard key={item._flow_key || `${item.sku}_${idx}`} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} deductionAssignments={deductionAssignments} transferIndex={transferIndex} />
                       </Fragment>
                     );
                   });
@@ -3735,7 +3841,7 @@ export default function VersaInventoryApp() {
             ) : (
               <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16 }}>
                 {filteredItems.map(item => (
-                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} deductionAssignments={deductionAssignments} />
+                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} deductionAssignments={deductionAssignments} transferIndex={transferIndex} />
                 ))}
               </div>
             )}
