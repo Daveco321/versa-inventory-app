@@ -2436,6 +2436,19 @@ function getProdArrival(etd) {
   d.setDate(d.getDate() + FOB_WAREHOUSE_DAYS);
   return d;
 }
+// Timezone-safe ledger date parser.
+// Backend returns plain ISO strings like "2026-04-20". `new Date("2026-04-20")`
+// parses that as midnight UTC, which renders as the PREVIOUS calendar day in
+// any timezone west of UTC (EST, PST, etc). This parses YYYY-MM-DD as LOCAL
+// midnight so the displayed date matches the ledger 1:1 in every timezone.
+function parseLedgerDate(raw) {
+  if (!raw) return null;
+  const s = String(raw);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
 function fmtDateShort(d) {
   if (!d || !(d instanceof Date) || isNaN(d)) return "—";
   return d.toLocaleDateString("en-US", { month:"short", day:"numeric", year:"2-digit" });
@@ -2954,9 +2967,8 @@ export default function VersaInventoryApp() {
         if (!resp.ok) return;
         const json = await resp.json();
         const parsed = (json.production || []).map(p => {
-          let etdDate = p.etd ? new Date(p.etd) : null;
-          if (etdDate && isNaN(etdDate.getTime())) etdDate = null;
-          let arrivalDate = etdDate ? new Date(etdDate.getTime() + 37 * 24 * 60 * 60 * 1000) : null;
+          const etdDate = parseLedgerDate(p.etd);
+          const arrivalDate = getProdArrival(etdDate);
           return { production: p.production || "", poName: p.poName || "", style: (p.style || "").toUpperCase(), units: p.units || 0, brand: p.brand || "", etd: etdDate, arrival: arrivalDate };
         });
         setProductionData(parsed);
