@@ -251,6 +251,13 @@ function matchPrepackDefault(sku, brandAbbr, prepackDefaults) {
   //   category = 1, fit = 1, fabric = 1 (softer constraints — "what the item IS")
   let bestRule = null, bestFabSpec = -1, bestScore = -1;
   for (const d of prepackDefaults) {
+    // Rules that explicitly list SKUs should ONLY match via the SKU-specific path above —
+    // never act as a catch-all through dimension scoring. Otherwise a rule with a SKU list
+    // and category='any' silently matches every item via score=0 and beats targeted rules.
+    // Mirrors desktop matchPrepackDefault and backend _add_size_charts.
+    const dSkus = (d.skus || []).filter(s => s && s.trim());
+    if (dSkus.length > 0) continue;
+
     const rCat = d.category || 'any';
     // Inclusive category match — a BC Carpenter matches 'pants', 'sportswear', AND 'young_men' rules
     if (rCat !== 'any' && !matchesCategory(sku, brandAbbr, rCat)) continue;
@@ -432,6 +439,11 @@ const SPORTSWEAR_FABRICS = new Set(["PH","PJ","PL","PO","PW","TH","HE"]);
 // "(Bottoms)" fabric codes from Style Rules — these are sportswear bottoms (count as pants too)
 const SPORTSWEAR_BOTTOM_CODES = new Set(["BC","BR","BH","BA"]);
 const SHORT_SLEEVE_FIT_CODES = new Set(["SS","SR","SB","ST"]);
+// Long-sleeve fit codes (used by isLongSleeveShirt for inclusive sleeve matching).
+// Mirrors desktop LONG_SLEEVE_FIT_CODES — anything not in this set or SHORT_SLEEVE_FIT_CODES
+// isn't a sleeved-shirt fit code at all. BR/DB (blazers) included so blazer SKUs can match
+// a 'long_sleeve' prepack rule.
+const LONG_SLEEVE_FIT_CODES = new Set(["SL","RF","TF","MF","BT","BB","TT","WB","BR","DB"]);
 const BT_FIT_CODES = new Set(["BT","BB","TT","SB","ST"]);
 // Young Men fabric codes — positions 4-5 of base SKU (mirrors main catalog)
 const YOUNG_MEN_FABRIC_CODES = new Set(["KN","WT","SD","SF","SB","SL","BC","BR","BH","BA","CO","TH","PO","PW","PJ","PH","PL","HE"]);
@@ -471,16 +483,18 @@ function isPants(sku, brandAbbr) {
   return false;
 }
 
-// Inclusive category match: a single SKU can appear in multiple filters
-// (e.g. a BC Carpenter matches 'pants', 'sportswear', AND 'young_men').
-// For exclusive categories (long_sleeve, short_sleeve, big_tall, accessories),
-// the detailed category resolution determines the single bucket each item falls in —
-// a YM item is 'young_men', never long/short sleeve, even though it has a fit code.
+// Inclusive category match: a single SKU can appear in MULTIPLE filters
+// (e.g. a BC Carpenter matches 'pants', 'sportswear', AND 'young_men';
+// a VD shacket with fit SS matches 'young_men', 'sportswear', AND 'short_sleeve').
+// For non-overlapping categories (big_tall, accessories) falls through to the
+// primary-category check via getDetailedCategory.
 function matchesCategory(sku, brandAbbr, category) {
   if (!category || category === "all" || category === "any") return true;
-  if (category === "sportswear") return isSportswear(sku, brandAbbr);
-  if (category === "pants")      return isPants(sku, brandAbbr);
-  if (category === "young_men")  return isYoungMen(sku);
+  if (category === "sportswear")   return isSportswear(sku, brandAbbr);
+  if (category === "pants")        return isPants(sku, brandAbbr);
+  if (category === "young_men")    return isYoungMen(sku);
+  if (category === "short_sleeve") return isShortSleeve(sku);
+  if (category === "long_sleeve")  return isLongSleeveShirt(sku);
   return getDetailedCategory(sku, brandAbbr) === category;
 }
 
@@ -504,6 +518,28 @@ function isShortSleeve(sku, styleOverrides) {
   const base = sku.split("-")[0].toUpperCase();
   if (base.length < 11) return false;
   return SHORT_SLEEVE_FIT_CODES.has(base.substring(9, 11));
+}
+
+// Inclusive long-sleeve check — true for any non-bottom garment whose fit code is in
+// LONG_SLEEVE_FIT_CODES. Mirrors desktop isLongSleeveShirt(). Lets a VD shacket / YM-fabric
+// long-sleeve shirt match a 'long_sleeve' prepack rule even though getDetailedCategory()
+// would classify it as 'young_men' — sleeve membership is structural, not exclusive.
+function isLongSleeveShirt(sku, styleOverrides) {
+  if (!sku) return false;
+  if (isPants(sku)) return false;
+  // Override label wins
+  if (styleOverrides) {
+    const ov = getStyleOverride(sku, styleOverrides);
+    if (ov && ov.fit) {
+      if (/short\s*sleeve/i.test(ov.fit)) return false;
+      if (/long\s*sleeve/i.test(ov.fit))  return true;
+    }
+  }
+  // Short sleeve always wins over long sleeve when both could apply
+  if (isShortSleeve(sku, styleOverrides)) return false;
+  const base = sku.split("-")[0].toUpperCase();
+  if (base.length < 11) return false;
+  return LONG_SLEEVE_FIT_CODES.has(base.substring(9, 11));
 }
 
 function getItemCategory(sku, brandAbbr) {
