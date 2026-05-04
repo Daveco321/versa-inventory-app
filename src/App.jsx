@@ -104,7 +104,50 @@ function getTransfersForSku(sku, transferIndex) {
 
 const FABRIC_RULES = {AW:"4 Way Stretch",CA:"Cataonic 95% Polyester / 5% Spandex",TD:"CVC Dobby 60% Polyester / 40% Cotton",CH:"Chambray TC Stretch",CS:"Cooling Stretch",CV:"Cotton / Poly CVC",DS:"4 Way Stretch Dobby 95% Polyester / 5% Spandex",OX:"Pinpoint Oxford 65%/35% Poly/Cotton",PP:"100% Polyester 150D",SA:"150D Sateen 100% Polyester",LN:"100% Slab Linen",ST:"97% Cotton 3% Spandex",SW:"97% Cotton 3% Stretch Twill",SU:"Stretch Supershirt (95% Polyester, 5% Spandex)",TR:"Traveler Stretch",TW:"4 Way Stretch Twill",TS:"TC Stretch (77% Polyester / 20% Cotton / 3% Spandex)",WS:"4 Way Stretch (95%,5%) Sateen",PC:"TC Poplin 65%/35% Poly/Cotton",PT:"97% Poly 3% Stretch 150D",VS:"Viscose (31%) Stretch",VP:"50% Viscose 50% Polyester",LP:"Linen Polyester/Spandex",MR:"50% Microfiber 50% Rayon",CT:"100% Cotton",CP:"98% Cotton / 2% Spandex",BP:"50% Bamboo / 50% Polyester",TC:"TC Stretch (52P, 45C, 3S %)",SC:"60% Cotton, 38% Poly, 2% Spandex",BM:"30% Rayon Bamboo / 30% Microfiber / 36% Poly / 4% Spandex Twill",VM:"62% Poly 35% Viscose Bamboo 3% Spandex",SP:"52% Poly 45% Cotton 3% Spandex CVC Yarn Dye",TP:"Solid Twill 21% Rayon / 75.5% Poly / 3.5% Spandex",LC:"Linen 51% Cotton / 49% Poly",CX:"97% Cotton / 3% Polyester",WF:"96% Poly 4% Spandex Waffle",FT:"97% Poly / 3% Spandex Flax Texture",CE:"88% Polyester / 7% Cellulose / 5% Spandex Tech",PK:"100% Polyester Knit",PD:"60% Cotton / 40% Polyester Dobby",PY:"50% Cotton / 47% Polyester / 3% Spandex CVC Oxford",UP:"95% Poly / 5% Spandex Perforated",NY:"78% Nylon / 22% Spandex",CL:"35% Lyocell / 35% Cotton / 27% Nylon / 3% Spandex",PM:"50% Polyester / 50% Microfiber",PX:"95% Polyester / 5% Spandex Core",CN:"71% Cotton / 27% Nylon / 2% Spandex",MP:"74% Modal / 26% Polyester",LE:"100% Linen",PE:"96% Polyester / 4% Spandex End on End",OC:"100% Cotton Oxford",CD:"100% Cotton Dobby",CY:"100% Cotton Yarn Dye",CW:"100% Cotton Twill",CJ:"100% Cotton Jacquard",LT:"45% Cotton / 55% Linen",DP:"95% Polyester / 5% Spandex Knit Performance",PR:"87% Polyamide / 13% Elastic",PS:"94% Polyester / 6% Spandex Knit",CG:"100% Cotton Poplin 105gsm",PA:"88% Polyester / 12% Spandex Seamless Lux Knit",PN:"88% Polyester / 12% Spandex Non-Seamless",CF:"100% Cotton 50s 2 Ply",CB:"100% Cotton 80s 2 Ply (Bloomingdale)",KN:"Knits",WT:"Woven Tops",SD:"Sweaters",SF:"Flannel (Over-Shirt)",SB:"Trucker (Over-Shirt)",CO:"Corduroy (Over-Shirt)",SL:"Twill Over-Shirt",YD:"65% Polyester / 35% Cotton Yarn Dye",KS:"Knit Sport Coat",LA:"8% Lyocell / 88% Polyester / 4% Spandex 120GSM",NP:"78% Nylon / 22% Spandex 180GSM Premium Nylon",PB:"100% Polyester Imitation Cotton 130GSM",PF:"92% Polyester / 8% Spandex 150GSM Jacquard Stripe",PG:"73% Polyester / 5% Spandex / 22% Recycled Fiber 130GSM",PH:"100% Polyester Polo Mesh Sweater",PO:"100% Polyester Polo",PJ:"100% Polyester Polo Jersey",PL:"100% Polyester Polo Sweater Knit",PU:"92% Polyester / 8% Spandex 150GSM Lux Twisted Dobby",PV:"94% Polyester / 6% Spandex 210GSM",PW:"100% Polyester Polo Waffle",PZ:"94% Polyester / 6% Spandex 210GSM",SE:"88% Polyester / 12% Spandex 180GSM",TB:"Tencel Rayon Blend",WB:"Wool Tencel Rayon Blend",TH:"T-Shirt",HE:"Henley",BC:"Carpenters (Bottoms)",BR:"Ripstops (Bottoms)",BH:"Heavy Weight (Bottoms)",BA:"Pinstripe (Bottoms)"};
 
-const FIT_CODES = {SL:"Slim Fit Long Sleeve",RF:"Regular Fit Long Sleeve",BT:"Big & Tall Long Sleeve",BB:"Big Long Sleeve",TT:"Tall Long Sleeve",TF:"Tailored Fit Long Sleeve",MF:"Modern Fit Long Sleeve",SS:"Slim Fit Short Sleeve",SR:"Regular Fit Short Sleeve",SB:"Short Sleeve Big",ST:"Short Sleeve Tall",SE:"Slim Fit Extended Button",SH:"Slim Fit Hook & Eye",CE:"Classic Fit Extended Button",CH:"Classic Fit Hook & Eye",CR:"Classic Fit Reg Button",SF:"Straight Fit Reg Button",SC:"Straight Fit Hook & Eye",RR:"Relaxed Fit Reg Button",CF:"Classic Fit",AF:"Athletic Fit"};
+// ── Shirt fit codes (mirrors desktop SHIRT_FIT_CODES) ──
+const SHIRT_FIT_CODES = {
+  "SL":"Slim Fit Long Sleeve",
+  "RF":"Regular Fit Long Sleeve",
+  "BT":"Big & Tall Long Sleeve",
+  "WB":"Big & Tall (Von Dutch)",
+  "BB":"Big Long Sleeve",
+  "TT":"Tall Long Sleeve",
+  "TF":"Tailored Fit Long Sleeve",
+  "MF":"Modern Fit Long Sleeve",
+  "SS":"Slim Fit Short Sleeve",
+  "SR":"Regular Fit Short Sleeve",
+  "SB":"Short Sleeve Big",
+  "ST":"Short Sleeve Tall",
+  "BR":"Single Breaster Blazer",
+  "DB":"Double Breaster Blazer"
+};
+
+// ── Pants fit codes (mirrors desktop PANTS_FIT_CODES) ──
+// IMPORTANT: codes like SR/SE/SH/CR/CE/CH overlap with shirt codes but mean
+// completely different things on pants. The merged FIT_CODES below lets shirt
+// meanings win for collisions (matching desktop legacy behavior); display-time
+// resolvers like getFitFromSKU pick the pants meaning when isPants(sku).
+const PANTS_FIT_CODES = {
+  "SE":"Slim Fit / Extended Button",
+  "SH":"Slim Fit / Hook & Eye Closure",
+  "SR":"Slim Fit / Reg Button",
+  "CE":"Classic Fit / Extended Button",
+  "CH":"Classic Fit / Hook & Eye Closure",
+  "CR":"Classic Fit / Reg Button",
+  "SF":"Straight Fit / Reg Button",
+  "SC":"Straight Fit / Hook & Eye Closure",
+  "RR":"Relaxed Fit / Reg Button"
+};
+
+// Mobile-only legacy aliases preserved for backward compatibility with old
+// SKUs that may use these as raw codes. Not present in desktop because desktop
+// resolves these contextually, but mobile's older code paths reference them.
+const _LEGACY_FIT_CODES = { "CF":"Classic Fit", "AF":"Athletic Fit" };
+
+// Union — shirt meanings win for colliding keys (matches desktop legacy).
+// Used for code-recognition / validation; display-time use the dedicated
+// SHIRT_FIT_CODES or PANTS_FIT_CODES tables via getFitFromSKU.
+const FIT_CODES = Object.assign({}, _LEGACY_FIT_CODES, PANTS_FIT_CODES, SHIRT_FIT_CODES);
 
 const BANNER_RULES_SEED = [
   { id:'seed-ss', text:'SHORT SLEEVE', bgColor:'rgba(14,165,233,0.9)', textColor:'#fff', position:'bottom-left', visibility:'both', category:'short_sleeve', fits:[], customers:[], brands:[], skus:[] },
@@ -182,26 +225,25 @@ function getFabricFromSKU(sku, styleOverrides) {
   return { code, description: desc };
 }
 
+// Mirrors desktop fitCodeToLabel(code, sku).
+// When isPants(sku), looks up PANTS_FIT_CODES first — so codes like SR/SE/SH
+// resolve to "Slim Fit / Reg Button" / "Slim Fit / Extended Button" /
+// "Slim Fit / Hook & Eye Closure" instead of the shirt-biased meanings
+// ("Regular Fit Short Sleeve" / "Slim Fit Extended Button" / etc.).
 function getFitFromSKU(sku, styleOverrides) {
   if (!sku || sku.length < 3) return "Unknown";
-  // Check style override fit first (matches desktop)
+  // Style-override fit label wins over everything (matches desktop)
   if (styleOverrides) {
     const ov = getStyleOverride(sku, styleOverrides);
     if (ov && ov.fit) return ov.fit;
   }
-  const parts = sku.toUpperCase().split("-");
-  const baseStyle = parts[0];
-  if (baseStyle.length >= 3) {
-    const fitFromBase = baseStyle.slice(-3, -1);
-    if (FIT_CODES[fitFromBase]) return FIT_CODES[fitFromBase];
+  const code = extractFitCode(sku);
+  // Pants context first — uses PANTS_FIT_CODES so collision codes resolve correctly
+  if (typeof isPants === 'function' && isPants(sku) && PANTS_FIT_CODES[code]) {
+    return PANTS_FIT_CODES[code];
   }
-  // Suffix fallback: check parts after dash (e.g. NONAU175-SL)
-  for (let i = 1; i < parts.length; i++) {
-    const part = parts[i].trim();
-    if (FIT_CODES[part]) return FIT_CODES[part];
-  }
-  const fitCode = baseStyle.slice(-3, -1);
-  return FIT_CODES[fitCode] || fitCode || "Unknown";
+  // Shirt / legacy / default
+  return FIT_CODES[code] || code || "Unknown";
 }
 
 const SIZE_PACKS = {
@@ -456,8 +498,7 @@ function isBigAndTall(sku) {
     const vdSuffix = base.substring(4);
     if (vdSuffix.startsWith("WBJ") || vdSuffix.startsWith("BTC") || vdSuffix.startsWith("BTS") || vdSuffix.startsWith("WBK")) return true;
   }
-  if (base.length < 11) return false;
-  return BT_FIT_CODES.has(base.substring(9, 11));
+  return BT_FIT_CODES.has(extractFitCode(sku));
 }
 
 function isYoungMen(sku) {
@@ -515,9 +556,7 @@ function isShortSleeve(sku, styleOverrides) {
     const ov = getStyleOverride(sku, styleOverrides);
     if (ov && ov.fit) return /short\s*sleeve/i.test(ov.fit);
   }
-  const base = sku.split("-")[0].toUpperCase();
-  if (base.length < 11) return false;
-  return SHORT_SLEEVE_FIT_CODES.has(base.substring(9, 11));
+  return SHORT_SLEEVE_FIT_CODES.has(extractFitCode(sku));
 }
 
 // Inclusive long-sleeve check — true for any non-bottom garment whose fit code is in
@@ -537,9 +576,7 @@ function isLongSleeveShirt(sku, styleOverrides) {
   }
   // Short sleeve always wins over long sleeve when both could apply
   if (isShortSleeve(sku, styleOverrides)) return false;
-  const base = sku.split("-")[0].toUpperCase();
-  if (base.length < 11) return false;
-  return LONG_SLEEVE_FIT_CODES.has(base.substring(9, 11));
+  return LONG_SLEEVE_FIT_CODES.has(extractFitCode(sku));
 }
 
 function getItemCategory(sku, brandAbbr) {
@@ -2039,10 +2076,30 @@ function _ruleFabrics(rule) {
   return [];
 }
 
+// Mirrors desktop extractFitCode 1:1.
+//   1. Von Dutch B&T (WB/BT at positions 4-5) — checked FIRST so longer VD
+//      bases still resolve correctly (otherwise slice(-3,-1) might land on
+//      something else).
+//   2. Try base.slice(-3, -1) and validate against FIT_CODES.
+//   3. Fall back to dash suffix (e.g. NONAU175-SL).
+//   4. Final fallback: whatever slice(-3, -1) returned, even if not in FIT_CODES.
 function extractFitCode(sku) {
   if (!sku || sku.length < 3) return '';
-  const baseStyle = sku.split('-')[0].toUpperCase();
-  return baseStyle.slice(-3, -1);
+  const parts = sku.toUpperCase().split('-');
+  const baseStyle = parts[0];
+  if (baseStyle.length >= 6 && baseStyle.substring(2, 4) === 'VD') {
+    const vdFit = baseStyle.substring(4, 6);
+    if (vdFit === 'WB' || vdFit === 'BT') return vdFit;
+  }
+  if (baseStyle.length >= 3) {
+    const fitFromBase = baseStyle.slice(-3, -1);
+    if (FIT_CODES[fitFromBase]) return fitFromBase;
+  }
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i].trim();
+    if (FIT_CODES[part]) return part;
+  }
+  return baseStyle.length >= 3 ? baseStyle.slice(-3, -1) : '';
 }
 
 function getMatchingBanners(sku, brandAbbr, bannerRules) {
