@@ -344,7 +344,10 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
   const brands = {};
   let source = [...inventory];
 
-  // Apply virtual warehouse allocations to item.allocated (matches desktop applyManualAllocationsToInventory)
+  // Apply virtual warehouse allocations to item.committed (matches desktop applyManualAllocationsToInventory).
+  // Desktop convention: Excel `committed` is negative (e.g. -1000). Virtual allocation qty is positive.
+  // Subtracting positive from negative makes committed more negative → bigger deduction after Math.abs.
+  // Previously this modified `allocated` instead, which double-counted when Excel `allocated` was also non-zero.
   if (allocationData.length > 0) {
     const allocTotals = {};
     allocationData.forEach(a => {
@@ -354,7 +357,7 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
     source = source.map(item => {
       const allocQty = allocTotals[(item.sku || "").toUpperCase()] || 0;
       if (allocQty > 0) {
-        return { ...item, allocated: (item.allocated || 0) - allocQty };
+        return { ...item, committed: (item.committed || 0) - allocQty };
       }
       return item;
     });
@@ -2872,6 +2875,322 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
   );
 }
 
+// ═══════════════════════════════════════════
+// OVERSEAS SUMMARY VIEW
+// ═══════════════════════════════════════════
+// Cross-brand overseas shipment overview. Flow expansion always on — every
+// production order/delivery appears as its own row. Mirrors the desktop tool:
+// search by SKU/PO/production ref, filter by brand & customer, sort by date.
+// ═══════════════════════════════════════════
+function OverseasSummaryView({ inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, colorMap, brands, onItemClick }) {
+  const [search, setSearch] = useState("");
+  const [brandFilter, setBrandFilter] = useState("");
+  const [customerFilter, setCustomerFilter] = useState("");
+  const [sortBy, setSortBy] = useState("arrival-asc");
+  const [searchDebounced, setSearchDebounced] = useState("");
+
+  // Debounce the search input so each keystroke doesn't rebuild the visible list
+  useEffect(() => {
+    const t = setTimeout(() => setSearchDebounced(search), 150);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Build flow items from ALL inventory — one row per PO/delivery.
+  // Mirrors the desktop getOverseasFlowItems() logic with FIFO deduction.
+  const flowItems = useMemo(() => {
+    const items = [];
+    inventory.forEach(item => {
+      const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0);
+      const prods = getActiveProductionForSku(item.sku, productionData, wh, suppressionOverrides);
+      if (prods.length === 0) return; // no active production → skip
+
+      const deductions = Math.abs(item.committed||0) + Math.abs(item.allocated||0);
+      let overseasDeduction = 0;
+      if (deductions > 0) {
+        const skuAssign = deductionAssignments[item.sku] || null;
+        if (skuAssign === "overseas") overseasDeduction = deductions;
+        else if (skuAssign === "warehouse") overseasDeduction = 0;
+        else {
+          // FIFO default: warehouse absorbs first, remainder spills to overseas
+          const whAbsorbed = Math.min(deductions, wh);
+          overseasDeduction = Math.max(0, deductions - whAbsorbed);
+        }
+      }
+
+      // Resolve brand for the row (same logic rebuildBrands uses for display)
+      let brand = item.brand || "UNKNOWN";
+      const BRAND_ALIASES = { NM: "NICOLE" };
+      if (BRAND_ALIASES[brand]) brand = BRAND_ALIASES[brand];
+      const skuUp = (item.sku || "").toUpperCase();
+      if (skuUp.startsWith("VP")) brand = "VERSA";
+      else if (skuUp.startsWith("LUCK")) brand = "LUCKY";
+      else if (item.sku && item.sku.length >= 4) {
+        const code = item.sku.substring(2, 4).toUpperCase();
+        if (SKU_BRAND_CODE_MAP[code] && !BRAND_MAPPING[brand]) brand = SKU_BRAND_CODE_MAP[code];
+      }
+      const ov = getStyleOverride(item.sku, styleOverrides);
+      if (ov && ov.brand) brand = ov.brand;
+      const brandFull = (BRAND_MAPPING[brand] || {}).full_name || brand;
+
+      // Sort POs by arrival (earliest first) for waterfall deduction
+      const sortedProds = [...prods].sort((a, b) => {
+        const da = a.arrival || a.etd || new Date("2099");
+        const db = b.arrival || b.etd || new Date("2099");
+        return da - db;
+      });
+
+      let remaining = overseasDeduction;
+      sortedProds.forEach(p => {
+        const units = p.units || 0;
+        const deductFromThis = Math.min(remaining, units);
+        const flowAts = units - deductFromThis;
+        remaining -= deductFromThis;
+
+        items.push({
+          ...item,
+          brand,
+          brand_abbr: brand,
+          brand_full: brandFull,
+          total_ats: flowAts,
+          _flow: true,
+          _flow_production: p.production || "",
+          _flow_po: p.poName || "",
+          _flow_units: units,
+          _flow_deducted: deductFromThis,
+          _flow_etd: p.etd,
+          _flow_arrival: p.arrival
+        });
+      });
+    });
+    return items;
+  }, [inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides]);
+
+  // Brand dropdown options (only brands present in the flow data, sorted by full name)
+  const brandOpts = useMemo(() => {
+    const set = new Set();
+    flowItems.forEach(i => i.brand_abbr && set.add(i.brand_abbr));
+    return Array.from(set).sort((a, b) => {
+      const fa = (BRAND_MAPPING[a] || {}).full_name || a;
+      const fb = (BRAND_MAPPING[b] || {}).full_name || b;
+      return fa.localeCompare(fb);
+    });
+  }, [flowItems]);
+
+  // Customer dropdown options (first 2 chars of SKU, only known customer codes)
+  const customerOpts = useMemo(() => {
+    const set = new Set();
+    flowItems.forEach(i => {
+      const prefix = (i.sku || "").substring(0, 2).toUpperCase();
+      if (prefix && CUSTOMER_CODES[prefix]) set.add(prefix);
+    });
+    return Array.from(set).sort((a, b) => CUSTOMER_CODES[a].localeCompare(CUSTOMER_CODES[b]));
+  }, [flowItems]);
+
+  // Apply filters + sort
+  const visible = useMemo(() => {
+    let items = flowItems;
+    if (brandFilter) items = items.filter(i => i.brand_abbr === brandFilter);
+    if (customerFilter) items = items.filter(i => (i.sku || "").substring(0, 2).toUpperCase() === customerFilter);
+    if (searchDebounced) {
+      const q = searchDebounced.toLowerCase();
+      items = items.filter(i =>
+        (i.sku || "").toLowerCase().includes(q) ||
+        (i._flow_po || "").toLowerCase().includes(q) ||
+        (i._flow_production || "").toLowerCase().includes(q) ||
+        (i.brand_full || "").toLowerCase().includes(q)
+      );
+    }
+    const sorted = [...items];
+    if (sortBy === "arrival-asc") sorted.sort((a, b) => (a._flow_arrival || new Date("2099")) - (b._flow_arrival || new Date("2099")));
+    else if (sortBy === "arrival-desc") sorted.sort((a, b) => (b._flow_arrival || new Date("1970")) - (a._flow_arrival || new Date("1970")));
+    else if (sortBy === "etd-asc") sorted.sort((a, b) => (a._flow_etd || new Date("2099")) - (b._flow_etd || new Date("2099")));
+    else if (sortBy === "etd-desc") sorted.sort((a, b) => (b._flow_etd || new Date("1970")) - (a._flow_etd || new Date("1970")));
+    return sorted;
+  }, [flowItems, brandFilter, customerFilter, searchDebounced, sortBy]);
+
+  // Stats
+  const totalUnits = visible.reduce((s, i) => s + (i._flow_units || 0), 0);
+  const totalAts = visible.reduce((s, i) => s + Math.max(0, i.total_ats), 0);
+  const totalDeducted = visible.reduce((s, i) => s + (i._flow_deducted || 0), 0);
+  const uniqueSkus = new Set(visible.map(i => i.sku)).size;
+  const uniqueBrands = new Set(visible.map(i => i.brand_abbr)).size;
+
+  if (productionData.length === 0) {
+    return (
+      <div style={{ textAlign:"center", padding:80, color:"#64748b" }}>
+        <p style={{ fontSize:56, marginBottom:16 }}>🚢</p>
+        <p style={{ fontSize:20, fontWeight:700, color:"#e2e8f0", marginBottom:8 }}>No Overseas Data</p>
+        <p style={{ fontSize:14, color:"#94a3b8" }}>Production data is loading or unavailable</p>
+      </div>
+    );
+  }
+
+  const inputStyle = {
+    background:"rgba(255,255,255,.06)",
+    border:"1px solid rgba(255,255,255,.12)",
+    borderRadius:8, padding:"8px 12px", fontSize:13,
+    color:"#e2e8f0", outline:"none", width:"100%"
+  };
+  const selectStyle = { ...inputStyle, appearance:"none", WebkitAppearance:"none", paddingRight:24 };
+  const statCardStyle = { background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12, padding:"12px 8px", textAlign:"center" };
+
+  // Group flow rows by date for date-separator headers (matches desktop summary)
+  const useEtd = sortBy.startsWith("etd");
+  let lastDateStr = null;
+
+  return (
+    <div style={{ paddingBottom:16 }}>
+      {/* Summary stats */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:10 }}>
+        <div style={statCardStyle}>
+          <div style={{ fontSize:22, fontWeight:800, color:"#f59e0b" }}>{visible.length}</div>
+          <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Production Orders</div>
+        </div>
+        <div style={statCardStyle}>
+          <div style={{ fontSize:22, fontWeight:800, color:"#0ea5e9" }}>{uniqueSkus}</div>
+          <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Unique SKUs</div>
+        </div>
+        <div style={statCardStyle}>
+          <div style={{ fontSize:22, fontWeight:800, color:"#a855f7" }}>{uniqueBrands}</div>
+          <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Brands</div>
+        </div>
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns: totalDeducted > 0 ? "repeat(3, 1fr)" : "repeat(2, 1fr)", gap:8, marginBottom:14 }}>
+        <div style={statCardStyle}>
+          <div style={{ fontSize:18, fontWeight:800, color:"#34d399" }}>{totalUnits.toLocaleString()}</div>
+          <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Produced</div>
+        </div>
+        {totalDeducted > 0 && (
+          <div style={statCardStyle}>
+            <div style={{ fontSize:18, fontWeight:800, color:"#f87171" }}>−{totalDeducted.toLocaleString()}</div>
+            <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Deducted</div>
+          </div>
+        )}
+        <div style={statCardStyle}>
+          <div style={{ fontSize:18, fontWeight:800, color:"#10b981" }}>{totalAts.toLocaleString()}</div>
+          <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Flow ATS</div>
+        </div>
+      </div>
+
+      {/* Search */}
+      <input
+        type="text" placeholder="🔍 Search SKU, PO #, production ref…"
+        value={search} onChange={e => setSearch(e.target.value)}
+        style={{ ...inputStyle, marginBottom:8 }}
+      />
+
+      {/* Brand / Customer / Sort dropdowns */}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+        <select value={brandFilter} onChange={e => setBrandFilter(e.target.value)} style={selectStyle}>
+          <option value="">All Brands</option>
+          {brandOpts.map(b => (
+            <option key={b} value={b}>{(BRAND_MAPPING[b] || {}).full_name || b}</option>
+          ))}
+        </select>
+        <select value={customerFilter} onChange={e => setCustomerFilter(e.target.value)} style={selectStyle}>
+          <option value="">All Customers</option>
+          {customerOpts.map(c => (
+            <option key={c} value={c}>{CUSTOMER_CODES[c]}</option>
+          ))}
+        </select>
+      </div>
+      <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ ...selectStyle, marginBottom:14 }}>
+        <option value="arrival-asc">Arrival ↑ (Soonest)</option>
+        <option value="arrival-desc">Arrival ↓ (Latest)</option>
+        <option value="etd-asc">Ex-Factory ↑ (Soonest)</option>
+        <option value="etd-desc">Ex-Factory ↓ (Latest)</option>
+      </select>
+
+      {/* Flow rows with date-group separators */}
+      {visible.length === 0 ? (
+        <div style={{ textAlign:"center", padding:40, color:"#64748b" }}>
+          <p style={{ fontSize:14 }}>No production orders match the filters</p>
+        </div>
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {visible.map((item, idx) => {
+            const dateObj = useEtd ? item._flow_etd : item._flow_arrival;
+            const dateStr = dateObj ? formatDateShort(dateObj) : "No Date";
+            const showHeader = dateStr !== lastDateStr;
+            lastDateStr = dateStr;
+            const etdStr = item._flow_etd ? formatDateShort(item._flow_etd) : "—";
+            const arrStr = item._flow_arrival ? formatDateShort(item._flow_arrival) : "—";
+            const ci = colorMap && colorMap[item.sku] ? colorMap[item.sku] : null;
+            const colorDisplay = ci ? (ci.display || "") : "";
+            const imgUrl = getImageUrl(item, styleOverrides);
+            const fit = getFitFromSKU(item.sku, styleOverrides);
+
+            return (
+              <Fragment key={`${item.sku}-${item._flow_production}-${idx}`}>
+                {showHeader && (
+                  <div style={{
+                    background:"linear-gradient(90deg, rgba(245,158,11,.15), rgba(245,158,11,.05))",
+                    border:"1px solid rgba(245,158,11,.3)", borderRadius:10,
+                    padding:"8px 12px", marginTop: idx === 0 ? 0 : 6,
+                    fontSize:12, fontWeight:800, color:"#fbbf24",
+                    display:"flex", justifyContent:"space-between", alignItems:"center"
+                  }}>
+                    <span>📅 {useEtd ? "Ex-Factory" : "Arriving"}: {dateStr}</span>
+                  </div>
+                )}
+                <div
+                  onClick={() => onItemClick && onItemClick(item)}
+                  style={{
+                    background:"rgba(255,255,255,.04)",
+                    border:"1px solid rgba(255,255,255,.08)",
+                    borderRadius:12, padding:10,
+                    display:"flex", gap:10, cursor: onItemClick ? "pointer" : "default"
+                  }}
+                >
+                  <ImageWithFallback src={imgUrl} alt={item.sku} style={{ width:60, height:60, objectFit:"contain", borderRadius:8, background:"#f8fafc", flexShrink:0 }} />
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", gap:8, marginBottom:3 }}>
+                      <span style={{ fontSize:13, fontWeight:800, color:"#e2e8f0", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{item.sku}</span>
+                      <span style={{ fontSize:11, fontWeight:700, color:"#a855f7", flexShrink:0 }}>{item.brand_abbr}</span>
+                    </div>
+                    {colorDisplay && (
+                      <div style={{ fontSize:11, color:"#94a3b8", marginBottom:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{colorDisplay}</div>
+                    )}
+                    {fit && fit !== "N/A" && (
+                      <div style={{ fontSize:10, color:"#64748b", marginBottom:4 }}>{fit}</div>
+                    )}
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:4, marginBottom:4 }}>
+                      {item._flow_production && (
+                        <span style={{ fontSize:10, background:"rgba(245,158,11,.15)", color:"#fbbf24", padding:"2px 6px", borderRadius:6, fontWeight:700 }}>
+                          PO# {item._flow_production}
+                        </span>
+                      )}
+                      {item._flow_po && (
+                        <span style={{ fontSize:10, background:"rgba(99,102,241,.15)", color:"#a5b4fc", padding:"2px 6px", borderRadius:6, fontWeight:600 }}>
+                          {item._flow_po}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:6 }}>
+                      <div style={{ fontSize:10, color:"#64748b" }}>
+                        Ex-Fac <strong style={{ color:"#cbd5e1" }}>{etdStr}</strong> · Arr <strong style={{ color:"#cbd5e1" }}>{arrStr}</strong>
+                      </div>
+                      <div style={{ display:"flex", gap:4, flexShrink:0 }}>
+                        <span style={{ fontSize:11, fontWeight:700, color:"#94a3b8" }}>{(item._flow_units||0).toLocaleString()}</span>
+                        {item._flow_deducted > 0 && (
+                          <span style={{ fontSize:11, fontWeight:700, color:"#f87171" }}>−{item._flow_deducted.toLocaleString()}</span>
+                        )}
+                        <span style={{ fontSize:12, fontWeight:800, color: item.total_ats > 0 ? "#10b981" : "#64748b" }}>
+                          ={Math.max(0, item.total_ats).toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </Fragment>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function VersaInventoryApp() {
   const [view, setView] = useState("loading"); // loading, brands, inventory, detail
   const [inventory, setInventory] = useState([]);
@@ -3546,7 +3865,7 @@ export default function VersaInventoryApp() {
               </g>
             </svg>
             <div>
-              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>{activeTab === "production" ? "Production Recap" : activeTab === "analytics" ? "Color Analytics" : "Inventory Management"}</h1>
+              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>{activeTab === "production" ? "Production Recap" : activeTab === "analytics" ? "Color Analytics" : activeTab === "overseas" ? "Overseas Summary" : "Inventory Management"}</h1>
               <div style={{ display:"flex",alignItems:"center",gap:8 }}>
                 <p style={{ fontSize:12,color:"#64748b" }}>Real-time inventory system</p>
                 <span style={{ fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:99,background:statusColors[syncStatus.type],color:statusTextColors[syncStatus.type] }}>
@@ -3959,6 +4278,20 @@ export default function VersaInventoryApp() {
           <ProductionRecapView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} inventory={allItems} onStyleClick={(item) => setSelectedItem(item)} />
         )}
 
+        {/* OVERSEAS SUMMARY TAB */}
+        {activeTab === "overseas" && (
+          <OverseasSummaryView
+            inventory={inventory}
+            productionData={productionData}
+            suppressionOverrides={suppressionOverrides}
+            deductionAssignments={deductionAssignments}
+            styleOverrides={styleOverrides}
+            colorMap={colorMap}
+            brands={brands}
+            onItemClick={(item) => setSelectedItem(item)}
+          />
+        )}
+
         {/* ANALYTICS TAB */}
         {activeTab === "analytics" && (
           <AnalyticsView inventory={inventory} colorMap={colorMap} styleOverrides={styleOverrides} deductionAssignments={deductionAssignments} />
@@ -3993,7 +4326,8 @@ export default function VersaInventoryApp() {
         {[
           { key:"inventory", label:"Inventory", icon:"📦", activeColor:"#818cf8" },
           { key:"production", label:"Production", icon:"🏭", activeColor:"#0891b2" },
-          { key:"analytics", label:"Analytics", icon:"📊", activeColor:"#f59e0b" },
+          { key:"overseas", label:"Overseas", icon:"🚢", activeColor:"#f59e0b" },
+          { key:"analytics", label:"Analytics", icon:"📊", activeColor:"#10b981" },
         ].map(tab => {
           const isActive = activeTab === tab.key;
           return (
