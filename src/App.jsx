@@ -340,7 +340,199 @@ function sortBrands(entries) {
   });
 }
 
-function rebuildBrands(inventory, filterMode = "all", prodData = [], suppressionOverrides = new Set(), deductionAssignments = {}, styleOverrides = {}, warehouseFilter = "all", allocationData = []) {
+// ═══════════════════════════════════════════
+// SMART ROUTING ENGINE (mobile)
+// ═══════════════════════════════════════════
+// Mirrors desktop's `_routeBaseStyle` + `_buildSmartRoutingCache`. Replaces
+// legacy warehouse-first FIFO with start-date-aware routing. See desktop's
+// rebuildAppData() doc-comment for the full design rationale.
+//
+// SKU matching is EXACT (no base-style fallback): an order/APO must match a
+// row's full SKU 1:1 to consume against it. Per-row reconciliation: each row's
+// matched demand must equal its |committed|+|allocated| within tolerance — if
+// any row fails, the whole base-style group falls back to legacy FIFO.
+//
+// Per-row warehouse share is derived from CONSUMER TAGS — each demand item is
+// tagged with its target SKU when it consumes a slot, so the per-row split is
+// exact rather than heuristic.
+
+function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, apoData, allocationData) {
+  const matchingRows = inventory.filter(r => (r.sku || "").toUpperCase().split("-")[0] === baseStyle);
+  if (matchingRows.length === 0) return null;
+
+  const warehouseTotal = matchingRows.reduce(
+    (s, r) => s + (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0), 0
+  );
+  const totalDeduction = matchingRows.reduce(
+    (s, r) => s + Math.abs(r.committed||0) + Math.abs(r.allocated||0), 0
+  );
+  if (totalDeduction === 0) return null;
+
+  const today = new Date(); today.setHours(0,0,0,0);
+  const productions = getProductionForSku(matchingRows[0].sku, prodData)
+    .slice()
+    .sort((a, b) => (a.arrival || a.etd || new Date("2099-01-01")) - (b.arrival || b.etd || new Date("2099-01-01")));
+
+  const slots = [];
+  if (warehouseTotal > 0) {
+    slots.push({ type: "warehouse", po: null, originalUnits: warehouseTotal, units: warehouseTotal, arrival: today, etd: null, consumers: [] });
+  }
+  productions.forEach(p => {
+    if ((p.units || 0) > 0) {
+      slots.push({ type: "production", po: p.production, poName: p.poName, originalUnits: p.units, units: p.units, arrival: p.arrival, etd: p.etd, consumers: [] });
+    }
+  });
+
+  // Exact-SKU demand items
+  const allSkus = new Set(matchingRows.map(r => (r.sku || "").toUpperCase()));
+  const orders = (openOrdersData || [])
+    .filter(o => o && o.style && allSkus.has(o.style.toUpperCase()))
+    .map(o => ({
+      ...o,
+      _qty: (parseInt(o.openQty)||0) + (parseInt(o.pickQty)||0),
+      _startDate: o.startDate ? new Date(o.startDate) : null,
+      _targetSku: o.style.toUpperCase()
+    }))
+    .filter(o => o._qty > 0);
+
+  const apos = (apoData || [])
+    .map((e, idx) => ({ ...e, _sheetOrder: idx }))
+    .filter(e => e && e.style && allSkus.has(e.style.toUpperCase()))
+    .map(e => ({ customer: (e.customer||"—").toString(), qty: parseInt(e.qty)||0, sheetOrder: e._sheetOrder, targetSku: e.style.toUpperCase() }))
+    .filter(a => a.qty > 0)
+    .sort((a, b) => a.sheetOrder - b.sheetOrder);
+
+  const vws = (allocationData || [])
+    .filter(a => a && a.sku && allSkus.has(a.sku.toUpperCase()))
+    .map(a => ({ customer: a.customer || "VW", qty: parseInt(a.qty)||0, sku: a.sku, targetSku: a.sku.toUpperCase(), source: "vw" }))
+    .filter(v => v.qty > 0);
+
+  // Per-row reconciliation
+  const demandBySku = {};
+  orders.forEach(o => { demandBySku[o._targetSku] = (demandBySku[o._targetSku]||0) + o._qty; });
+  apos.forEach(a => { demandBySku[a.targetSku]   = (demandBySku[a.targetSku]||0) + a.qty; });
+  vws.forEach(v => { demandBySku[v.targetSku]    = (demandBySku[v.targetSku]||0) + v.qty; });
+
+  for (const row of matchingRows) {
+    const skuU = (row.sku||"").toUpperCase();
+    const rowDemand = demandBySku[skuU] || 0;
+    const rowDeduction = Math.abs(row.committed||0) + Math.abs(row.allocated||0);
+    if (rowDeduction === 0 && rowDemand === 0) continue;
+    const tol = Math.max(100, rowDeduction * 0.05);
+    if (Math.abs(rowDemand - rowDeduction) > tol) return null;
+  }
+
+  // Route orders: EDF, latest-feasible
+  orders.sort((a, b) => (a._startDate || new Date("2099-12-31")) - (b._startDate || new Date("2099-12-31")));
+  orders.forEach(o => {
+    let needed = o._qty;
+    const effDeadline = o._startDate ? new Date(Math.max(today.getTime(), o._startDate.getTime())) : null;
+    const feasible = slots
+      .filter(s => s.units > 0 && (!effDeadline || !s.arrival || s.arrival <= effDeadline))
+      .sort((a, b) => (b.arrival || new Date("1900-01-01")) - (a.arrival || new Date("1900-01-01")));
+    for (const s of feasible) {
+      if (needed <= 0) break;
+      const take = Math.min(s.units, needed);
+      s.units -= take;
+      s.consumers.push({ kind: "order", customer: o.customer || o.customerFull || "—", orderNo: o.orderNo || o.ctrlNo || "", units: take, startDate: o._startDate, targetSku: o._targetSku });
+      needed -= take;
+    }
+  });
+
+  // Route APO: sheet order, earliest first
+  apos.forEach(apo => {
+    let needed = apo.qty;
+    for (const s of slots) {
+      if (needed <= 0) break;
+      if (s.units <= 0) continue;
+      const take = Math.min(s.units, needed);
+      s.units -= take;
+      s.consumers.push({ kind: "apo", customer: apo.customer, units: take, targetSku: apo.targetSku });
+      needed -= take;
+    }
+  });
+
+  // Route VW
+  vws.forEach(vw => {
+    let needed = vw.qty;
+    for (const s of slots) {
+      if (needed <= 0) break;
+      if (s.units <= 0) continue;
+      const take = Math.min(s.units, needed);
+      s.units -= take;
+      s.consumers.push({ kind: "vw", customer: vw.customer, units: take, targetSku: vw.targetSku });
+      needed -= take;
+    }
+  });
+
+  const warehouseSlot = slots.find(s => s.type === "warehouse");
+  const warehouseConsumed = warehouseSlot ? (warehouseTotal - warehouseSlot.units) : 0;
+  const overseasConsumed = Math.max(0, totalDeduction - warehouseConsumed);
+
+  // Per-SKU warehouse from consumer tags (exact)
+  const perSkuWarehouse = {};
+  matchingRows.forEach(r => { perSkuWarehouse[r.sku] = 0; });
+  if (warehouseSlot) {
+    const skuToRow = new Map();
+    matchingRows.forEach(r => skuToRow.set((r.sku||"").toUpperCase(), r));
+    warehouseSlot.consumers.forEach(c => {
+      const row = skuToRow.get((c.targetSku||"").toUpperCase());
+      if (row) perSkuWarehouse[row.sku] += c.units;
+    });
+    // Cascade overflow if any row claimed more than its physical warehouse
+    let overflow = 0;
+    matchingRows.forEach(r => {
+      const rowWh = (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0);
+      if (perSkuWarehouse[r.sku] > rowWh) {
+        overflow += perSkuWarehouse[r.sku] - rowWh;
+        perSkuWarehouse[r.sku] = rowWh;
+      }
+    });
+    if (overflow > 0) {
+      for (const r of matchingRows) {
+        if (overflow <= 0) break;
+        const rowWh = (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0);
+        const spare = rowWh - perSkuWarehouse[r.sku];
+        if (spare > 0) {
+          const absorb = Math.min(spare, overflow);
+          perSkuWarehouse[r.sku] += absorb;
+          overflow -= absorb;
+        }
+      }
+    }
+  }
+
+  return { warehouseConsumed, overseasConsumed, perSkuWarehouse, slots };
+}
+
+function _buildSmartRoutingMobile(inventory, prodData, openOrdersData, apoData, allocationData) {
+  // Without orders the engine can't make any decisions — return empty map so
+  // callers know to fall back to FIFO. Same defense-in-depth as desktop.
+  if (!openOrdersData || openOrdersData.length === 0) return {};
+  const baseStyles = new Set();
+  inventory.forEach(item => {
+    const base = (item.sku||"").toUpperCase().split("-")[0];
+    if (base) baseStyles.add(base);
+  });
+  const perSku = {};
+  for (const baseStyle of baseStyles) {
+    const result = _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, apoData, allocationData);
+    if (result) {
+      Object.entries(result.perSkuWarehouse).forEach(([sku, wh]) => {
+        const row = inventory.find(r => r.sku === sku);
+        if (!row) return;
+        const rowDed = Math.abs(row.committed||0) + Math.abs(row.allocated||0);
+        perSku[sku] = {
+          warehouseConsumed: wh,
+          overseasConsumed: Math.max(0, rowDed - wh)
+        };
+      });
+    }
+  }
+  return perSku;
+}
+
+function rebuildBrands(inventory, filterMode = "all", prodData = [], suppressionOverrides = new Set(), deductionAssignments = {}, styleOverrides = {}, warehouseFilter = "all", allocationData = [], openOrdersData = [], apoData = []) {
   const brands = {};
   let source = [...inventory];
 
@@ -363,6 +555,11 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
     });
   }
 
+  // Build smart routing map. Lookups during the deduction loops below replace
+  // legacy "warehouse-first FIFO" with start-date-aware routing per SKU.
+  // Empty map → engine falls back to legacy FIFO for every SKU.
+  const smartPerSku = _buildSmartRoutingMobile(source, prodData, openOrdersData, apoData, allocationData);
+
   if (filterMode === "incoming") {
     source = source.filter(i => (i.incoming || 0) > 0).map(item => {
       const incoming = item.incoming || 0;
@@ -375,12 +572,17 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
       let osDed = 0;
       if (ded > 0) {
         const assign = deductionAssignments[item.sku] || null;
+        const smart = smartPerSku[item.sku];
         if (assign === 'overseas') {
           osDed = ded;
         } else if (assign === 'warehouse') {
           osDed = 0;
+        } else if (smart) {
+          // Smart routing: dated orders that didn't NEED warehouse stopped eating it,
+          // so overseas absorbs more accurately based on which production each item routes to.
+          osDed = smart.overseasConsumed;
         } else {
-          // FIFO default: warehouse absorbs first, remainder spills to overseas
+          // FIFO fallback (no smart routing for this SKU — reconciliation may have failed)
           const whAbsorbed = Math.min(ded, wh);
           osDed = Math.max(0, ded - whAbsorbed);
         }
@@ -401,13 +603,16 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
       const incoming = item.incoming || 0;
       let apply = ded;
       const assign = deductionAssignments[item.sku] || null;
+      const smart = smartPerSku[item.sku];
       if (assign === 'overseas') {
         apply = 0;
       } else if (assign === 'warehouse') {
         apply = ded;
+      } else if (smart && incoming > 0) {
+        // Smart routing: warehouse only takes the demand that genuinely needs it
+        apply = smart.warehouseConsumed;
       } else if (incoming > 0) {
-        // FIFO: warehouse absorbs what it can, remainder spills to overseas
-        // Use fullWh for FIFO calc so deduction routing is accurate regardless of sub-filter
+        // FIFO fallback: warehouse absorbs what it can, remainder spills
         apply = Math.min(ded, fullWh);
       } else {
         // No incoming — full hit to warehouse (can go negative)
@@ -2525,11 +2730,22 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
 // ═══════════════════════════════════════════
 // PRODUCTION RECAP VIEW
 // ═══════════════════════════════════════════
-const FOB_WAREHOUSE_DAYS = 37;
-function getProdArrival(etd) {
+// Transit time from ex-factory to US warehouse arrival. Pants take longer than
+// shirts because of the heavier weight class on container manifests. Style code
+// or brand can both feed isPants() — passing brand helps it disambiguate ambiguous
+// codes when a style might be either-or.
+const FOB_WAREHOUSE_DAYS_SHIRTS = 37;
+const FOB_WAREHOUSE_DAYS_PANTS  = 55;
+// Kept as a no-arg back-compat alias for older callers that don't have style/brand;
+// defaults to shirts since most items are shirts and that's the legacy behavior.
+const FOB_WAREHOUSE_DAYS = FOB_WAREHOUSE_DAYS_SHIRTS;
+function getProdArrival(etd, style, brandAbbr) {
   if (!etd) return null;
+  const transitDays = (style && isPants(style, brandAbbr))
+    ? FOB_WAREHOUSE_DAYS_PANTS
+    : FOB_WAREHOUSE_DAYS_SHIRTS;
   const d = new Date(etd.getTime());
-  d.setDate(d.getDate() + FOB_WAREHOUSE_DAYS);
+  d.setDate(d.getDate() + transitDays);
   return d;
 }
 // Timezone-safe ledger date parser.
@@ -3380,8 +3596,34 @@ export default function VersaInventoryApp() {
         const json = await resp.json();
         const parsed = (json.production || []).map(p => {
           const etdDate = parseLedgerDate(p.etd);
-          const arrivalDate = getProdArrival(etdDate);
-          return { production: p.production || "", poName: p.poName || "", style: (p.style || "").toUpperCase(), units: p.units || 0, brand: p.brand || "", etd: etdDate, arrival: arrivalDate };
+          // ── ARRIVAL DATE SOURCE ──────────────────────────────────────
+          // When David fills in column G ("Estimated Arrival to Port") on
+          // the Style Ledger, the backend computes BOTH the etd and the
+          // arrival from that port date and stamps `port_dated: true`. In
+          // that case the backend's `arrival` field is authoritative and
+          // overrides the legacy transit-days calculation.
+          //
+          // When column G is empty, backend sends `arrival: null` and we
+          // fall back to ETD + transit: pants take 55 days (USPA dress
+          // pants P##X + sportswear bottoms BC/BR/BH/BA), everything else
+          // is 37 days.
+          let arrivalDate;
+          if (p.port_dated && p.arrival) {
+            arrivalDate = parseLedgerDate(p.arrival);
+          } else {
+            arrivalDate = getProdArrival(etdDate, p.style, p.brand);
+          }
+          return {
+            production: p.production || "",
+            poName: p.poName || "",
+            style: (p.style || "").toUpperCase(),
+            units: p.units || 0,
+            brand: p.brand || "",
+            etd: etdDate,
+            arrival: arrivalDate,
+            // Surfaced for downstream display ('⚓' badge if you want to add it later)
+            port_dated: !!p.port_dated
+          };
         });
         setProductionData(parsed);
       } catch (e) { console.warn("Production data unavailable:", e.message); }
@@ -3571,9 +3813,9 @@ export default function VersaInventoryApp() {
   // Rebuild brands when filterMode or suppression-relevant data changes
   useEffect(() => {
     if (inventory.length > 0) {
-      setBrands(rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData));
+      setBrands(rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData, openOrdersData, apoData));
     }
-  }, [filterMode, inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData]);
+  }, [filterMode, inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData, openOrdersData, apoData]);
 
   // ─── Navigation with Browser History ────────────────────────
   const goToBrands = useCallback(() => { 
