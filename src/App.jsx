@@ -1356,7 +1356,7 @@ function BrandCard({ abbr, data, onClick, filterMode, brandCategoryFilter, style
 }
 
 // ─── Product Card ────────────────────────
-function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRules, suppressionOverrides, styleOverrides, warehouseFilter, deductionAssignments, transferIndex }) {
+function ProductCard({ item, onClick, onRoutingClick, filterMode, prodData, colorMap, bannerRules, suppressionOverrides, styleOverrides, warehouseFilter, deductionAssignments, transferIndex }) {
   const fabric = getFabricFromSKU(item.sku, styleOverrides);
   const fit = getFitFromSKU(item.sku, styleOverrides);
   const ats = item.total_ats || 0;
@@ -1527,6 +1527,30 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRule
           </div>
         )}
 
+        {/* Routing button — opens smart routing modal for this base style */}
+        {onRoutingClick && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onRoutingClick(item); }}
+            style={{
+              width:"100%",
+              display:"flex",alignItems:"center",justifyContent:"center",gap:6,
+              background:"linear-gradient(135deg,#f5f3ff,#ede9fe)",
+              border:"1px solid #c4b5fd",
+              borderRadius:8,
+              padding:"6px 10px",
+              fontSize:11,fontWeight:700,color:"#6d28d9",
+              cursor:"pointer",
+              marginBottom:8,
+              transition:"all .15s"
+            }}
+            onMouseOver={(e) => { e.currentTarget.style.background = "linear-gradient(135deg,#ede9fe,#ddd6fe)"; }}
+            onMouseOut={(e) => { e.currentTarget.style.background = "linear-gradient(135deg,#f5f3ff,#ede9fe)"; }}
+          >
+            🎯 Routing
+            <span style={{ fontSize:9,color:"#7c3aed",opacity:.75 }}>see where goods are flowing →</span>
+          </button>
+        )}
+
         <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center" }}>
           <span style={{ fontSize:13,fontWeight:700,color:atsColor }}>
             {ats > 0 ? `${ats.toLocaleString()} ${atsLabel}` : "Out of Stock"}
@@ -1572,6 +1596,218 @@ function FullscreenImage({ src, alt, onClose }) {
         position:"fixed",bottom:20,left:0,right:0,textAlign:"center",
         color:"rgba(255,255,255,.6)",fontSize:13,fontWeight:600
       }}>{alt}</p>
+    </div>
+  );
+}
+
+// ─── Routing Modal ───────────────
+// Shows the full smart routing breakdown for one base style:
+//   • Each supply slot (warehouse + per production batch + FOB batches)
+//   • Per-slot consumers (orders, APO, VW) with units claimed
+//   • FOB customer badges where applicable
+//   • "FOB" in place of dates for FOB-flagged production batches
+//
+// Reuses _routeBaseStyleMobile() so the breakdown is identical to what the
+// rest of the app uses for routing decisions. If the SKU reconciliation
+// fails (data mismatch), the modal shows a "reconciliation failed" notice
+// instead of guessing.
+function RoutingModal({ baseStyle, onClose, inventory, productionData, openOrdersData, apoData, allocationData }) {
+  if (!baseStyle) return null;
+  const result = _routeBaseStyleMobile(baseStyle, inventory, productionData, openOrdersData, apoData, allocationData);
+
+  // Format slot display order:
+  //  • Warehouse first
+  //  • Then dated production by arrival ASC (earliest first)
+  //  • Then FOB-flagged production
+  const slots = result?.slots ? [...result.slots] : [];
+  slots.sort((a, b) => {
+    if (a.type === "warehouse" && b.type !== "warehouse") return -1;
+    if (b.type === "warehouse" && a.type !== "warehouse") return 1;
+    if (a.fob_flag && !b.fob_flag) return 1;
+    if (b.fob_flag && !a.fob_flag) return -1;
+    const aD = a.arrival || a.etd || new Date("2099-12-31");
+    const bD = b.arrival || b.etd || new Date("2099-12-31");
+    return aD - bD;
+  });
+
+  // Sum unallocated supply across all slots (the "available" total)
+  const totalSupply = slots.reduce((s, sl) => s + sl.originalUnits, 0);
+  const totalClaimed = slots.reduce((s, sl) => s + (sl.originalUnits - sl.units), 0);
+  const totalRemaining = slots.reduce((s, sl) => s + sl.units, 0);
+
+  return (
+    <div onClick={onClose} style={{ position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1100,padding:16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background:"#fff",borderRadius:14,maxWidth:640,width:"100%",maxHeight:"88vh",display:"flex",flexDirection:"column",boxShadow:"0 25px 60px rgba(0,0,0,.4)" }}>
+        {/* Header */}
+        <div style={{ background:"linear-gradient(135deg,#7c3aed,#6d28d9)",color:"#fff",padding:"14px 18px",borderRadius:"14px 14px 0 0",display:"flex",justifyContent:"space-between",alignItems:"center" }}>
+          <div>
+            <p style={{ fontSize:11,opacity:.85,textTransform:"uppercase",letterSpacing:.5,marginBottom:2 }}>🎯 Smart Routing</p>
+            <h2 style={{ fontSize:18,fontWeight:800,fontFamily:"monospace" }}>{baseStyle}</h2>
+            <p style={{ fontSize:11,opacity:.85,marginTop:3 }}>Each demand claim takes from its best slot — tightest order dates first</p>
+          </div>
+          <button onClick={onClose} style={{ background:"rgba(255,255,255,.2)",border:"none",color:"#fff",fontSize:22,fontWeight:700,width:36,height:36,borderRadius:8,cursor:"pointer" }}>✕</button>
+        </div>
+
+        {/* Summary stats */}
+        {result && !result.skipped && slots.length > 0 && (
+          <div style={{ display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:1,background:"#e5e7eb",borderBottom:"1px solid #e5e7eb" }}>
+            <div style={{ background:"#f9fafb",padding:"10px 12px",textAlign:"center" }}>
+              <p style={{ fontSize:9,color:"#6b7280",textTransform:"uppercase",letterSpacing:.5 }}>Total Supply</p>
+              <p style={{ fontSize:17,fontWeight:800,color:"#1f2937",fontFamily:"monospace" }}>{totalSupply.toLocaleString()}</p>
+            </div>
+            <div style={{ background:"#f9fafb",padding:"10px 12px",textAlign:"center" }}>
+              <p style={{ fontSize:9,color:"#dc2626",textTransform:"uppercase",letterSpacing:.5 }}>Claimed</p>
+              <p style={{ fontSize:17,fontWeight:800,color:"#dc2626",fontFamily:"monospace" }}>{totalClaimed.toLocaleString()}</p>
+            </div>
+            <div style={{ background:"#f9fafb",padding:"10px 12px",textAlign:"center" }}>
+              <p style={{ fontSize:9,color:"#16a34a",textTransform:"uppercase",letterSpacing:.5 }}>Available</p>
+              <p style={{ fontSize:17,fontWeight:800,color:"#16a34a",fontFamily:"monospace" }}>{totalRemaining.toLocaleString()}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Scrollable body */}
+        <div style={{ overflowY:"auto",padding:"14px 16px",flex:1 }}>
+          {/* No data states */}
+          {!result && (
+            <div style={{ textAlign:"center",padding:"40px 20px",color:"#6b7280" }}>
+              <p style={{ fontSize:32,marginBottom:10 }}>📭</p>
+              <p style={{ fontSize:14,fontWeight:600,color:"#374151",marginBottom:6 }}>No routing data</p>
+              <p style={{ fontSize:12 }}>This style has no committed/allocated demand to route, or no inventory rows match.</p>
+            </div>
+          )}
+          {result && result.skipped && (
+            <div style={{ background:"#fef3c7",border:"1px solid #fde68a",borderRadius:10,padding:"14px 16px",margin:"10px 0" }}>
+              <p style={{ fontSize:13,fontWeight:700,color:"#92400e",marginBottom:6 }}>⚠ Reconciliation Failed</p>
+              <p style={{ fontSize:12,color:"#78350f",lineHeight:1.5 }}>
+                Smart routing couldn't reconcile demand against ATS deductions for one or more SKUs. The app is falling back to legacy FIFO for this style. This usually means: an APO/VW allocation row is missing from the feed, an extra row exists with no matching deduction, or there's a stale committed value in the ATS sheet.
+              </p>
+            </div>
+          )}
+
+          {/* Slots */}
+          {result && !result.skipped && slots.map((slot, idx) => {
+            const claimed = slot.originalUnits - slot.units;
+            const pct = slot.originalUnits > 0 ? Math.round(claimed / slot.originalUnits * 100) : 0;
+            const isWarehouse = slot.type === "warehouse";
+            const isFob = !!slot.fob_flag;
+
+            // Display order for consumers: dated orders first by start, then APO, then VW
+            const consumers = [...(slot.consumers || [])].sort((a, b) => {
+              // Order: order(dated) > order(undated) > apo > vw
+              const rank = (c) => c.kind === "order" ? (c.startDate ? 0 : 1) : (c.kind === "apo" ? 2 : 3);
+              const ra = rank(a), rb = rank(b);
+              if (ra !== rb) return ra - rb;
+              if (a.startDate && b.startDate) return a.startDate - b.startDate;
+              return 0;
+            });
+
+            return (
+              <div key={idx} style={{ marginBottom:14,border:"1px solid #e5e7eb",borderRadius:10,overflow:"hidden" }}>
+                {/* Slot header */}
+                <div style={{
+                  padding:"10px 12px",
+                  background: isWarehouse ? "linear-gradient(135deg,#dcfce7,#bbf7d0)" : isFob ? "linear-gradient(135deg,#dbeafe,#bfdbfe)" : "linear-gradient(135deg,#f0fdf4,#dcfce7)",
+                  borderBottom:"1px solid #e5e7eb"
+                }}>
+                  <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4 }}>
+                    <div style={{ display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
+                      {isWarehouse ? (
+                        <span style={{ fontSize:13,fontWeight:800,color:"#15803d" }}>🏠 Warehouse</span>
+                      ) : (
+                        <>
+                          <span style={{ fontFamily:"monospace",fontSize:13,fontWeight:800,color:isFob?"#1d4ed8":"#15803d" }}>🚢 {slot.po || "—"}</span>
+                          {isFob && (
+                            <span title={`David's ledger ETD: ${slot.fob_note || "be ready"}`} style={{ background:"#1d4ed8",color:"#fff",fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:99,letterSpacing:.3 }}>FOB</span>
+                          )}
+                        </>
+                      )}
+                    </div>
+                    <span style={{ fontSize:11,fontFamily:"monospace",fontWeight:700,color:"#374151" }}>{slot.originalUnits.toLocaleString()} units</span>
+                  </div>
+                  {slot.poName && (
+                    <p style={{ fontSize:10,color:"#6b7280",marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }} title={slot.poName}>{slot.poName}</p>
+                  )}
+                  <p style={{ fontSize:10,color:isFob?"#1d4ed8":"#6b7280",fontWeight:isFob?700:400 }}>
+                    {isWarehouse
+                      ? "Available immediately"
+                      : isFob
+                        ? <>Ex-Factory <strong style={{ background:"#dbeafe",padding:"0 5px",borderRadius:3 }}>FOB</strong> → Arrival <strong style={{ background:"#dbeafe",padding:"0 5px",borderRadius:3 }}>FOB</strong></>
+                        : <>Ex-Factory <strong>{slot.etd ? formatDateShort(slot.etd) : "—"}</strong> → Arrival <strong>{slot.arrival ? formatDateShort(slot.arrival) : "—"}</strong></>}
+                  </p>
+                  {/* Progress bar */}
+                  <div style={{ marginTop:6,background:"#fff",borderRadius:99,height:6,overflow:"hidden",border:"1px solid #d1d5db" }}>
+                    <div style={{ width:`${pct}%`,height:"100%",background: pct >= 100 ? "#dc2626" : pct >= 80 ? "#f59e0b" : "#16a34a",transition:"width .3s" }} />
+                  </div>
+                  <p style={{ fontSize:10,color:"#6b7280",marginTop:3,fontFamily:"monospace" }}>
+                    {claimed.toLocaleString()} of {slot.originalUnits.toLocaleString()} claimed ({pct}%) · <span style={{ color: slot.units > 0 ? "#16a34a" : "#dc2626",fontWeight:700 }}>{slot.units.toLocaleString()} available</span>
+                  </p>
+                </div>
+
+                {/* Consumer rows */}
+                {consumers.length === 0 ? (
+                  <p style={{ padding:"10px 12px",fontSize:11,color:"#9ca3af",fontStyle:"italic" }}>No claims — fully available</p>
+                ) : (
+                  <div>
+                    {/* Column headers */}
+                    <div style={{ display:"grid",gridTemplateColumns:"60px 1fr auto auto",padding:"5px 12px",background:"#f9fafb",fontSize:9,fontWeight:700,color:"#6b7280",textTransform:"uppercase",letterSpacing:.3,gap:8,borderBottom:"1px solid #e5e7eb" }}>
+                      <span>Type</span>
+                      <span>Customer</span>
+                      <span>Start</span>
+                      <span style={{ textAlign:"right" }}>Units</span>
+                    </div>
+                    {consumers.map((c, ci) => {
+                      const isOrder = c.kind === "order";
+                      const isAPO = c.kind === "apo";
+                      const isVW = c.kind === "vw";
+                      const isFobConsumer = !!c.isFob;
+                      // Friendly customer name lookup (customer code is in c.customer for orders)
+                      let custDisplay = c.customer || "—";
+                      if (isOrder) {
+                        const code = (c.customer || "").toUpperCase().trim();
+                        // Friendly name from CUSTOMER_CODES if it's a 2-char SKU prefix code
+                        // (open orders feed sometimes carries full customer string already)
+                        if (code.length <= 4 && CUSTOMER_CODES[code]) custDisplay = CUSTOMER_CODES[code];
+                      }
+                      const tagBg = isOrder ? (isFobConsumer ? "#dbeafe" : "#fef3c7") : isAPO ? "#fce7f3" : "#e0e7ff";
+                      const tagColor = isOrder ? (isFobConsumer ? "#1d4ed8" : "#a16207") : isAPO ? "#be185d" : "#3730a3";
+                      const tagLabel = isOrder ? "ORDER" : isAPO ? "APO" : "VW";
+                      return (
+                        <div key={ci} style={{ display:"grid",gridTemplateColumns:"60px 1fr auto auto",padding:"7px 12px",fontSize:11,gap:8,alignItems:"center",borderBottom: ci < consumers.length-1 ? "1px solid #f3f4f6" : "none",background: ci%2===0 ? "#fff" : "#fafafa" }}>
+                          <span style={{ fontSize:9,fontWeight:700,background:tagBg,color:tagColor,padding:"2px 6px",borderRadius:4,textAlign:"center",letterSpacing:.3 }}>{tagLabel}</span>
+                          <div style={{ minWidth:0,overflow:"hidden" }}>
+                            <p style={{ fontWeight:600,color:"#1f2937",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }} title={custDisplay}>
+                              {custDisplay}
+                              {isFobConsumer && <span title="FOB customer (overseas pickup)" style={{ marginLeft:5,fontSize:8,fontWeight:700,background:"#dbeafe",color:"#1d4ed8",padding:"1px 5px",borderRadius:99 }}>FOB</span>}
+                              {c._forced && <span title="Forced into earlier slot — could not meet ship date" style={{ marginLeft:5,fontSize:9,color:"#d97706" }}>⚠</span>}
+                            </p>
+                            {isOrder && c.orderNo && (
+                              <p style={{ fontSize:9,color:"#6b7280",fontFamily:"monospace",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>PO {c.orderNo}</p>
+                            )}
+                            {c.targetSku && c.targetSku !== baseStyle && (
+                              <p style={{ fontSize:9,color:"#9ca3af",fontFamily:"monospace" }}>{c.targetSku}</p>
+                            )}
+                          </div>
+                          <span style={{ fontSize:10,color:"#6b7280" }}>{isOrder ? (c.startDate ? formatDateShort(c.startDate) : "—") : "—"}</span>
+                          <span style={{ fontFamily:"monospace",fontWeight:700,color:"#1f2937",textAlign:"right" }}>{c.units.toLocaleString()}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Legend at bottom */}
+          {result && !result.skipped && slots.length > 0 && (
+            <div style={{ marginTop:14,padding:"10px 12px",background:"#f9fafb",border:"1px solid #e5e7eb",borderRadius:8,fontSize:10,color:"#6b7280",lineHeight:1.5 }}>
+              <p style={{ fontWeight:700,color:"#374151",marginBottom:5 }}>How it works</p>
+              <p>Tightest order start dates take from the LATEST production batch they can hit, leaving earlier supply free for orders downstream. FOB customers (CENT1, GLOB, BFL, TJXAU, TJXUK, HALF, MULT, MULT1) pick up overseas — they prefer FOB-flagged batches and use ex-factory dates, never US warehouse.</p>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -3567,6 +3803,7 @@ export default function VersaInventoryApp() {
   const [brands, setBrands] = useState({});
   const [currentBrand, setCurrentBrand] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null);
+  const [routingItem, setRoutingItem] = useState(null);
   const [filterMode, setFilterMode] = useState("all");
   const [flowMode, setFlowMode] = useState(false);
   const [warehouseFilter, setWarehouseFilter] = useState("all");
@@ -4664,7 +4901,7 @@ export default function VersaInventoryApp() {
                             </div>
                           </div>
                         )}
-                        <ProductCard key={item._flow_key || `${item.sku}_${idx}`} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} deductionAssignments={deductionAssignments} transferIndex={transferIndex} />
+                        <ProductCard key={item._flow_key || `${item.sku}_${idx}`} item={item} onClick={() => goToDetail(item)} onRoutingClick={(it) => setRoutingItem(it)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} deductionAssignments={deductionAssignments} transferIndex={transferIndex} />
                       </Fragment>
                     );
                   });
@@ -4673,7 +4910,7 @@ export default function VersaInventoryApp() {
             ) : (
               <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16 }}>
                 {filteredItems.map(item => (
-                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} deductionAssignments={deductionAssignments} transferIndex={transferIndex} />
+                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} onRoutingClick={(it) => setRoutingItem(it)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} deductionAssignments={deductionAssignments} transferIndex={transferIndex} />
                 ))}
               </div>
             )}
@@ -4755,6 +4992,17 @@ export default function VersaInventoryApp() {
       {/* ─── MODALS ────────────────────────── */}
       {selectedItem && (
         <ProductDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} filterMode={filterMode} prodData={productionData} colorMap={colorMap} allocationData={allocationData} apoData={apoData} openOrdersData={openOrdersData} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} prepackDefaults={prepackDefaults} deductionAssignments={deductionAssignments} />
+      )}
+      {routingItem && (
+        <RoutingModal
+          baseStyle={(routingItem.sku || "").toUpperCase().split("-")[0]}
+          onClose={() => setRoutingItem(null)}
+          inventory={inventory}
+          productionData={productionData}
+          openOrdersData={openOrdersData}
+          apoData={apoData}
+          allocationData={allocationData}
+        />
       )}
       {showCart && (
         <CartModal cart={cart} onClose={() => setShowCart(false)}
