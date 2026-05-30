@@ -356,6 +356,35 @@ function sortBrands(entries) {
 // tagged with its target SKU when it consumes a slot, so the per-row split is
 // exact rather than heuristic.
 
+// ═══════════════════════════════════════════
+// FOB (overseas-pickup) CUSTOMERS
+// ═══════════════════════════════════════════
+// Customers in this list collect their goods directly from the factory
+// overseas. For their orders, smart routing uses production ETD (ex-factory
+// date) instead of US warehouse arrival when checking feasibility against a
+// PO start date — they're not waiting for the goods to land stateside.
+// They also never draw from the US warehouse, and if a production batch is
+// short, they roll FORWARD to the next production by ETD (never backward).
+//
+// Matched by CUSTOMER CODE from the open orders feed (o.customer), not by
+// friendly name. Codes distinguish 'TJXUK' from 'TJXAU' from 'TJMA' cleanly.
+// CURATED — edit this array to add/remove FOB accounts.
+const FOB_CUSTOMER_CODES = [
+  "CENT1",   // Centric Brands (Robert Graham etc.)
+  "GLOB",    // BBZ (Global)
+  "BFL",     // Brands for Less
+  "TJXAU",   // TJX Australia
+  "TJXUK",   // TJX UK / TK Maxx
+  "HALF",    // Half Price
+  "MULT",    // Multi Brands (Promoda)
+  "MULT1",   // Multi Brands (alternate code)
+];
+const _FOB_CUSTOMER_SET = new Set(FOB_CUSTOMER_CODES.map(c => c.toUpperCase().trim()));
+function _isFobCustomer(customerCode) {
+  if (!customerCode) return false;
+  return _FOB_CUSTOMER_SET.has((customerCode || "").toString().toUpperCase().trim());
+}
+
 function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, apoData, allocationData) {
   const matchingRows = inventory.filter(r => (r.sku || "").toUpperCase().split("-")[0] === baseStyle);
   if (matchingRows.length === 0) return null;
@@ -375,11 +404,22 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
 
   const slots = [];
   if (warehouseTotal > 0) {
-    slots.push({ type: "warehouse", po: null, originalUnits: warehouseTotal, units: warehouseTotal, arrival: today, etd: null, consumers: [] });
+    slots.push({ type: "warehouse", po: null, originalUnits: warehouseTotal, units: warehouseTotal, arrival: today, etd: null, fob_flag: false, fob_note: "", consumers: [] });
   }
   productions.forEach(p => {
     if ((p.units || 0) > 0) {
-      slots.push({ type: "production", po: p.production, poName: p.poName, originalUnits: p.units, units: p.units, arrival: p.arrival, etd: p.etd, consumers: [] });
+      slots.push({
+        type: "production",
+        po: p.production,
+        poName: p.poName,
+        originalUnits: p.units,
+        units: p.units,
+        arrival: p.arrival,
+        etd: p.etd,
+        fob_flag: !!p.fob_flag,
+        fob_note: p.fob_note || "",
+        consumers: []
+      });
     }
   });
 
@@ -391,7 +431,9 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
       ...o,
       _qty: (parseInt(o.openQty)||0) + (parseInt(o.pickQty)||0),
       _startDate: o.startDate ? new Date(o.startDate) : null,
-      _targetSku: o.style.toUpperCase()
+      _targetSku: o.style.toUpperCase(),
+      // FOB lookup uses o.customer (open orders customer code, e.g. HALF/TJXUK)
+      _isFob: _isFobCustomer(o.customer)
     }))
     .filter(o => o._qty > 0);
 
@@ -422,46 +464,139 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     if (Math.abs(rowDemand - rowDeduction) > tol) return null;
   }
 
-  // Route orders: EDF, latest-feasible
+  // Route orders: tightest start date first.
+  // For each order, allocate based on its pickup mode:
+  //   FOB customer:
+  //     Pass 0 — drain FOB-flagged slots first (no firm ETD, exist for FOB)
+  //     Pass 1 — latest-feasible by ETD on dated production slots (skip warehouse)
+  //     Pass 2 — forward roll: next production by ETD ascending
+  //   Warehouse-mode customer (default):
+  //     Pass 1 — latest-feasible by arrival on dated slots (skip FOB slots —
+  //              no firm date to verify ship window). Warehouse always feasible.
+  //     Pass 2 — FIFO fallback (then FOB slots as last resort)
   orders.sort((a, b) => (a._startDate || new Date("2099-12-31")) - (b._startDate || new Date("2099-12-31")));
   orders.forEach(o => {
     let needed = o._qty;
+    const isFob = o._isFob;
     const effDeadline = o._startDate ? new Date(Math.max(today.getTime(), o._startDate.getTime())) : null;
+
+    // ── PASS 0 (FOB customers only): drain FOB-flagged slots first ──
+    if (isFob) {
+      for (const s of slots) {
+        if (needed <= 0) break;
+        if (!s.fob_flag || s.type !== "production" || s.units <= 0) continue;
+        const take = Math.min(s.units, needed);
+        s.units -= take;
+        s.consumers.push({ kind: "order", customer: o.customer || o.customerFull || "—", orderNo: o.orderNo || o.ctrlNo || "", units: take, startDate: o._startDate, targetSku: o._targetSku, isFob: true });
+        needed -= take;
+      }
+    }
+
+    // ── PASS 1: latest-feasible on dated slots ──
+    // For FOB: compare against ETD, skip warehouse.
+    // For warehouse-mode: compare against arrival, allow warehouse.
+    // Both: skip FOB-flagged slots here (FOB customers already used them in Pass 0,
+    // warehouse customers shouldn't take dateless slots in the latest-feasible pass).
     const feasible = slots
-      .filter(s => s.units > 0 && (!effDeadline || !s.arrival || s.arrival <= effDeadline))
+      .filter(s => {
+        if (s.units <= 0) return false;
+        if (s.fob_flag) return false;
+        if (s.type === "warehouse") return !isFob;
+        const slotDate = isFob ? (s.etd || s.arrival) : s.arrival;
+        if (!effDeadline) return true;
+        return !slotDate || slotDate <= effDeadline;
+      })
       .sort((a, b) => (b.arrival || new Date("1900-01-01")) - (a.arrival || new Date("1900-01-01")));
     for (const s of feasible) {
       if (needed <= 0) break;
       const take = Math.min(s.units, needed);
       s.units -= take;
-      s.consumers.push({ kind: "order", customer: o.customer || o.customerFull || "—", orderNo: o.orderNo || o.ctrlNo || "", units: take, startDate: o._startDate, targetSku: o._targetSku });
+      s.consumers.push({ kind: "order", customer: o.customer || o.customerFull || "—", orderNo: o.orderNo || o.ctrlNo || "", units: take, startDate: o._startDate, targetSku: o._targetSku, isFob });
       needed -= take;
+    }
+
+    // ── PASS 2: forced fallback (shortfall) ──
+    if (needed > 0) {
+      if (isFob) {
+        // Forward roll: next production by ETD ASC (never warehouse, never FOB
+        // slot — those were already tried in Pass 0)
+        const fobForward = slots
+          .filter(s => s.type === "production" && !s.fob_flag && s.units > 0)
+          .sort((a, b) => (a.etd || a.arrival || new Date("2099-12-31")) - (b.etd || b.arrival || new Date("2099-12-31")));
+        for (const s of fobForward) {
+          if (needed <= 0) break;
+          const take = Math.min(s.units, needed);
+          s.units -= take;
+          s.consumers.push({ kind: "order", customer: o.customer || o.customerFull || "—", orderNo: o.orderNo || o.ctrlNo || "", units: take, startDate: o._startDate, targetSku: o._targetSku, isFob: true, _forced: true });
+          needed -= take;
+        }
+      } else {
+        // Warehouse-mode forced fallback: any remaining slot, FOB-flagged absolute last
+        const fallback = slots
+          .filter(s => s.units > 0)
+          .sort((a, b) => {
+            // Non-FOB first, then by arrival ASC
+            if (a.fob_flag !== b.fob_flag) return a.fob_flag ? 1 : -1;
+            return (a.arrival || new Date("2099-12-31")) - (b.arrival || new Date("2099-12-31"));
+          });
+        for (const s of fallback) {
+          if (needed <= 0) break;
+          const take = Math.min(s.units, needed);
+          s.units -= take;
+          s.consumers.push({ kind: "order", customer: o.customer || o.customerFull || "—", orderNo: o.orderNo || o.ctrlNo || "", units: take, startDate: o._startDate, targetSku: o._targetSku, isFob: false, _forced: true });
+          needed -= take;
+        }
+      }
     }
   });
 
-  // Route APO: sheet order, earliest first
+  // Route APO: sheet order, earliest first. Skip FOB slots in this pass —
+  // they're reserved for FOB customer orders. Fall through to FOB slots only
+  // if nothing else fits.
   apos.forEach(apo => {
     let needed = apo.qty;
+    // Non-FOB slots first
     for (const s of slots) {
       if (needed <= 0) break;
-      if (s.units <= 0) continue;
+      if (s.units <= 0 || s.fob_flag) continue;
       const take = Math.min(s.units, needed);
       s.units -= take;
       s.consumers.push({ kind: "apo", customer: apo.customer, units: take, targetSku: apo.targetSku });
       needed -= take;
     }
+    // FOB slots last
+    if (needed > 0) {
+      for (const s of slots) {
+        if (needed <= 0) break;
+        if (s.units <= 0 || !s.fob_flag) continue;
+        const take = Math.min(s.units, needed);
+        s.units -= take;
+        s.consumers.push({ kind: "apo", customer: apo.customer, units: take, targetSku: apo.targetSku, _forced: true });
+        needed -= take;
+      }
+    }
   });
 
-  // Route VW
+  // Route VW: same pattern as APO
   vws.forEach(vw => {
     let needed = vw.qty;
     for (const s of slots) {
       if (needed <= 0) break;
-      if (s.units <= 0) continue;
+      if (s.units <= 0 || s.fob_flag) continue;
       const take = Math.min(s.units, needed);
       s.units -= take;
       s.consumers.push({ kind: "vw", customer: vw.customer, units: take, targetSku: vw.targetSku });
       needed -= take;
+    }
+    if (needed > 0) {
+      for (const s of slots) {
+        if (needed <= 0) break;
+        if (s.units <= 0 || !s.fob_flag) continue;
+        const take = Math.min(s.units, needed);
+        s.units -= take;
+        s.consumers.push({ kind: "vw", customer: vw.customer, units: take, targetSku: vw.targetSku, _forced: true });
+        needed -= take;
+      }
     }
   });
 
@@ -1344,9 +1479,15 @@ function ProductCard({ item, onClick, filterMode, prodData, colorMap, bannerRule
                       {hasAnyDed && <span style={{ textAlign:"right",fontFamily:"monospace",fontWeight:800,color:"#166534" }}>{p.flowAts.toLocaleString()}</span>}
                     </div>
                     <div style={{ display:"flex",alignItems:"center",gap:5,padding:"2px 10px 5px",fontSize:10,color:"#6b7280" }}>
-                      <span style={{ background:"#dcfce7",color:"#166534",fontWeight:600,padding:"1px 6px",borderRadius:99 }}>Ex-Fac {formatDateShort(p.etd) || "—"}</span>
-                      <span style={{ color:"#9ca3af" }}>→</span>
-                      <span style={{ background:"#dcfce7",color:"#166534",fontWeight:600,padding:"1px 6px",borderRadius:99 }}>Arrival {formatDateShort(p.arrival) || "—"}</span>
+                      {p.fob_flag ? (
+                        <span title={`David's ledger ETD: ${p.fob_note || "be ready"}`} style={{ background:"#dbeafe",color:"#1d4ed8",fontWeight:700,padding:"1px 8px",borderRadius:99 }}>🚢 FOB</span>
+                      ) : (
+                        <>
+                          <span style={{ background:"#dcfce7",color:"#166534",fontWeight:600,padding:"1px 6px",borderRadius:99 }}>Ex-Fac {formatDateShort(p.etd) || "—"}</span>
+                          <span style={{ color:"#9ca3af" }}>→</span>
+                          <span style={{ background:"#dcfce7",color:"#166534",fontWeight:600,padding:"1px 6px",borderRadius:99 }}>Arrival {formatDateShort(p.arrival) || "—"}</span>
+                        </>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -2003,10 +2144,19 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
                           <span style={{ textAlign:"right",fontFamily:"monospace",color:p.deducted>0?"#dc2626":"#9ca3af" }}>{p.deducted>0?`-${p.deducted.toLocaleString()}`:"—"}</span>
                           <span style={{ textAlign:"right",fontFamily:"monospace",fontWeight:800,color:"#166534" }}>{p.flowAts.toLocaleString()}</span>
                         </div>
-                        {/* Dates sub-row */}
-                        <div style={{ display:"flex",gap:8,padding:"2px 10px 5px",fontSize:9,color:"#6b7280" }}>
-                          <span>📦 Ex-Fac: <strong style={{ color:"#92400e" }}>{formatDateShort(p.etd)}</strong></span>
-                          <span>🚢 Arrival: <strong style={{ color:"#166534" }}>{formatDateShort(p.arrival)}</strong></span>
+                        {/* Dates sub-row — FOB-flagged rows show 'FOB' in place of dates */}
+                        <div style={{ display:"flex",gap:8,padding:"2px 10px 5px",fontSize:9,color:"#6b7280",alignItems:"center" }}>
+                          {p.fob_flag ? (
+                            <>
+                              <span title={`David's ledger ETD: ${p.fob_note || "be ready"}`}>📦 Ex-Fac: <strong style={{ color:"#1d4ed8",background:"#dbeafe",padding:"0 5px",borderRadius:3 }}>FOB</strong></span>
+                              <span title={`David's ledger ETD: ${p.fob_note || "be ready"}`}>🚢 Arrival: <strong style={{ color:"#1d4ed8",background:"#dbeafe",padding:"0 5px",borderRadius:3 }}>FOB</strong></span>
+                            </>
+                          ) : (
+                            <>
+                              <span>📦 Ex-Fac: <strong style={{ color:"#92400e" }}>{formatDateShort(p.etd)}</strong></span>
+                              <span>🚢 Arrival: <strong style={{ color:"#166534" }}>{formatDateShort(p.arrival)}</strong></span>
+                            </>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -3174,7 +3324,9 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
           _flow_units: units,
           _flow_deducted: deductFromThis,
           _flow_etd: p.etd,
-          _flow_arrival: p.arrival
+          _flow_arrival: p.arrival,
+          _flow_fob_flag: !!p.fob_flag,
+          _flow_fob_note: p.fob_note || ""
         });
       });
     });
@@ -3384,7 +3536,9 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
                     </div>
                     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:6 }}>
                       <div style={{ fontSize:10, color:"#64748b" }}>
-                        Ex-Fac <strong style={{ color:"#cbd5e1" }}>{etdStr}</strong> · Arr <strong style={{ color:"#cbd5e1" }}>{arrStr}</strong>
+                        {item._flow_fob_flag
+                          ? <>Ex-Fac <strong style={{ background:"#1e3a8a",color:"#dbeafe",padding:"0 5px",borderRadius:3 }}>FOB</strong> · Arr <strong style={{ background:"#1e3a8a",color:"#dbeafe",padding:"0 5px",borderRadius:3 }}>FOB</strong></>
+                          : <>Ex-Fac <strong style={{ color:"#cbd5e1" }}>{etdStr}</strong> · Arr <strong style={{ color:"#cbd5e1" }}>{arrStr}</strong></>}
                       </div>
                       <div style={{ display:"flex", gap:4, flexShrink:0 }}>
                         <span style={{ fontSize:11, fontWeight:700, color:"#94a3b8" }}>{(item._flow_units||0).toLocaleString()}</span>
@@ -3610,6 +3764,11 @@ export default function VersaInventoryApp() {
           let arrivalDate;
           if (p.port_dated && p.arrival) {
             arrivalDate = parseLedgerDate(p.arrival);
+          } else if (p.fob_flag) {
+            // FOB-flagged production rows have no usable ETD/arrival ("be ready"
+            // / "FOB ..." in David's ledger). Leave dates null so the engine
+            // skips date-based feasibility for these slots.
+            arrivalDate = null;
           } else {
             arrivalDate = getProdArrival(etdDate, p.style, p.brand);
           }
@@ -3619,10 +3778,15 @@ export default function VersaInventoryApp() {
             style: (p.style || "").toUpperCase(),
             units: p.units || 0,
             brand: p.brand || "",
-            etd: etdDate,
+            etd: p.fob_flag ? null : etdDate,
             arrival: arrivalDate,
             // Surfaced for downstream display ('⚓' badge if you want to add it later)
-            port_dated: !!p.port_dated
+            port_dated: !!p.port_dated,
+            // FOB flag: ledger ETD column had "be ready" / "FOB ..." instead of
+            // a real date. Engine treats these as dateless, preferred for FOB
+            // customers, last-resort for warehouse-mode customers.
+            fob_flag: !!p.fob_flag,
+            fob_note: p.fob_note || ""
           };
         });
         setProductionData(parsed);
@@ -4492,7 +4656,9 @@ export default function VersaInventoryApp() {
                             <div style={{ display:"flex",alignItems:"center",gap:12 }}>
                               <div style={{ flex:1,height:2,background:"linear-gradient(90deg,#f59e0b,#fbbf24,transparent)" }} />
                               <span style={{ fontWeight:700,fontSize:13,color:"#92400e",whiteSpace:"nowrap",padding:"6px 16px",background:"linear-gradient(135deg,#fef3c7,#fde68a)",borderRadius:99,border:"1px solid #f59e0b" }}>
-                                📅 Ex-Factory: {etdStr} → Arrival: {arrStr}
+                                {item._flow_fob_flag
+                                  ? <>🚢 Ex-Factory: <span style={{ background:"#dbeafe",color:"#1d4ed8",padding:"0 6px",borderRadius:4 }}>FOB</span> → Arrival: <span style={{ background:"#dbeafe",color:"#1d4ed8",padding:"0 6px",borderRadius:4 }}>FOB</span></>
+                                  : <>📅 Ex-Factory: {etdStr} → Arrival: {arrStr}</>}
                               </span>
                               <div style={{ flex:1,height:2,background:"linear-gradient(90deg,transparent,#fbbf24,#f59e0b)" }} />
                             </div>
