@@ -530,6 +530,20 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
           s.consumers.push({ kind: "order", customer: o.customer || o.customerFull || "—", orderNo: o.orderNo || o.ctrlNo || "", units: take, startDate: o._startDate, targetSku: o._targetSku, isFob: true, _forced: true });
           needed -= take;
         }
+        // ABSOLUTE LAST RESORT (FOB) — warehouse fallback. If no production
+        // slots exist for an FOB style, the claim would otherwise be silently
+        // dropped while the ATS sheet still shows a deduction. Pull from
+        // warehouse with a flag so the routing modal can surface the anomaly.
+        if (needed > 0) {
+          for (const s of slots) {
+            if (needed <= 0) break;
+            if (s.type !== "warehouse" || s.units <= 0) continue;
+            const take = Math.min(s.units, needed);
+            s.units -= take;
+            s.consumers.push({ kind: "order", customer: o.customer || o.customerFull || "—", orderNo: o.orderNo || o.ctrlNo || "", units: take, startDate: o._startDate, targetSku: o._targetSku, isFob: true, _forced: true, _fobWarehouseFallback: true });
+            needed -= take;
+          }
+        }
       } else {
         // Warehouse-mode forced fallback: any remaining slot, FOB-flagged absolute last
         const fallback = slots
@@ -1779,7 +1793,9 @@ function RoutingModal({ baseStyle, onClose, inventory, productionData, openOrder
                             <p style={{ fontWeight:600,color:"#1f2937",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }} title={custDisplay}>
                               {custDisplay}
                               {isFobConsumer && <span title="FOB customer (overseas pickup)" style={{ marginLeft:5,fontSize:8,fontWeight:700,background:"#dbeafe",color:"#1d4ed8",padding:"1px 5px",borderRadius:99 }}>FOB</span>}
-                              {c._forced && <span title="Forced into earlier slot — could not meet ship date" style={{ marginLeft:5,fontSize:9,color:"#d97706" }}>⚠</span>}
+                              {c._fobWarehouseFallback
+                                ? <span title="FOB customer pulled from US warehouse — no production batches available. Verify customer FOB flag and ledger." style={{ marginLeft:5,fontSize:8,fontWeight:700,background:"#fef3c7",color:"#92400e",padding:"1px 5px",borderRadius:99 }}>⚠ WH FALLBACK</span>
+                                : (c._forced && <span title="Forced into earlier slot — could not meet ship date" style={{ marginLeft:5,fontSize:9,color:"#d97706" }}>⚠</span>)}
                             </p>
                             {isOrder && c.orderNo && (
                               <p style={{ fontSize:9,color:"#6b7280",fontFamily:"monospace",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>PO {c.orderNo}</p>
