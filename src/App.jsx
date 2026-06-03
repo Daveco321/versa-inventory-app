@@ -385,7 +385,7 @@ function _isFobCustomer(customerCode) {
   return _FOB_CUSTOMER_SET.has((customerCode || "").toString().toUpperCase().trim());
 }
 
-function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, apoData, allocationData) {
+function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, apoData, allocationData, suppressionOverrides) {
   const matchingRows = inventory.filter(r => (r.sku || "").toUpperCase().split("-")[0] === baseStyle);
   if (matchingRows.length === 0) return null;
 
@@ -398,7 +398,16 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
   if (totalDeduction === 0) return null;
 
   const today = new Date(); today.setHours(0,0,0,0);
-  const productions = getProductionForSku(matchingRows[0].sku, prodData)
+  // SUPPLY POOL MUST MATCH THE SUPPRESSION TOOL. A production batch that
+  // arrival-suppression treats as a phantom duplicate of warehouse stock (goods
+  // already landed, ledger not yet cleared) is NOT real overseas supply — the
+  // views subtract it via _getSuppressedIncoming(), so routing must exclude it
+  // too. Otherwise a demand claim parks on the suppressed batch
+  // (warehouseConsumed stays 0) and the warehouse/ATS view shows the order as
+  // un-deducted while the total view deducts it. Using getActiveProductionForSku
+  // drops suppressed batches so the only remaining supply is what the rest of
+  // the app agrees exists (warehouse + non-suppressed productions).
+  const productions = getActiveProductionForSku(matchingRows[0].sku, prodData, warehouseTotal, suppressionOverrides)
     .slice()
     .sort((a, b) => (a.arrival || a.etd || new Date("2099-01-01")) - (b.arrival || b.etd || new Date("2099-01-01")));
 
@@ -654,7 +663,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
   return { warehouseConsumed, overseasConsumed, perSkuWarehouse, slots };
 }
 
-function _buildSmartRoutingMobile(inventory, prodData, openOrdersData, apoData, allocationData) {
+function _buildSmartRoutingMobile(inventory, prodData, openOrdersData, apoData, allocationData, suppressionOverrides) {
   // Without orders the engine can't make any decisions — return empty map so
   // callers know to fall back to FIFO. Same defense-in-depth as desktop.
   if (!openOrdersData || openOrdersData.length === 0) return {};
@@ -665,7 +674,7 @@ function _buildSmartRoutingMobile(inventory, prodData, openOrdersData, apoData, 
   });
   const perSku = {};
   for (const baseStyle of baseStyles) {
-    const result = _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, apoData, allocationData);
+    const result = _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, apoData, allocationData, suppressionOverrides);
     if (result) {
       Object.entries(result.perSkuWarehouse).forEach(([sku, wh]) => {
         const row = inventory.find(r => r.sku === sku);
@@ -707,7 +716,7 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
   // Build smart routing map. Lookups during the deduction loops below replace
   // legacy "warehouse-first FIFO" with start-date-aware routing per SKU.
   // Empty map → engine falls back to legacy FIFO for every SKU.
-  const smartPerSku = _buildSmartRoutingMobile(source, prodData, openOrdersData, apoData, allocationData);
+  const smartPerSku = _buildSmartRoutingMobile(source, prodData, openOrdersData, apoData, allocationData, suppressionOverrides);
 
   if (filterMode === "incoming") {
     source = source.filter(i => (i.incoming || 0) > 0).map(item => {
@@ -1005,34 +1014,64 @@ function classifyColor(colorDisplay, brandAbbr) {
   return "fancies";
 }
 
+// ─── Pattern Facets (Stripes / Geo / Checks) ──────────────────
+// UNLIKE classifyColor() (one exclusive solid/fancies bucket), this returns an
+// ARRAY of zero-or-more tags. Patterns overlap each other and overlap the
+// solid/fancies bucket by design — a style keeps its classifyColor() bucket AND
+// carries any pattern tags that match. Same whole-word matching as classifyColor.
+function classifyColorPatterns(colorDisplay) {
+  const tags = [];
+  if (!colorDisplay) return tags;
+  const c = colorDisplay.trim().toLowerCase();
+  // STRIPES — anything containing "stripe" (stripe, stripes, striped, pinstripe).
+  if (/stripe/.test(c)) tags.push("stripes");
+  // GEO — geometric shapes / small all-over motifs common on dress shirts.
+  if (/\bgeo\b|\bgeometric\b|\btriangles?\b|\bdots?\b|\bdotted\b|\bpolka\b|\bpin\s*dots?\b|\bpindots?\b|\bcircles?\b|\bdiamonds?\b|\bsquares?\b|\bhexagons?\b|\boctagons?\b|\bovals?\b|\bchevrons?\b|\bmedallions?\b|\bfoulard\b|\bpaisley\b|\bneat\b|\bstars?\b/.test(c)) tags.push("geo");
+  // CHECKS — check family + plaids / windowpanes.
+  if (/\bchecks?\b|\bchecked\b|\bcheckered\b|\bplaids?\b|\bwindowpanes?\b|\bgingham\b|\btattersall\b|\btartan\b|\bhoundstooth\b|\bmadras\b/.test(c)) tags.push("checks");
+  return tags;
+}
+
 // ─── Color Summary Panel ──────────────────────────────────────
 function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColorFilter, onColorFilter, styleOverrides, warehouseFilter }) {
   const [metric, setMetric] = useState("ats"); // "ats" | "wh" | "incoming" | "total"
 
   // Compute per-category quantities for ALL metrics at once
   const cats = ["white","black","navy","other_solids","fancies"];
-  const data = {}; cats.forEach(c => { data[c] = {wh:0,inc:0,ats:0,total:0}; });
-  const skuSets = {}; cats.forEach(c => { skuSets[c] = new Set(); });
+  // Pattern facets are overlapping tags layered on top of the exclusive buckets:
+  // a style can be in several at once and keeps its solid/fancies membership too.
+  // Tracked in the same data/skuSets maps but kept out of `total` and the bar.
+  const patCats = ["stripes","geo","checks"];
+  const data = {}; [...cats, ...patCats].forEach(c => { data[c] = {wh:0,inc:0,ats:0,total:0}; });
+  const skuSets = {}; [...cats, ...patCats].forEach(c => { skuSets[c] = new Set(); });
   items.forEach(item => {
     const wh = item.total_warehouse || 0;
     const inc = item.incoming || 0;
     const ats = item.total_ats || 0;
     if (wh + inc <= 0 && ats <= 0) return;
     const ci = getStyleColorInfo(item.sku, brandAbbr, colorMap, styleOverrides);
-    const cat = classifyColor(ci ? ci.display : "", brandAbbr);
+    const disp = ci ? ci.display : "";
+    const cat = classifyColor(disp, brandAbbr);
+    const skuU = item.sku.toUpperCase();
     if (data[cat]) {
       data[cat].wh += wh; data[cat].inc += inc; data[cat].ats += ats; data[cat].total += wh + inc;
-      skuSets[cat].add(item.sku.toUpperCase());
+      skuSets[cat].add(skuU);
     }
+    classifyColorPatterns(disp).forEach(tag => {
+      if (!data[tag]) return;
+      data[tag].wh += wh; data[tag].inc += inc; data[tag].ats += ats; data[tag].total += wh + inc;
+      skuSets[tag].add(skuU);
+    });
   });
 
   const getVal = (cat) => metric === "ats" ? data[cat].ats : metric === "wh" ? data[cat].wh : metric === "incoming" ? data[cat].inc : data[cat].total;
   const cWhite = getVal("white"), cBlack = getVal("black"), cNavy = getVal("navy"), cOther = getVal("other_solids"), cFancy = getVal("fancies");
+  const cStripes = getVal("stripes"), cGeo = getVal("geo"), cChecks = getVal("checks");
   const total = cWhite + cBlack + cNavy + cOther + cFancy;
   const pct = v => total ? Math.round(v / total * 100) : 0;
   const bW = pct(cWhite), bB = pct(cBlack), bN = pct(cNavy), bO = pct(cOther), bF = pct(cFancy);
 
-  const LABEL_MAP = { white:"White Solid", black:"Black Solid", navy:"Navy Solid", other_solids:"Other Solids", fancies:"Fancies" };
+  const LABEL_MAP = { white:"White Solid", black:"Black Solid", navy:"Navy Solid", other_solids:"Other Solids", fancies:"Fancies", stripes:"Stripes", geo:"Geo", checks:"Checks" };
   const whLabel = warehouseFilter && warehouseFilter !== "all" ? `\u{1F3ED} ${warehouseFilter.toUpperCase()}` : "\u{1F3ED} WH Stock";
   const METRIC_LABELS = { ats:"\u{1F4E6} ATS", wh:whLabel, incoming:"\u{1F6A2} Incoming", total:"\u{1F4CA} Total" };
   const METRIC_COLORS = { ats:["#16a34a","#f0fdf4","#bbf7d0"], wh:["#6d28d9","#f5f3ff","#ddd6fe"], incoming:["#d97706","#fffbeb","#fde68a"], total:["#0369a1","#e0f2fe","#bae6fd"] };
@@ -1111,6 +1150,21 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
         <div style={{ display:"flex",justifyContent:"space-between",padding:"7px 10px",background:mc[1],borderRadius:6,border:`1px solid ${mc[2]}`,gridColumn:"span 2" }}>
           <span style={{ color:mc[0],fontWeight:600 }}>{METRIC_LABELS[metric]}</span>
           <span style={{ fontWeight:800,color:mc[0] }}>{total.toLocaleString()}</span>
+        </div>
+        {/* Pattern facets — overlapping tags, NOT part of the bar / total above */}
+        <div style={{ gridColumn:"span 2",marginTop:6,paddingTop:8,borderTop:"1px dashed #e2e8f0",display:"flex",alignItems:"baseline",gap:8 }}>
+          <span style={{ fontSize:11,fontWeight:700,color:"#94a3b8",textTransform:"uppercase",letterSpacing:"0.04em" }}>Patterns</span>
+          <span style={{ fontSize:10,color:"#cbd5e1" }}>overlapping {"\u00B7"} can exceed total</span>
+        </div>
+        {[["stripes","\u3030\uFE0F Stripes",cStripes],["geo","\u{1F537} Geo",cGeo]].map(([cat, label, val]) => (
+          <div key={cat} onClick={() => handleClick(cat)} style={rowStyle(cat)}>
+            <span style={{ color:"#64748b" }}>{label}</span>
+            <span style={{ fontWeight:700,color:"#1e293b" }}>{val.toLocaleString()}</span>
+          </div>
+        ))}
+        <div onClick={() => handleClick("checks")} style={rowStyle("checks", true)}>
+          <span style={{ color:"#64748b" }}>{"\u{1F3C1}"} Checks</span>
+          <span style={{ fontWeight:700,color:"#1e293b" }}>{cChecks.toLocaleString()}</span>
         </div>
       </div>
       <p style={{ fontSize:11,color:"#94a3b8",margin:"8px 0 0",textAlign:"center" }}>Click any row to filter {"\u00B7"} Click again to clear</p>
