@@ -853,6 +853,11 @@ const SHORT_SLEEVE_FIT_CODES = new Set(["SS","SR","SB","ST"]);
 // a 'long_sleeve' prepack rule.
 const LONG_SLEEVE_FIT_CODES = new Set(["SL","RF","TF","MF","BT","BB","TT","WB","BR","DB"]);
 const BT_FIT_CODES = new Set(["BT","BB","TT","SB","ST"]);
+// Brands whose dress pants use the P##X serial convention (position 7 = 'P',
+// positions 8-9 digits, position 10 a letter — e.g. ROUSDPP01SRS, PMGBDPP01SRS).
+// US Polo pioneered it; Geoffrey Beene followed. Mirrors desktop PANTS_SERIAL_BRANDS
+// and backend _PY_PANTS_SERIAL_BRANDS.
+const PANTS_SERIAL_BRANDS = new Set(["US","GB"]);
 // Young Men fabric codes — positions 4-5 of base SKU (mirrors main catalog)
 const YOUNG_MEN_FABRIC_CODES = new Set(["KN","WT","SD","SF","SB","SL","BC","BR","BH","BA","CO","TH","PO","PW","PJ","PH","PL","HE"]);
 
@@ -950,11 +955,11 @@ function getItemCategory(sku, brandAbbr) {
   const base = sku.split("-")[0].toUpperCase();
   // Brand code lives at positions 2-3 of the base SKU.
   const skuBrand = base.length >= 4 ? base.substring(2, 4) : "";
-  // Pants: US POLO ONLY — uses P##X serial pattern (e.g. "CUUSPPP01SLS").
-  // Per business rule: other brands don't use P## convention; their pants are
-  // identified by fabric code ("(Bottoms)" codes from Style Rules — BC/BR/BH/BA),
-  // handled by isPants() via SPORTSWEAR_BOTTOM_CODES.
-  if (skuBrand === "US"
+  // Pants: P##X serial pattern, PANTS_SERIAL_BRANDS only (US Polo, Geoffrey Beene —
+  // e.g. "CUUSPPP01SLS", "PMGBDPP01SRS"). Per business rule: other brands don't use
+  // the P## convention; their pants are identified by fabric code ("(Bottoms)" codes
+  // from Style Rules — BC/BR/BH/BA), handled by isPants() via SPORTSWEAR_BOTTOM_CODES.
+  if (PANTS_SERIAL_BRANDS.has(skuBrand)
       && base.length >= 10 && base[6] === "P"
       && /\d/.test(base[7]) && /\d/.test(base[8]) && /[A-Z]/.test(base[9])) return "pants";
   if (base.length >= 11 && SPORTSWEAR_COLLARS.has(base.slice(-1))) return "sportswear";
