@@ -886,6 +886,17 @@ function isSportswear(sku, brandAbbr) {
   return isYoungMen(sku);
 }
 
+// Blazers — identified SOLELY by the B01–B99 serial at positions 6–8 (per Style
+// Rules: "BLAZERS B01-B99"), e.g. HPNAKSB01DBV. Fabric/fit codes are deliberately
+// NOT used: private-label SKUs with non-standard structures would be mis-flagged.
+// Mirrors desktop isBlazer(). Blazers keep their long_sleeve prepack matching
+// (BR/DB are in LONG_SLEEVE_FIT_CODES).
+function isBlazer(sku) {
+  if (!sku) return false;
+  const base = sku.split("-")[0].toUpperCase();
+  return /^B\d\d$/.test(base.substring(6, 9));
+}
+
 // Inclusive: BC/BR/BH/BA (sportswear bottoms) are pants too, not just P##X items
 function isPants(sku, brandAbbr) {
   if (!sku) return false;
@@ -904,6 +915,7 @@ function matchesCategory(sku, brandAbbr, category) {
   if (!category || category === "all" || category === "any") return true;
   if (category === "sportswear")   return isSportswear(sku, brandAbbr);
   if (category === "pants")        return isPants(sku, brandAbbr);
+  if (category === "blazers")      return isBlazer(sku);
   if (category === "young_men")    return isYoungMen(sku);
   if (category === "short_sleeve") return isShortSleeve(sku);
   if (category === "long_sleeve")  return isLongSleeveShirt(sku);
@@ -976,6 +988,9 @@ function getDetailedCategory(sku, brandAbbr, styleOverrides) {
   if (base === "pants") return "pants";
   if (base === "sportswear") return "sportswear";
   if (base === "accessories") return "accessories";
+  // Blazers (B## serial) — tailored category, takes precedence over the
+  // long/short sleeve split and YM/B&T tags. Mirrors desktop ordering.
+  if (isBlazer(sku)) return "blazers";
   if (isYoungMen(sku)) return "young_men";
   if (isBigAndTall(sku)) return "big_tall";
   return isShortSleeve(sku, styleOverrides) ? "short_sleeve" : "long_sleeve";
@@ -4714,6 +4729,7 @@ export default function VersaInventoryApp() {
                 { value:"big_tall",   label:"🧢 Big & Tall" },
                 { value:"pants",      label:"👖 Dress Pants" },
                 { value:"sportswear", label:"🏋️ Sportswear" },
+                { value:"blazers",    label:"🤵 Blazers" },
                 { value:"young_men",  label:"🧒 Young Men" },
                 { value:"accessories",label:"🎀 Accessories" },
               ].map(({ value, label }) => (
@@ -4847,6 +4863,7 @@ export default function VersaInventoryApp() {
                   <option value="big_tall">🧢 Big &amp; Tall</option>
                   <option value="pants">👖 Dress Pants</option>
                   <option value="sportswear">🏋️ Sportswear</option>
+                  <option value="blazers">🤵 Blazers</option>
                   <option value="young_men">🧒 Young Men</option>
                   <option value="accessories">🎀 Ties &amp; Accessories</option>
                 </select>
@@ -4871,7 +4888,7 @@ export default function VersaInventoryApp() {
                 </span>
                 {categoryFilter !== "all" && (
                   <span style={{ display:"inline-flex",alignItems:"center",gap:4,background:"rgba(99,102,241,.15)",color:"#818cf8",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,border:"1px solid rgba(99,102,241,.3)" }}>
-                    {{ long_sleeve:"👔 Long Sleeve", short_sleeve:"👕 Short Sleeve", big_tall:"🧢 Big & Tall", pants:"👖 Pants", sportswear:"🏋️ Sportswear", young_men:"🧒 Young Men", accessories:"🎀 Accessories" }[categoryFilter]}
+                    {{ long_sleeve:"👔 Long Sleeve", short_sleeve:"👕 Short Sleeve", big_tall:"🧢 Big & Tall", pants:"👖 Pants", sportswear:"🏋️ Sportswear", blazers:"🤵 Blazers", young_men:"🧒 Young Men", accessories:"🎀 Accessories" }[categoryFilter]}
                     <button onClick={() => setCategoryFilter("all")} style={{ background:"none",border:"none",color:"#818cf8",cursor:"pointer",fontSize:12,padding:0,lineHeight:1,marginLeft:2 }}>✕</button>
                   </span>
                 )}
