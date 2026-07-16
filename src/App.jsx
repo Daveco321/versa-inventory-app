@@ -3210,7 +3210,7 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
 // shirts because of the heavier weight class on container manifests. Style code
 // or brand can both feed isPants() — passing brand helps it disambiguate ambiguous
 // codes when a style might be either-or.
-const FOB_WAREHOUSE_DAYS_SHIRTS = 37;
+const FOB_WAREHOUSE_DAYS_SHIRTS = 45; // raised from 37 on Jul 16 2026 — matches the web platform's rule
 const FOB_WAREHOUSE_DAYS_PANTS  = 55;
 // Kept as a no-arg back-compat alias for older callers that don't have style/brand;
 // defaults to shirts since most items are shirts and that's the legacy behavior.
@@ -4087,7 +4087,7 @@ export default function VersaInventoryApp() {
           // When column G is empty, backend sends `arrival: null` and we
           // fall back to ETD + transit: pants take 55 days (USPA dress
           // pants P##X + sportswear bottoms BC/BR/BH/BA), everything else
-          // is 37 days.
+          // is 45 days (raised from 37 on Jul 16 2026).
           let arrivalDate;
           if (p.port_dated && p.arrival) {
             arrivalDate = parseLedgerDate(p.arrival);
