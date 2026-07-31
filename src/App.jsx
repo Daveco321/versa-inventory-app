@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from "rea
 const API_URL = "https://versa-inventory-api.onrender.com";
 const ORDERS_API_URL = "https://open-orders-api.onrender.com";
 const S3_LOGO_BASE = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/";
+const BRAND_TILE_BASE = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Tiles/";
 const DEFAULT_LOGO = "https://versamens.com/wp-content/uploads/2025/02/ac65455c-6152-4e4a-91f8-534f08254f81.png";
 
 const CUSTOMER_CODES = {"AF":"AAFES","BK":"BELK","BJ":"BJS","BL":"BLOOMINGDALE","BO":"BOSCOV","BU":"BURLINGTON","CC":"COSTCO CANADA","CU":"COSTCO USA","CM":"COSTCO MEXICO","CT":"COSTCO TAIWAN","FM":"FORMAN MILLS","HA":"HAMRICKS","JC":"JC PENNY","MB":"MACYS BACKSTAGE","MC":"MACYS.COM","MA":"MACYS","MW":"MENS WEARHOUSE","NO":"NORDSTROM","RO":"ROSS","SK":"SAKS","TJ":"TJX","VE":"VETERANS","WN":"WINNERS","KH":"KOHLS","WA":"WALMART (PEERLESS)","NC":"NAUTICA.COM","CY":"CENTURY 21","TK":"TKX","TG":"TARGET","WM":"WALMART","AM":"AMAZON","SE":"SEARS & KMART","PH":"PETER HARRIS","TM":"TJX (with size UPC)","VG":"VERSA GROUP","PS":"PRICE SMART","BF":"Beall's Florida","BI":"Beall's Inc (Outlet)","PB":"Porta Bella","DD":"DD'S Discount","HP":"HALF PRICE","TT":"TIKTOK","VW":"Big Lots/Variety","VP":"Versa Group (Purchase)","PR":"PRATO","MS":"ME SALVE","BR":"BRANDS for LESS","PM":"PROMODA","CI":"CITI TRENDS","CB":"Centric Brands","RM":"ROSS (with size UPC)","JT":"JC PENNY (SHIRT-TIE set)"};
@@ -13,31 +14,35 @@ const CUSTOMER_CODES = {"AF":"AAFES","BK":"BELK","BJ":"BJS","BL":"BLOOMINGDALE",
 const BRAND_IMAGE_PREFIX = {NAUTICA:"NA",DKNY:"DK",EB:"EB",REEBOK:"RB",VINCE:"VC",BEN:"BE",USPA:"US",CHAPS:"CH",LUCKY:"LB",JNY:"JN",BEENE:"GB",NICOLE:"NM",SHAQ:"SH",TAYION:"TA",STRAHAN:"MS",VD:"VD",VERSA:"VR",CHEROKEE:"CK",AMERICA:"AC",BLO:"BL",BLACK:"BL",DN:"D9",KL:"KL",RG:"RG",NE:"NE"};
 
 const BRAND_MAPPING = {
-  NAUTICA:{full_name:"Nautica",logo:"https://versamens.com/wp-content/uploads/2025/07/nautica-logo-1-1-1024x576.png"},
-  DKNY:{full_name:"DKNY",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T210144.119-1024x576.png"},
-  EB:{full_name:"Eddie Bauer",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T141044.111-1-1024x576.png"},
-  REEBOK:{full_name:"Reebok",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-100-1-1024x576.png"},
-  VINCE:{full_name:"Vince Camuto",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T140302.980-1-1024x576.png"},
-  BEN:{full_name:"Ben Sherman",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T140546.875-1-1024x576.png"},
-  USPA:{full_name:"U.S. Polo Assn.",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T141256.597-2-1024x576.png"},
-  CHAPS:{full_name:"Chaps",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T203105.646-1024x576.png"},
-  LUCKY:{full_name:"Lucky Brand",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T142102.500-2-1024x576.png"},
-  JNY:{full_name:"Jones New York",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T200647.521-1024x576.png"},
-  BEENE:{full_name:"Geoffrey Beene",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T203625.911-1024x576.png"},
-  NICOLE:{full_name:"Nicole Miller",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T203949.948-1024x576.png"},
-  SHAQ:{full_name:"Shaquille O'Neal",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T204655.610-1024x576.png"},
-  TAYION:{full_name:"Tayion",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T202043.389-1024x576.png"},
-  STRAHAN:{full_name:"Michael Strahan",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T205523.268-1-1024x576.png"},
-  VD:{full_name:"Von Dutch",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T205306.479-1024x576.png"},
+  // Uniform 1024x576 white logo tiles, same set as the web platform. VERSA,
+  // BLACK and DN keep original assets (no authentic brand logo exists for
+  // them). ?v=2 must stay in sync with the web app's tile cache-bust version.
+  NAUTICA:{full_name:"Nautica",logo:BRAND_TILE_BASE+"NAUTICA.png?v=2"},
+  DKNY:{full_name:"DKNY",logo:BRAND_TILE_BASE+"DKNY.png?v=2"},
+  EB:{full_name:"Eddie Bauer",logo:BRAND_TILE_BASE+"EB.png?v=2"},
+  REEBOK:{full_name:"Reebok",logo:BRAND_TILE_BASE+"REEBOK.png?v=2"},
+  VINCE:{full_name:"Vince Camuto",logo:BRAND_TILE_BASE+"VINCE.png?v=2"},
+  BEN:{full_name:"Ben Sherman",logo:BRAND_TILE_BASE+"BEN.png?v=2"},
+  USPA:{full_name:"U.S. Polo Assn.",logo:BRAND_TILE_BASE+"USPA.png?v=2"},
+  CHAPS:{full_name:"Chaps",logo:BRAND_TILE_BASE+"CHAPS.png?v=2"},
+  LUCKY:{full_name:"Lucky Brand",logo:BRAND_TILE_BASE+"LUCKY.png?v=2"},
+  JNY:{full_name:"Jones New York",logo:BRAND_TILE_BASE+"JNY.png?v=2"},
+  BEENE:{full_name:"Geoffrey Beene",logo:BRAND_TILE_BASE+"BEENE.png?v=2"},
+  NICOLE:{full_name:"Nicole Miller",logo:BRAND_TILE_BASE+"NICOLE.png?v=2"},
+  SHAQ:{full_name:"Shaquille O'Neal",logo:BRAND_TILE_BASE+"SHAQ.png?v=2"},
+  TAYION:{full_name:"Tayion",logo:BRAND_TILE_BASE+"TAYION.png?v=2"},
+  STRAHAN:{full_name:"Michael Strahan",logo:BRAND_TILE_BASE+"STRAHAN.png?v=2"},
+  VD:{full_name:"Von Dutch",logo:BRAND_TILE_BASE+"VD.png?v=2"},
   VERSA:{full_name:"Versa",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/VERSA-logo-1280x720.png"},
-  CHEROKEE:{full_name:"Cherokee",logo:"https://versamens.com/wp-content/uploads/2025/02/Untitled-design-2025-02-03T141858.534-2-1024x576.png"},
-  AMERICA:{full_name:"American Crew",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/AmericanCrew-logo-1280x720.png"},
-  BLO:{full_name:"Bloomingdales",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Bloomingdales-logo-1280x720.png"},
+  CHEROKEE:{full_name:"Cherokee",logo:BRAND_TILE_BASE+"CHEROKEE.png?v=2"},
+  AMERICA:{full_name:"American Crew",logo:BRAND_TILE_BASE+"AMERICA.png?v=2"},
+  BLO:{full_name:"Bloomingdales",logo:BRAND_TILE_BASE+"BLO.png?v=2"},
   BLACK:{full_name:"Black Label",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/black-label-logo.png"},
   DN:{full_name:"Divine 9",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Divine9-logo-spaced-1280x720.png"},
-  KL:{full_name:"Karl Lagerfeld Paris",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/klp-wht-blue-back-1-1024x576.png"},
-  RG:{full_name:"Robert Graham",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/robert-graham-logo-dark.png"},
-  NE:{full_name:"Neiman Marcus",logo:"https://nauticaslimfit.s3.us-east-2.amazonaws.com/ALL+INVENTORY+Photos/Brand+Logos/Neiman_Marcus-Logo.wine-copy-1024x576.png"},
+  KL:{full_name:"Karl Lagerfeld Paris",logo:BRAND_TILE_BASE+"KL.png?v=2"},
+  RG:{full_name:"Robert Graham",logo:BRAND_TILE_BASE+"RG.png?v=2"},
+  NE:{full_name:"Neiman Marcus",logo:BRAND_TILE_BASE+"NE.png?v=2"},
+  DH:{full_name:"Daniel Hechter",logo:BRAND_TILE_BASE+"DH.png?v=2"},
 };
 
 const BRAND_ORDER = ["NAUTICA","DKNY","EB","VINCE","KL","CHAPS","USPA","LUCKY","BEN","BEENE","NE","JNY","NICOLE","VD","REEBOK","SHAQ","TAYION","STRAHAN","VERSA","AMERICA","BLO","BLACK","RG","DN"];
@@ -3091,7 +3096,7 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
               <div onClick={() => setExpandedBrand(prev => ({...prev, [b.brand]: !prev[b.brand]}))}
                 style={{ padding:"14px 16px", cursor:"pointer", display:"flex", alignItems:"center", gap:12 }}>
                 <div style={{ fontSize:14, transition:"transform 0.2s", transform:`rotate(${isOpen ? "90" : "0"}deg)`, flexShrink:0, color:"#64748b" }}>▶</div>
-                <img src={b.logo} alt={b.fullName} style={{ height:26, maxWidth:80, objectFit:"contain", filter:"brightness(0) invert(1)", opacity:.7, flexShrink:0 }} onError={e => { e.target.style.display = "none"; }} />
+                <img src={b.logo} alt={b.fullName} style={{ height:26, maxWidth:80, objectFit:"contain", borderRadius:5, flexShrink:0 }} onError={e => { e.target.style.display = "none"; }} />
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontWeight:800, fontSize:15, color:"#e2e8f0" }}>{b.fullName}</div>
                   <div style={{ fontSize:11, color:"#64748b", marginTop:1 }}>
@@ -4783,7 +4788,7 @@ export default function VersaInventoryApp() {
                 ← All Brands
               </button>
               <div style={{ display:"flex",alignItems:"center",gap:12,flex:1 }}>
-                <img src={brandData.logo || DEFAULT_LOGO} alt={brandData.full_name} style={{ height:40,maxWidth:120,objectFit:"contain",filter:"brightness(0) invert(1)",opacity:.85 }} onError={e => e.target.style.display="none"} />
+                <img src={brandData.logo || DEFAULT_LOGO} alt={brandData.full_name} style={{ height:40,maxWidth:120,objectFit:"contain",borderRadius:6 }} onError={e => e.target.style.display="none"} />
                 <div>
                   <h2 style={{ fontSize:22,fontWeight:800,color:"#f1f5f9" }}>{brandData.full_name}</h2>
                   <p style={{ fontSize:13,color:"#64748b" }}>{currentBrand} · {brandData.items.length} styles</p>
