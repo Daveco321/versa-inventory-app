@@ -1907,13 +1907,148 @@ function RoutingModal({ baseStyle, onClose, inventory, productionData, openOrder
   );
 }
 
+// ═══════════════════════════════════════════
+// EXPORT ROW BUILDERS
+// ═══════════════════════════════════════════
+// Mirror the desktop's exportBrand()/buildCatalogExportItem() payload shape.
+// The backend renders columns from fields the FRONTEND computes (color, fit,
+// fabrication, delivery, warehouse names, prepack hints) — raw inventory items
+// export with "N/A"/"Standard Fabric" everywhere, so rows must go through here.
+
+// Flow expansion for exports — same math as the inline flow-mode expansion in
+// filteredItems (proportional ledger→incoming scaling + FIFO overseas
+// deduction). Mirrors desktop expandItemsToFlowRows: no-ops if rows are
+// already expanded, keeps no-production items as a single dateless row.
+function expandItemsToFlowRowsForExport(items, inventory, productionData, suppressionOverrides) {
+  if (!items || items.length === 0) return [];
+  if (items.some(i => i && i._flow)) return items; // already expanded
+  const invBySku = new Map();
+  (inventory || []).forEach(r => invBySku.set(r.sku, r));
+  const flowItems = [];
+  items.forEach(item => {
+    const rawItem = invBySku.get(item.sku);
+    const rawWh = rawItem ? (rawItem.jtw||0)+(rawItem.tr||0)+(rawItem.dcw||0)+(rawItem.qa||0) : 0;
+    const prods = getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides);
+    if (prods.length === 0) {
+      flowItems.push({ ...item, _flow: true, _flow_production: "", _flow_po: "No Production Data", _flow_units: item.total_ats || 0, _flow_deducted: 0, _flow_etd: null, _flow_arrival: null });
+      return;
+    }
+    const sortedProds = [...prods].sort((a, b) => (a.arrival || a.etd || new Date("2099-01-01")) - (b.arrival || b.etd || new Date("2099-01-01")));
+    const atsIncoming = item.incoming || 0;
+    const overseasDed = item._overseas_deducted || 0;
+    const totalProdUnits = sortedProds.reduce((s, p) => s + (p.units||0), 0);
+    let remaining = overseasDed;
+    let allocatedSoFar = 0;
+    sortedProds.forEach((p, idx) => {
+      let scaledUnits;
+      if (idx === sortedProds.length - 1) scaledUnits = atsIncoming - allocatedSoFar;
+      else scaledUnits = totalProdUnits > 0 ? Math.round((p.units||0) / totalProdUnits * atsIncoming) : atsIncoming;
+      allocatedSoFar += scaledUnits;
+      const ded = Math.min(remaining, scaledUnits);
+      remaining -= ded;
+      flowItems.push({
+        ...item,
+        total_ats: scaledUnits - ded,
+        _flow: true,
+        _flow_production: p.production, _flow_po: p.poName,
+        _flow_units: scaledUnits, _flow_deducted: ded,
+        _flow_etd: p.etd, _flow_arrival: p.arrival
+      });
+    });
+  });
+  return flowItems;
+}
+
+// One export row. custView=false → full admin columns (warehouses, committed,
+// allocated, per-PO production detail); custView=true → catalog format (no
+// committed/allocated, warehouse NAMES not quantities, PO Ref #).
+function buildExportRow(item, { custView, filterMode, productionData, suppressionOverrides, styleOverrides, colorMap, rawWhBySku }) {
+  const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+  let delivery = "ATS";
+  let arrivalStr = "", etdStr = "", nearestPoRef = "";
+  if (item._flow_etd || item._flow_arrival) {
+    // Flow row — per-PO dates already on the item
+    etdStr = item._flow_etd ? formatDateShort(item._flow_etd) : "";
+    arrivalStr = item._flow_arrival ? formatDateShort(item._flow_arrival) : "";
+    nearestPoRef = item._flow_production || "";
+  } else {
+    // Nearest arrival from production data. Suppression check needs the RAW
+    // warehouse count — incoming mode zeroes the item's own wh fields.
+    const rawWh = rawWhBySku && rawWhBySku.has(item.sku) ? rawWhBySku.get(item.sku) : wh;
+    const prods = getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides);
+    if (prods.length > 0) {
+      const sorted = [...prods].sort((a, b) => (a.arrival || new Date("2099-01-01")) - (b.arrival || new Date("2099-01-01")));
+      arrivalStr = sorted[0].arrival ? formatDateShort(sorted[0].arrival) : "";
+      etdStr = sorted[0].etd ? formatDateShort(sorted[0].etd) : "";
+      nearestPoRef = sorted[0].production || "";
+    }
+  }
+  if (wh === 0 && (item.incoming || 0) > 0) delivery = arrivalStr || "Overseas";
+
+  const fabric = getFabricFromSKU(item.sku, styleOverrides);
+  const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap, styleOverrides);
+  const ov = getStyleOverride(item.sku, styleOverrides);
+  // Flow rows carry their per-PO share in _flow_units; plain rows the rolled-up total
+  const incomingVal = item._flow ? (item._flow_units || 0) : (item.incoming || 0);
+  const base = {
+    sku: item.sku,
+    brand_abbr: item.brand_abbr,
+    brand_full: item.brand_full,
+    color: colorInfo ? colorInfo.display : "",
+    fit: getFitFromSKU(item.sku, styleOverrides),
+    fabric_code: fabric.code,
+    fabrication: fabric.description,
+    delivery,
+    total_ats: item.total_ats,
+    // Prepack grid hints — sent so backend grids match what the tiles show
+    _export_category: getDetailedCategory(item.sku, item.brand_abbr, styleOverrides),
+    _export_fit: extractFitCode(item.sku),
+    _export_customer: (item.sku || "").substring(0, 2).toUpperCase(),
+    _override_size_pack: (ov && ov.sizePack) ? ov.sizePack : null
+  };
+
+  if (custView) {
+    if (filterMode !== "incoming") {
+      const whNames = [];
+      if (item.jtw > 0) whNames.push("JTW");
+      if (item.tr > 0) whNames.push("TR");
+      if (item.dcw > 0) whNames.push("DCW");
+      if ((item.qa||0) > 0) whNames.push("QA");
+      base.warehouse = whNames.join(", ") || "—";
+    }
+    base.incoming = incomingVal;
+    if (filterMode === "incoming" && item._flow) base.po_ref = item._flow_production || "";
+    if (filterMode === "all" && (item.incoming || 0) > 0 && nearestPoRef) base.po_ref = nearestPoRef;
+  } else {
+    base.jtw = item.jtw;
+    base.tr = item.tr;
+    base.dcw = item.dcw;
+    base.qa = item.qa || 0;
+    base.incoming = incomingVal;
+    base.total_warehouse = item.total_warehouse;
+    base.committed = item.committed;
+    base.allocated = item.allocated;
+    if (item._flow) {
+      base.production = item._flow_production || "";
+      base.po_name = item._flow_po || "";
+    }
+  }
+  if (filterMode === "incoming" || (custView && filterMode === "all")) {
+    base.ex_factory = etdStr;
+    base.arrival = arrivalStr;
+  }
+  return base;
+}
+
 // ─── Export Panel ────────────────
-function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filteredItems, productionData, viewMode, suppressionOverrides }) {
+function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filteredItems, productionData, viewMode, suppressionOverrides, styleOverrides, colorMap, prepackDefaults, inventory, flowMode, warehouseFilter }) {
   const [manifest, setManifest] = useState(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(null);
   const [regenerating, setRegenerating] = useState(false);
   const [regenProgress, setRegenProgress] = useState("");
+  const [exportStyle, setExportStyle] = useState("admin"); // "admin" | "customer"
+  const custView = exportStyle === "customer";
 
   useEffect(() => {
     fetchManifest();
@@ -1930,43 +2065,77 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
     setLoading(false);
   };
 
-  // Build export-ready items with production dates attached
-  const buildExportItems = (items) => {
-    return items.map(item => {
-      const out = { ...item };
-      // Always attach production dates if available
-      if (productionData?.length > 0) {
-        const dates = getEarliestDates(item.sku, productionData, (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0), suppressionOverrides);
-        if (dates.ex_factory) out.ex_factory = dates.ex_factory instanceof Date ? dates.ex_factory.toISOString().slice(0,10) : String(dates.ex_factory);
-        if (dates.arrival) out.arrival = dates.arrival instanceof Date ? dates.arrival.toISOString().slice(0,10) : String(dates.arrival);
+  // Raw warehouse per SKU for suppression checks (incoming mode zeroes item wh)
+  const rawWhBySku = useMemo(() => {
+    const m = new Map();
+    (inventory || []).forEach(r => m.set(r.sku, (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)));
+    return m;
+  }, [inventory]);
+
+  // Filename mode tag — includes the warehouse sub-filter when one is active
+  const fileModeLabel = filterMode === "incoming" ? "Overseas"
+    : filterMode === "ats" ? (warehouseFilter && warehouseFilter !== "all" ? `Warehouse_${warehouseFilter.toUpperCase()}` : "Warehouse")
+    : "All";
+  const dateSuffix = new Date().toISOString().slice(0, 10);
+
+  // Sort (customer = ATS desc like catalog exports, admin = warehouse desc),
+  // force flow expansion where the desktop does, then build backend-ready rows.
+  const buildRows = (items, { preSorted = false } = {}) => {
+    let out = [...items];
+    if (!preSorted) out.sort((a, b) => custView ? ((b.total_ats||0)-(a.total_ats||0)) : ((b.total_warehouse||0)-(a.total_warehouse||0)));
+    if ((flowMode || custView) && filterMode === "incoming") {
+      out = expandItemsToFlowRowsForExport(out, inventory, productionData, suppressionOverrides);
+    }
+    const opts = { custView, filterMode, productionData, suppressionOverrides, styleOverrides, colorMap, rawWhBySku };
+    return out.map(i => buildExportRow(i, opts));
+  };
+
+  // flow_mode payload flag — gates the Production #/PO Name (admin) and
+  // PO Ref #/Factory (customer) columns server-side
+  const flowFlagFor = (items) => custView
+    ? (filterMode === "incoming" || (filterMode === "all" && items.some(i => (i.incoming||0) > 0)))
+    : (flowMode && filterMode === "incoming");
+
+  const triggerDownload = (blob, name) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = name;
+    a.click(); URL.revokeObjectURL(url);
+  };
+
+  const postExport = async (endpoint, payload, timeoutMs) => {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(`${API_URL}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `Status ${resp.status}`);
       }
-      return out;
-    });
+      return await resp.blob();
+    } finally { clearTimeout(tid); }
   };
 
   const handleExportCurrentView = async () => {
     if (!filteredItems?.length) return;
     const brandName = currentBrand ? (brands[currentBrand]?.full_name || currentBrand) : "Inventory";
-    const modeLabel = filterMode === "incoming" ? "Overseas" : filterMode === "ats" ? "Warehouse" : "All";
-    const filename = `${brandName}_${modeLabel}`;
+    const filename = `${brandName}_${fileModeLabel}`;
     setDownloading("CURRENT");
     try {
-      const exportItems = buildExportItems(filteredItems);
-      const resp = await fetch(`${API_URL}/export`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          data: exportItems,
-          filename,
-          view_mode: filterMode === "incoming" ? "incoming" : filterMode === "ats" ? "ats" : "all"
-        })
-      });
-      if (!resp.ok) throw new Error("Export failed");
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url;
-      a.download = `${filename.replace(/\s/g,"_")}_${new Date().toISOString().slice(0,10)}.xlsx`;
-      a.click(); URL.revokeObjectURL(url);
+      // Keep the on-screen sort — export exactly what's being viewed
+      const blob = await postExport("/export", {
+        data: buildRows(filteredItems, { preSorted: true }),
+        filename,
+        view_mode: filterMode,
+        catalog_mode: custView,
+        flow_mode: flowFlagFor(filteredItems),
+        prepack_defaults: prepackDefaults || []
+      }, 300000);
+      triggerDownload(blob, `${filename.replace(/\s/g,"_")}${custView ? "_Customer_View" : ""}_${dateSuffix}.xlsx`);
     } catch (e) { alert("Export failed: " + e.message); }
     setDownloading(null);
   };
@@ -1975,25 +2144,17 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
     const brandInfo = brands[abbr];
     if (!brandInfo?.items?.length) return;
     const brandName = brandInfo.full_name || abbr;
-    const modeLabel = filterMode === "incoming" ? "Overseas" : filterMode === "ats" ? "Warehouse" : "All";
     setDownloading(abbr);
     try {
-      const exportItems = buildExportItems(brandInfo.items);
-      const resp = await fetch(`${API_URL}/export`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          data: exportItems,
-          filename: `${brandName}_${modeLabel}`,
-          view_mode: filterMode === "incoming" ? "incoming" : filterMode === "ats" ? "ats" : "all"
-        })
-      });
-      if (!resp.ok) throw new Error("Export failed");
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url;
-      a.download = `${brandName.replace(/\s/g,"_")}_${modeLabel}_${new Date().toISOString().slice(0,10)}.xlsx`;
-      a.click(); URL.revokeObjectURL(url);
+      const blob = await postExport("/export", {
+        data: buildRows(brandInfo.items),
+        filename: `${brandName}_${fileModeLabel}`,
+        view_mode: filterMode,
+        catalog_mode: custView,
+        flow_mode: flowFlagFor(brandInfo.items),
+        prepack_defaults: prepackDefaults || []
+      }, 300000);
+      triggerDownload(blob, `${brandName.replace(/\s/g,"_")}_${fileModeLabel}${custView ? "_Customer_View" : ""}_${dateSuffix}.xlsx`);
     } catch (e) { alert(`Export failed for ${brandName}: ${e.message}`); }
     setDownloading(null);
   };
@@ -2001,14 +2162,30 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
   const handleDownloadAll = async () => {
     setDownloading("ALL");
     try {
-      const resp = await fetch(`${API_URL}/download/all`);
-      if (!resp.ok) throw new Error("Not available");
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url;
-      a.download = `All_Brands_${new Date().toISOString().slice(0,10)}.xlsx`;
-      a.click(); URL.revokeObjectURL(url);
-    } catch (e) { alert("All-brands export not ready. Try regenerating first."); }
+      if (!custView && filterMode === "all") {
+        // Admin + All Inventory → server's pre-built instant workbook
+        const resp = await fetch(`${API_URL}/download/all`);
+        if (!resp.ok) throw new Error("Not ready — try Regenerate first");
+        triggerDownload(await resp.blob(), `All_Brands_${dateSuffix}.xlsx`);
+      } else {
+        // Filter-aware / customer view: build on demand, one tab per brand
+        const entries = sortBrands(Object.entries(brands)).filter(([, info]) => (info.items || []).length > 0);
+        const brandsList = entries
+          .map(([abbr, info]) => ({ brand_name: info.full_name || abbr, items: buildRows(info.items) }))
+          .filter(b => b.items.length > 0);
+        if (brandsList.length === 0) throw new Error("Nothing to export in this view");
+        const allItems = entries.flatMap(([, info]) => info.items || []);
+        const blob = await postExport("/export-multi", {
+          brands: brandsList,
+          filename: `All_Brands_${fileModeLabel}`,
+          view_mode: filterMode,
+          catalog_mode: custView,
+          flow_mode: flowFlagFor(allItems),
+          prepack_defaults: prepackDefaults || []
+        }, 600000);
+        triggerDownload(blob, `All_Brands_${fileModeLabel}${custView ? "_Customer_View" : ""}_${dateSuffix}.xlsx`);
+      }
+    } catch (e) { alert("All-brands export failed: " + e.message); }
     setDownloading(null);
   };
 
@@ -2051,7 +2228,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
     return d.toLocaleDateString("en-US", { month:"short", day:"numeric" }) + " " + d.toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit" });
   };
 
-  const filterLabel = filterMode === "incoming" ? "🚢 Overseas" : filterMode === "ats" ? "🏭 Warehouse" : "📦 All Inventory";
+  const filterLabel = filterMode === "incoming" ? "🚢 Overseas" : filterMode === "ats" ? (warehouseFilter && warehouseFilter !== "all" ? `🏭 ${warehouseFilter.toUpperCase()}` : "🏭 Warehouse") : "📦 All Inventory";
   const filterColor = filterMode === "incoming" ? "#f59e0b" : filterMode === "ats" ? "#3b82f6" : "#10b981";
   const isInBrand = viewMode === "inventory" && currentBrand;
   const currentBrandName = currentBrand ? (brands[currentBrand]?.full_name || currentBrand) : "";
@@ -2068,6 +2245,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
             <h2 style={{ color:"#f1f5f9",fontSize:18,fontWeight:800 }}>📊 Excel Exports</h2>
             <p style={{ color:"#64748b",fontSize:12,marginTop:2 }}>
               <span style={{ color:filterColor,fontWeight:600 }}>{filterLabel}</span>
+              <span style={{ color: custView ? "#fbbf24" : "#818cf8",fontWeight:600 }}> · {custView ? "🛍️ Customer View" : "🗂️ Admin"}</span>
               {isInBrand && <span> · {currentBrandName}</span>}
             </p>
           </div>
@@ -2080,6 +2258,29 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
             <div style={{ textAlign:"center",padding:40,color:"#64748b" }}>Loading exports...</div>
           ) : (
             <>
+              {/* Export style — Admin vs Customer (mirrors desktop chooseExportStyle) */}
+              <div style={{ marginBottom:16 }}>
+                <p style={{ color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,marginBottom:8 }}>Export Style</p>
+                <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>
+                  {[
+                    { key:"admin", icon:"🗂️", title:"Full Admin", desc:"All columns — warehouses, committed, allocated, production detail", color:"#818cf8" },
+                    { key:"customer", icon:"🛍️", title:"Customer View", desc:"What a customer catalog exports — reduced info, same items", color:"#fbbf24" },
+                  ].map(s => {
+                    const active = exportStyle === s.key;
+                    return (
+                      <button key={s.key} onClick={() => setExportStyle(s.key)} style={{
+                        textAlign:"left",padding:"10px 12px",borderRadius:10,cursor:"pointer",transition:"all .15s",
+                        background: active ? `${s.color}22` : "rgba(255,255,255,.04)",
+                        border: active ? `2px solid ${s.color}` : "2px solid rgba(255,255,255,.08)"
+                      }}>
+                        <div style={{ fontWeight:800,fontSize:13,color: active ? s.color : "#e2e8f0" }}>{s.icon} {s.title}</div>
+                        <div style={{ fontSize:10,color:"#64748b",marginTop:3,lineHeight:1.4 }}>{s.desc}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Current View Export - shown when inside a brand */}
               {isInBrand && filteredItems?.length > 0 && (
                 <div style={{ marginBottom:16 }}>
@@ -2092,7 +2293,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
                     <div style={{ textAlign:"left" }}>
                       <span style={{ fontWeight:800,fontSize:14 }}>📥 Export {currentBrandName}</span>
                       <p style={{ fontSize:11,opacity:0.85,marginTop:2 }}>
-                        {filteredItems.length} styles · {filterLabel}
+                        {filteredItems.length} {filteredItems.some(i => i._flow) ? "flow rows" : "styles"} · {filterLabel}{custView ? " · 🛍️ Customer View" : ""}
                         {filterMode === "incoming" && " · Includes Ex-Factory & Arrival dates"}
                       </p>
                     </div>
@@ -2103,25 +2304,25 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
 
               {/* All brands by filter */}
               <p style={{ color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,marginBottom:8 }}>
-                {filterMode === "all" ? "Pre-built Exports" : "Export by Brand"} ({filterLabel})
+                Export by Brand ({filterLabel})
               </p>
 
-              {/* Download All - only show for "all" filter mode with pre-built exports */}
-              {filterMode === "all" && (
-                <button onClick={handleDownloadAll} disabled={downloading === "ALL"} style={{
-                  width:"100%",background:"linear-gradient(135deg,#818cf8,#6366f1)",color:"#fff",border:"none",
-                  padding:"14px 16px",borderRadius:12,cursor:"pointer",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",
-                  opacity: downloading === "ALL" ? 0.6 : 1, transition:"all .2s"
-                }}>
-                  <div style={{ textAlign:"left" }}>
-                    <span style={{ fontWeight:800,fontSize:14 }}>📥 Download All Brands</span>
-                    <p style={{ fontSize:11,opacity:0.8,marginTop:2 }}>
-                      {manifest?.all_brands ? `${manifest.all_brands.items_count} items · ${formatSize(manifest.all_brands.size_bytes)}` : "Complete inventory with images"}
-                    </p>
-                  </div>
-                  <span style={{ fontSize:13,fontWeight:600 }}>{downloading === "ALL" ? "⏳" : ".xlsx"}</span>
-                </button>
-              )}
+              {/* Download All — instant pre-built file for Admin+All, on-demand multi-tab build otherwise */}
+              <button onClick={handleDownloadAll} disabled={downloading === "ALL"} style={{
+                width:"100%",background:"linear-gradient(135deg,#818cf8,#6366f1)",color:"#fff",border:"none",
+                padding:"14px 16px",borderRadius:12,cursor:"pointer",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",
+                opacity: downloading === "ALL" ? 0.6 : 1, transition:"all .2s"
+              }}>
+                <div style={{ textAlign:"left" }}>
+                  <span style={{ fontWeight:800,fontSize:14 }}>📥 Download All Brands</span>
+                  <p style={{ fontSize:11,opacity:0.8,marginTop:2 }}>
+                    {!custView && filterMode === "all"
+                      ? (manifest?.all_brands ? `${manifest.all_brands.items_count} items · ${formatSize(manifest.all_brands.size_bytes)} · ⚡ Instant` : "Complete inventory with images")
+                      : `One tab per brand · ${filterLabel}${custView ? " · 🛍️ Customer View" : ""} · may take a few minutes`}
+                  </p>
+                </div>
+                <span style={{ fontSize:13,fontWeight:600 }}>{downloading === "ALL" ? "⏳" : ".xlsx"}</span>
+              </button>
 
               {/* Individual brands */}
               <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
@@ -4226,8 +4427,13 @@ export default function VersaInventoryApp() {
     // Load style overrides (color/brand overrides from S3)
     const loadStyleOverrides = async () => {
       try {
-        const c = new AbortController(); setTimeout(() => c.abort(), 10000);
-        const resp = await fetch(`${API_URL}/overrides`, { signal: c.signal, headers: { 'Cache-Control': 'no-cache' } });
+        // 30s window — the ~3k-entry overrides JSON can take >10s when the API
+        // is busy building exports; a too-tight abort silently drops overrides
+        const c = new AbortController(); setTimeout(() => c.abort(), 30000);
+        // NOTE: no Cache-Control request header — the API's CORS config only
+        // allows Content-Type, so a Cache-Control header fails the preflight and
+        // style overrides silently never load. Cache-bust via query param instead.
+        const resp = await fetch(`${API_URL}/overrides?t=${Date.now()}`, { signal: c.signal });
         if (!resp.ok) return;
         const json = await resp.json();
         const raw = json.overrides || {};
@@ -5110,7 +5316,7 @@ export default function VersaInventoryApp() {
         />
       )}
       {showExport && (
-        <ExportPanel onClose={() => setShowExport(false)} brands={brands} currentBrand={currentBrand} filterMode={filterMode} API_URL={API_URL} filteredItems={filteredItems} productionData={productionData} viewMode={view} suppressionOverrides={suppressionOverrides} />
+        <ExportPanel onClose={() => setShowExport(false)} brands={brands} currentBrand={currentBrand} filterMode={filterMode} API_URL={API_URL} filteredItems={filteredItems} productionData={productionData} viewMode={view} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} colorMap={colorMap} prepackDefaults={prepackDefaults} inventory={inventory} flowMode={flowMode} warehouseFilter={warehouseFilter} />
       )}
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
