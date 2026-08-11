@@ -2049,6 +2049,9 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
   const [regenProgress, setRegenProgress] = useState("");
   const [exportStyle, setExportStyle] = useState("admin"); // "admin" | "customer"
   const custView = exportStyle === "customer";
+  // Multi-select: tap brand rows to pick any set, then Generate builds one file
+  // (single brand → /export line sheet, 2+ → /export-multi, one tab per brand)
+  const [selectedBrands, setSelectedBrands] = useState(new Set());
 
   useEffect(() => {
     fetchManifest();
@@ -2189,6 +2192,52 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
     setDownloading(null);
   };
 
+  // ── Multi-select helpers ──
+  const toggleBrandSelected = (abbr) => {
+    setSelectedBrands(prev => {
+      const next = new Set(prev);
+      if (next.has(abbr)) next.delete(abbr); else next.add(abbr);
+      return next;
+    });
+  };
+  const selectAllBrands = () => {
+    const all = sortBrands(Object.entries(brands))
+      .filter(([, info]) => (info.items || []).length > 0)
+      .map(([abbr]) => abbr);
+    setSelectedBrands(new Set(all));
+  };
+  const clearBrandSelection = () => setSelectedBrands(new Set());
+
+  const handleGenerateSelected = async () => {
+    // Re-derive from BRAND_ORDER so tab order is stable regardless of tap order
+    const entries = sortBrands(Object.entries(brands))
+      .filter(([abbr, info]) => selectedBrands.has(abbr) && (info.items || []).length > 0);
+    if (entries.length === 0) return;
+    if (entries.length === 1) {
+      // Single brand — same line sheet as a single-brand export (incl. size charts)
+      await handleExportBrandFiltered(entries[0][0]);
+      return;
+    }
+    setDownloading("GEN");
+    try {
+      const brandsList = entries
+        .map(([abbr, info]) => ({ brand_name: info.full_name || abbr, items: buildRows(info.items) }))
+        .filter(b => b.items.length > 0);
+      const allItems = entries.flatMap(([, info]) => info.items || []);
+      const filename = `Versa_${brandsList.length}_Brands_${fileModeLabel}`;
+      const blob = await postExport("/export-multi", {
+        brands: brandsList,
+        filename,
+        view_mode: filterMode,
+        catalog_mode: custView,
+        flow_mode: flowFlagFor(allItems),
+        prepack_defaults: prepackDefaults || []
+      }, 600000);
+      triggerDownload(blob, `${filename}${custView ? "_Customer_View" : ""}_${dateSuffix}.xlsx`);
+    } catch (e) { alert("Export failed: " + e.message); }
+    setDownloading(null);
+  };
+
   const handleRegenerate = async () => {
     setRegenerating(true); setRegenProgress("Starting...");
     try {
@@ -2303,9 +2352,18 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
               )}
 
               {/* All brands by filter */}
-              <p style={{ color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,marginBottom:8 }}>
-                Export by Brand ({filterLabel})
-              </p>
+              <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:8,flexWrap:"wrap" }}>
+                <p style={{ color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1 }}>
+                  Export by Brand ({filterLabel})
+                </p>
+                <div style={{ display:"flex",gap:6 }}>
+                  <button onClick={selectAllBrands} style={{ background:"rgba(129,140,248,.12)",border:"1px solid rgba(129,140,248,.3)",color:"#818cf8",padding:"4px 10px",borderRadius:8,fontSize:10,fontWeight:700,cursor:"pointer" }}>Select All</button>
+                  {selectedBrands.size > 0 && (
+                    <button onClick={clearBrandSelection} style={{ background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",color:"#94a3b8",padding:"4px 10px",borderRadius:8,fontSize:10,fontWeight:700,cursor:"pointer" }}>Clear ({selectedBrands.size})</button>
+                  )}
+                </div>
+              </div>
+              <p style={{ color:"#475569",fontSize:10,marginBottom:8 }}>Tap brands to select any combination, then hit ⚡ Generate below</p>
 
               {/* Download All — instant pre-built file for Admin+All, on-demand multi-tab build otherwise */}
               <button onClick={handleDownloadAll} disabled={downloading === "ALL"} style={{
@@ -2324,25 +2382,24 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
                 <span style={{ fontSize:13,fontWeight:600 }}>{downloading === "ALL" ? "⏳" : ".xlsx"}</span>
               </button>
 
-              {/* Individual brands */}
+              {/* Individual brands — tap to toggle selection */}
               <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
                 {sortedBrands.map(([abbr, info]) => {
                   const mBrand = manifest?.brands?.[abbr];
                   const isCurrent = currentBrand && abbr === currentBrand;
                   const itemCount = (info.items||[]).length;
-                  // Always use POST export so production dates are included
-                  const handleClick = () => handleExportBrandFiltered(abbr);
+                  const isSelected = selectedBrands.has(abbr);
                   return (
-                    <button key={abbr} onClick={handleClick} disabled={downloading === abbr || itemCount === 0}
+                    <button key={abbr} onClick={() => toggleBrandSelected(abbr)} disabled={itemCount === 0}
                       style={{
-                        display:"flex",alignItems:"center",justifyContent:"space-between",
-                        background: isCurrent ? "rgba(129,140,248,.12)" : "rgba(255,255,255,.04)",
-                        border: isCurrent ? "1px solid rgba(129,140,248,.3)" : "1px solid rgba(255,255,255,.06)",
+                        display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,
+                        background: isSelected ? "rgba(129,140,248,.18)" : isCurrent ? "rgba(129,140,248,.08)" : "rgba(255,255,255,.04)",
+                        border: isSelected ? "1.5px solid #818cf8" : isCurrent ? "1px solid rgba(129,140,248,.3)" : "1px solid rgba(255,255,255,.06)",
                         borderRadius:10,padding:"10px 14px",cursor: itemCount > 0 ? "pointer" : "default",transition:"all .15s",
-                        opacity: downloading === abbr ? 0.6 : itemCount === 0 ? 0.4 : 1,
+                        opacity: itemCount === 0 ? 0.4 : 1,
                         color:"#e2e8f0"
                       }}>
-                      <div style={{ textAlign:"left" }}>
+                      <div style={{ textAlign:"left",flex:1,minWidth:0 }}>
                         <span style={{ fontWeight:700,fontSize:13 }}>{info.full_name || abbr}</span>
                         {isCurrent && <span style={{ fontSize:9,background:"#818cf8",color:"#fff",padding:"2px 6px",borderRadius:4,marginLeft:8,fontWeight:700 }}>CURRENT</span>}
                         <p style={{ fontSize:11,color:"#64748b",marginTop:1 }}>
@@ -2350,7 +2407,14 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
                           {filterMode !== "all" && itemCount > 0 ? ` · ${filterLabel}` : ""}
                         </p>
                       </div>
-                      <span style={{ fontSize:12,color:"#818cf8",fontWeight:600 }}>{downloading === abbr ? "⏳" : itemCount > 0 ? "📥" : "—"}</span>
+                      {/* Checkbox */}
+                      <span style={{
+                        width:20,height:20,borderRadius:6,flexShrink:0,
+                        border: isSelected ? "2px solid #818cf8" : "2px solid rgba(255,255,255,.2)",
+                        background: isSelected ? "#818cf8" : "transparent",
+                        display:"flex",alignItems:"center",justifyContent:"center",
+                        color:"#fff",fontSize:13,fontWeight:800,transition:"all .15s"
+                      }}>{isSelected ? "✓" : ""}</span>
                     </button>
                   );
                 })}
@@ -2360,18 +2424,38 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
         </div>
 
         {/* Footer */}
-        <div style={{ padding:"12px 20px",borderTop:"1px solid rgba(255,255,255,.08)",display:"flex",alignItems:"center",justifyContent:"space-between" }}>
-          <p style={{ color:"#64748b",fontSize:11 }}>
-            {regenerating ? regenProgress : filterMode === "incoming" ? "Overseas exports include shipment dates" : "Exports include product images"}
-          </p>
-          <button onClick={handleRegenerate} disabled={regenerating}
-            style={{
-              background: regenerating ? "rgba(255,255,255,.06)" : "rgba(255,255,255,.08)",
-              color: regenerating ? "#64748b" : "#e2e8f0",
-              border:"1px solid rgba(255,255,255,.1)",padding:"8px 16px",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600
-            }}>
-            {regenerating ? "⏳ Generating..." : "🔄 Regenerate All"}
-          </button>
+        <div style={{ padding:"12px 20px",borderTop:"1px solid rgba(255,255,255,.08)" }}>
+          {/* Generate — builds one file from the selected brands */}
+          {selectedBrands.size > 0 && (
+            <button onClick={handleGenerateSelected} disabled={!!downloading}
+              style={{
+                width:"100%",marginBottom:10,
+                background:"linear-gradient(135deg,#818cf8,#6366f1)",color:"#fff",border:"none",
+                padding:"13px 16px",borderRadius:12,cursor:"pointer",fontSize:14,fontWeight:800,
+                opacity: downloading ? 0.6 : 1,transition:"all .2s",
+                display:"flex",alignItems:"center",justifyContent:"center",gap:8
+              }}>
+              {downloading ? "⏳ Generating…" : (
+                <>⚡ Generate — {selectedBrands.size} Brand{selectedBrands.size > 1 ? "s" : ""}
+                <span style={{ fontSize:11,fontWeight:600,opacity:.85 }}>
+                  {selectedBrands.size > 1 ? "· one tab per brand" : "· line sheet"} · {filterLabel}{custView ? " · 🛍️" : ""}
+                </span></>
+              )}
+            </button>
+          )}
+          <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between" }}>
+            <p style={{ color:"#64748b",fontSize:11 }}>
+              {regenerating ? regenProgress : filterMode === "incoming" ? "Overseas exports include shipment dates" : "Exports include product images"}
+            </p>
+            <button onClick={handleRegenerate} disabled={regenerating}
+              style={{
+                background: regenerating ? "rgba(255,255,255,.06)" : "rgba(255,255,255,.08)",
+                color: regenerating ? "#64748b" : "#e2e8f0",
+                border:"1px solid rgba(255,255,255,.1)",padding:"8px 16px",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600
+              }}>
+              {regenerating ? "⏳ Generating..." : "🔄 Regenerate All"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
