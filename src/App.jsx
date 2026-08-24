@@ -1002,20 +1002,35 @@ function getDetailedCategory(sku, brandAbbr, styleOverrides) {
 }
 
 // ─── Color Classification (mirrors main catalog) ──────────────
+const _BLUE_FAMILY = /\bnavy\b|\bblue\b|\bindigo\b/;
 function classifyColor(colorDisplay, brandAbbr) {
   if (!colorDisplay) return "fancies";
   const c = colorDisplay.trim().toLowerCase();
+  // TWO-PART COLORS (mirrors desktop, Jul 31 2026): "White Solid / Navy Grnd Geo
+  // Print" is a WHITE shirt with printed trim — classify on the FIRST half only.
+  // Separator must be a slash with whitespace on BOTH sides: "W/" means "with"
+  // ("White Grnd W/ Blue Gingham") and must never split.
+  const _cParts = c.split(/\s+\/\s+/);
+  if (_cParts.length > 1 && _cParts[0].trim()) return classifyColor(_cParts[0].trim(), brandAbbr);
   // Disqualifiers: presence of any of these forces fancies regardless of solid/sld
   const _hasPrint = /\bprint\b|\bprnt\b|\bgrnd\b|\bstripe\b|\bstripes\b|\bgeo\b|\bcheck\b/.test(c);
-  // DOBBY rule (all brands): treat "dobby" like a solid; bucket by color word if present
-  if (!_hasPrint && /\bdobby\b/.test(c)) {
+  // DOBBY rule (all brands): dobby is a woven texture, not a print — ANY name
+  // containing "dobby" is a solid (David, Aug 24 2026), even when the name
+  // carries a stripe/check/print word ("White Jacquard Stripe Dobby"). Bucket
+  // by color word when one is present; otherwise fall to other_solids.
+  if (/\bdobby\b/.test(c)) {
     if (/\bwhite\b|\bivory\b|\bcream\b/.test(c)) return "white";
     if (/\bblack\b/.test(c)) return "black";
-    if (/\bnavy\b/.test(c)) return "navy";
+    if (_BLUE_FAMILY.test(c)) return "navy";
     return "other_solids";
   }
-  // Navy: "navy solid" or "navy sld" as adjacent words anywhere
-  if (!_hasPrint && /\bnavy\s+s(?:olid|ld)\b/.test(c)) return "navy";
+  // Navy/Blue = the BLUE FAMILY (mirrors desktop, Jul 31 2026): a solid lands
+  // here when the colour words leading the FIRST "solid" say navy, blue or
+  // indigo — "Asley Blue Solid" and "Sky Blue Sld" included. Reading only that
+  // leading phrase keeps "White Solid W/ Blue Contrast Trim" white (the blue is
+  // trim). Chambray/teal/turquoise are deliberately NOT blue words.
+  const _solidLead = c.match(/^(.*?)\s*\bs(?:olid|ld)\b/);
+  if (!_hasPrint && _solidLead && _BLUE_FAMILY.test(_solidLead[1])) return "navy";
   // White/Black exact: "[color] solid" or "[color] sld" — nothing before or after
   const exactMatch = c.match(/^(\S+)\s+s(?:olid|ld)$/);
   if (exactMatch && !_hasPrint) {
@@ -1096,7 +1111,7 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
   const pct = v => total ? Math.round(v / total * 100) : 0;
   const bW = pct(cWhite), bB = pct(cBlack), bN = pct(cNavy), bO = pct(cOther), bF = pct(cFancy);
 
-  const LABEL_MAP = { white:"White Solid", black:"Black Solid", navy:"Navy Solid", other_solids:"Other Solids", fancies:"Fancies", stripes:"Stripes", geo:"Geo", checks:"Checks" };
+  const LABEL_MAP = { white:"White Solid", black:"Black Solid", navy:"Navy/Blue Solid", other_solids:"Other Solids", fancies:"Fancies", stripes:"Stripes", geo:"Geo", checks:"Checks" };
   const whLabel = warehouseFilter && warehouseFilter !== "all" ? `\u{1F3ED} ${warehouseFilter.toUpperCase()}` : "\u{1F3ED} WH Stock";
   const METRIC_LABELS = { ats:"\u{1F4E6} ATS", wh:whLabel, incoming:"\u{1F6A2} Incoming", total:"\u{1F4CA} Total" };
   const METRIC_COLORS = { ats:["#16a34a","#f0fdf4","#bbf7d0"], wh:["#6d28d9","#f5f3ff","#ddd6fe"], incoming:["#d97706","#fffbeb","#fde68a"], total:["#0369a1","#e0f2fe","#bae6fd"] };
@@ -1155,14 +1170,14 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
       <div style={{ display:"flex",height:8,borderRadius:4,overflow:"hidden",marginBottom:14,background:"#f1f5f9" }}>
         {bW > 0 && <div style={barSegStyle("#e2e8f0", bW, "white")} onClick={() => handleClick("white")} title={`White Solid ${bW}%`} />}
         {bB > 0 && <div style={barSegStyle("#1e293b", bB, "black")} onClick={() => handleClick("black")} title={`Black Solid ${bB}%`} />}
-        {bN > 0 && <div style={barSegStyle("#1e3a5f", bN, "navy")} onClick={() => handleClick("navy")} title={`Navy Solid ${bN}%`} />}
+        {bN > 0 && <div style={barSegStyle("#1e3a5f", bN, "navy")} onClick={() => handleClick("navy")} title={`Navy/Blue Solid ${bN}%`} />}
         {bO > 0 && <div style={barSegStyle("linear-gradient(90deg,#3b82f6,#8b5cf6)", bO, "other_solids")} onClick={() => handleClick("other_solids")} title={`Other Solids ${bO}%`} />}
         {bF > 0 && <div style={barSegStyle("linear-gradient(90deg,#f59e0b,#ec4899)", bF, "fancies")} onClick={() => handleClick("fancies")} title={`Fancies ${bF}%`} />}
       </div>
 
       {/* Clickable grid */}
       <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:13 }}>
-        {[["white","\u2B1C White Solid",cWhite],["black","\u2B1B Black Solid",cBlack],["navy","\u{1F7E6} Navy Solid",cNavy],["other_solids","\u{1F3A8} Other Solids",cOther]].map(([cat, label, val]) => (
+        {[["white","\u2B1C White Solid",cWhite],["black","\u2B1B Black Solid",cBlack],["navy","\u{1F7E6} Navy/Blue Solid",cNavy],["other_solids","\u{1F3A8} Other Solids",cOther]].map(([cat, label, val]) => (
           <div key={cat} onClick={() => handleClick(cat)} style={rowStyle(cat)}>
             <span style={{ color:"#64748b" }}>{label}</span>
             <span style={{ fontWeight:700,color:"#1e293b" }}>{val.toLocaleString()}</span>
@@ -3163,7 +3178,7 @@ function BannerBadges({ sku, brandAbbr, bannerRules }) {
 // ANALYTICS VIEW — Brand → Color Breakdown
 // ═══════════════════════════════════════════
 const COLOR_CATS = ["white","black","navy","other_solids","fancies"];
-const COLOR_CAT_LABELS = { white:"White Solid", black:"Black Solid", navy:"Navy Solid", other_solids:"Other Solids", fancies:"Fancies" };
+const COLOR_CAT_LABELS = { white:"White Solid", black:"Black Solid", navy:"Navy/Blue Solid", other_solids:"Other Solids", fancies:"Fancies" };
 const COLOR_CAT_EMOJI = { white:"⬜", black:"⬛", navy:"🟦", other_solids:"🎨", fancies:"✨" };
 
 function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignments }) {
@@ -3336,7 +3351,7 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
 
       {/* Mode Toggle */}
       <div style={{ display:"flex", background:"linear-gradient(135deg,rgba(30,41,59,.9),rgba(15,23,42,.9))", borderRadius:12, border:"1px solid rgba(255,255,255,.1)", overflow:"hidden", marginBottom:12 }}>
-        {[{ key:"color", label:"🎨 By Color", desc:"White / Black / Navy / Solids / Fancies" }, { key:"fabric", label:"🧵 By Fabric", desc:"Fabric code breakdown" }].map(v => (
+        {[{ key:"color", label:"🎨 By Color", desc:"White / Black / Navy-Blue / Solids / Fancies" }, { key:"fabric", label:"🧵 By Fabric", desc:"Fabric code breakdown" }].map(v => (
           <button key={v.key} onClick={() => { setMode(v.key); setExpandedBrand({}); }} style={{
             flex:1, padding:"12px 16px", border:"none", cursor:"pointer", transition:"all .15s", textAlign:"center",
             background: mode === v.key ? "rgba(129,140,248,.2)" : "transparent",
