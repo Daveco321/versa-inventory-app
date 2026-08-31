@@ -51,17 +51,24 @@ const inp = {
   fontSize: 15, marginBottom: 10, boxSizing: 'border-box',
 }
 
-async function staffRoleOk() {
-  for (let i = 0; i < 2; i++) {
+// Three states: 'staff' (verified office), 'denied' (verified NOT office),
+// 'unknown' (network/Supabase failure). Only 'denied' may sign the user out —
+// a flaky connection must never wipe a legitimate staff member's session.
+async function staffRole() {
+  let sawAnswer = false
+  for (let i = 0; i < 3; i++) {
     try {
       const { data: { user } } = await sb.auth.getUser()
-      if (!user) return false
+      if (!user) return 'denied'
       const { data: prof, error } = await sb.from('profiles').select('role').eq('id', user.id).single()
-      if (!error) return !!(prof && prof.role === 'staff')
+      if (!error) {
+        sawAnswer = true
+        return (prof && prof.role === 'staff') ? 'staff' : 'denied'
+      }
     } catch (e) { /* retry */ }
     await new Promise(r => setTimeout(r, 800))
   }
-  return false
+  return sawAnswer ? 'denied' : 'unknown'
 }
 
 function AuthGate() {
@@ -74,7 +81,14 @@ function AuthGate() {
     (async () => {
       try {
         const { data: { session } } = await sb.auth.getSession()
-        if (session && await staffRoleOk()) { setPhase('ok'); return }
+        if (session) {
+          const role = await staffRole()
+          if (role === 'staff' || role === 'unknown') { setPhase('ok'); return }
+          // 'unknown' keeps the existing session working offline-ish; the API
+          // enforces server-side anyway, so this cannot over-grant access.
+          try { await sb.auth.signOut() } catch (e) { /* noop */ }
+          try { localStorage.removeItem('versa_inventory_v2') } catch (e) { /* noop */ }
+        }
       } catch (e) { /* fall through to login */ }
       setPhase('login')
     })()
@@ -86,10 +100,14 @@ function AuthGate() {
     try {
       const { error: err } = await sb.auth.signInWithPassword({ email: email.trim(), password: pass })
       if (err) throw new Error('Wrong email or password.')
-      if (!(await staffRoleOk())) {
+      const role = await staffRole()
+      if (role === 'denied') {
         try { await sb.auth.signOut() } catch (e) { /* noop */ }
         try { localStorage.removeItem('versa_inventory_v2') } catch (e) { /* noop */ }
         throw new Error('This app is for office accounts only.')
+      }
+      if (role === 'unknown') {
+        throw new Error('Could not verify your account. Check your connection and try again.')
       }
       setPhase('ok')
     } catch (e) {
