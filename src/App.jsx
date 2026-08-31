@@ -395,7 +395,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
   if (matchingRows.length === 0) return null;
 
   const warehouseTotal = matchingRows.reduce(
-    (s, r) => s + (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0), 0
+    (s, r) => s + (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0), 0
   );
   const totalDeduction = matchingRows.reduce(
     (s, r) => s + Math.abs(r.committed||0) + Math.abs(r.allocated||0), 0
@@ -645,7 +645,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     // Cascade overflow if any row claimed more than its physical warehouse
     let overflow = 0;
     matchingRows.forEach(r => {
-      const rowWh = (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0);
+      const rowWh = (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0);
       if (perSkuWarehouse[r.sku] > rowWh) {
         overflow += perSkuWarehouse[r.sku] - rowWh;
         perSkuWarehouse[r.sku] = rowWh;
@@ -654,7 +654,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     if (overflow > 0) {
       for (const r of matchingRows) {
         if (overflow <= 0) break;
-        const rowWh = (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0);
+        const rowWh = (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0);
         const spare = rowWh - perSkuWarehouse[r.sku];
         if (spare > 0) {
           const absorb = Math.min(spare, overflow);
@@ -726,7 +726,7 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
   if (filterMode === "incoming") {
     source = source.filter(i => (i.incoming || 0) > 0).map(item => {
       const incoming = item.incoming || 0;
-      const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+      const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
       // Arrival suppression
       const suppressedQty = _getSuppressedIncoming(item.sku, prodData, wh, suppressionOverrides);
       const adjustedIncoming = Math.max(0, incoming - suppressedQty);
@@ -750,17 +750,18 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
           osDed = Math.max(0, ded - whAbsorbed);
         }
       }
-      return { ...item, incoming: adjustedIncoming, _suppressed_incoming: suppressedQty, total_ats: adjustedIncoming - osDed, total_warehouse: 0, jtw:0,tr:0,dcw:0,qa:0, _overseas_deducted: osDed, _display_mode:"overseas" };
+      return { ...item, incoming: adjustedIncoming, _suppressed_incoming: suppressedQty, total_ats: adjustedIncoming - osDed, total_warehouse: 0, jtw:0,tr:0,dcw:0,qa:0,nj:0, _overseas_deducted: osDed, _display_mode:"overseas" };
     }).filter(Boolean);
   } else if (filterMode === "ats") {
     source = source.map(item => {
-      const fullWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+      const fullWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
       // Warehouse sub-filter: show only selected warehouse's qty
       const wh = warehouseFilter === "all" ? fullWh
         : warehouseFilter === "jtw" ? (item.jtw||0)
         : warehouseFilter === "tr" ? (item.tr||0)
         : warehouseFilter === "dcw" ? (item.dcw||0)
-        : warehouseFilter === "qa" ? (item.qa||0) : fullWh;
+        : warehouseFilter === "qa" ? (item.qa||0)
+        : warehouseFilter === "nj" ? (item.nj||0) : fullWh;
       if (wh <= 0) return null;
       const ded = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
       const incoming = item.incoming || 0;
@@ -794,6 +795,7 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
         tr: warehouseFilter === "tr" ? (item.tr||0) : 0,
         dcw: warehouseFilter === "dcw" ? (item.dcw||0) : 0,
         qa: warehouseFilter === "qa" ? (item.qa||0) : 0,
+        nj: warehouseFilter === "nj" ? (item.nj||0) : 0,
       };
       return { ...displayItem, total_ats: sell, total_warehouse: wh, incoming: 0, _display_mode:"ats" };
     }).filter(Boolean);
@@ -801,7 +803,7 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
     // "all" mode: recalculate total_ats client-side (matches main catalog formula)
     // warehouse + incoming - committed - allocated (allows negative for over-allocated)
     source = source.map(item => {
-      const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+      const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
       const incoming = item.incoming || 0;
       const committed = Math.abs(item.committed||0);
       const allocated = Math.abs(item.allocated||0);
@@ -1484,7 +1486,7 @@ function ProductCard({ item, onClick, onRoutingClick, filterMode, prodData, colo
   const transferTotalQty = transferHits.reduce((s, h) => s + h.qty, 0);
 
   // Production data — suppression-aware (skip for flow items which already have PO info)
-  const rawWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+  const rawWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
   const prods = !isFlow ? getEarliestDates(item.sku, prodData, rawWh, suppressionOverrides).productions : [];
   const hasProd = prods.length > 0;
   const totalProdUnits = prods.reduce((s, p) => s + (p.units || 0), 0);
@@ -1536,7 +1538,7 @@ function ProductCard({ item, onClick, onRoutingClick, filterMode, prodData, colo
         {!isFlow && hasProd && (() => {
           // Compute FIFO waterfall deduction per PO (mirrors detail modal logic)
           const totalDed = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
-          const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+          const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
           const incoming = item.incoming||0;
           let overseasDed = 0;
           if (totalDed > 0) {
@@ -1668,6 +1670,7 @@ function ProductCard({ item, onClick, onRoutingClick, filterMode, prodData, colo
             {item.tr > 0 && <span style={{ fontSize:9,background:"#f3e8ff",color:"#7c3aed",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>TR</span>}
             {item.dcw > 0 && <span style={{ fontSize:9,background:"#ffedd5",color:"#c2410c",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>DCW</span>}
             {(item.qa||0) > 0 && <span style={{ fontSize:9,background:"#ccfbf1",color:"#0f766e",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>QA</span>}
+            {(item.nj||0) > 0 && <span style={{ fontSize:9,background:"#ffe4e6",color:"#e11d48",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>NJ</span>}
           </div>
         </div>
       </div>
@@ -1942,7 +1945,7 @@ function expandItemsToFlowRowsForExport(items, inventory, productionData, suppre
   const flowItems = [];
   items.forEach(item => {
     const rawItem = invBySku.get(item.sku);
-    const rawWh = rawItem ? (rawItem.jtw||0)+(rawItem.tr||0)+(rawItem.dcw||0)+(rawItem.qa||0) : 0;
+    const rawWh = rawItem ? (rawItem.jtw||0)+(rawItem.tr||0)+(rawItem.dcw||0)+(rawItem.qa||0)+(rawItem.nj||0) : 0;
     const prods = getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides);
     if (prods.length === 0) {
       flowItems.push({ ...item, _flow: true, _flow_production: "", _flow_po: "No Production Data", _flow_units: item.total_ats || 0, _flow_deducted: 0, _flow_etd: null, _flow_arrival: null });
@@ -1978,7 +1981,7 @@ function expandItemsToFlowRowsForExport(items, inventory, productionData, suppre
 // allocated, per-PO production detail); custView=true → catalog format (no
 // committed/allocated, warehouse NAMES not quantities, PO Ref #).
 function buildExportRow(item, { custView, filterMode, productionData, suppressionOverrides, styleOverrides, colorMap, rawWhBySku }) {
-  const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+  const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
   let delivery = "ATS";
   let arrivalStr = "", etdStr = "", nearestPoRef = "";
   if (item._flow_etd || item._flow_arrival) {
@@ -2029,6 +2032,7 @@ function buildExportRow(item, { custView, filterMode, productionData, suppressio
       if (item.tr > 0) whNames.push("TR");
       if (item.dcw > 0) whNames.push("DCW");
       if ((item.qa||0) > 0) whNames.push("QA");
+      if ((item.nj||0) > 0) whNames.push("NJ");
       base.warehouse = whNames.join(", ") || "—";
     }
     base.incoming = incomingVal;
@@ -2039,6 +2043,7 @@ function buildExportRow(item, { custView, filterMode, productionData, suppressio
     base.tr = item.tr;
     base.dcw = item.dcw;
     base.qa = item.qa || 0;
+    base.nj = item.nj || 0;
     base.incoming = incomingVal;
     base.total_warehouse = item.total_warehouse;
     base.committed = item.committed;
@@ -2086,7 +2091,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
   // Raw warehouse per SKU for suppression checks (incoming mode zeroes item wh)
   const rawWhBySku = useMemo(() => {
     const m = new Map();
-    (inventory || []).forEach(r => m.set(r.sku, (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)));
+    (inventory || []).forEach(r => m.set(r.sku, (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0)));
     return m;
   }, [inventory]);
 
@@ -2483,7 +2488,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
   const fabric = getFabricFromSKU(item.sku, styleOverrides);
   const fit = getFitFromSKU(item.sku, styleOverrides);
   const sp = getSizePack(item.sku, item.brand_abbr || item.brand, prepackDefaults, styleOverrides);
-  const totalStock = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+  const totalStock = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
   // Use the pre-computed total_ats from rebuildBrands (already includes incoming - committed - allocated)
   // Falls back to manual recomputation for raw items that haven't been processed
   const ats = typeof item.total_ats === "number" ? item.total_ats : (totalStock + (item.incoming||0) - Math.abs(item.committed||0) - Math.abs(item.allocated||0));
@@ -2606,8 +2611,8 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
           </div>
 
           {/* Warehouse */}
-          <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:12 }}>
-            {[["JTW",item.jtw,"#dbeafe","#1d4ed8"],["TR",item.tr,"#f3e8ff","#7c3aed"],["DCW",item.dcw,"#ffedd5","#c2410c"],["QA",item.qa||0,"#ccfbf1","#0f766e"]].map(([label,val,bg,color]) => (
+          <div style={{ display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6,marginBottom:12 }}>
+            {[["JTW",item.jtw,"#dbeafe","#1d4ed8"],["TR",item.tr,"#f3e8ff","#7c3aed"],["DCW",item.dcw,"#ffedd5","#c2410c"],["QA",item.qa||0,"#ccfbf1","#0f766e"],["NJ",item.nj||0,"#ffe4e6","#e11d48"]].map(([label,val,bg,color]) => (
               <div key={label} style={{ background:bg,padding:8,borderRadius:8,textAlign:"center" }}>
                 <p style={{ fontSize:10,color,fontWeight:600 }}>{label}</p>
                 <p style={{ fontSize:18,fontWeight:800 }}>{val}</p>
@@ -2733,7 +2738,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
               {prods.length > 0 && (() => {
                 // Mirror main catalog waterfall logic: deduct from productions FIFO
                 const totalDed = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
-                const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0);
+                const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
                 const incoming = item.incoming||0;
                 let overseasDed = 0;
                 if (totalDed > 0) {
@@ -3193,7 +3198,7 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
     const brandMap = {};
     inventory.forEach(item => {
       if (!item.sku) return;
-      const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0);
+      const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0) + (item.nj||0);
       const incoming = item.incoming || 0;
       const committed = Math.abs(item.committed||0) + Math.abs(item.allocated||0);
       const totalStock = wh + incoming;
@@ -3897,7 +3902,7 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
   const flowItems = useMemo(() => {
     const items = [];
     inventory.forEach(item => {
-      const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0);
+      const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0) + (item.nj||0);
       const prods = getActiveProductionForSku(item.sku, productionData, wh, suppressionOverrides);
       if (prods.length === 0) return; // no active production → skip
 
@@ -4761,13 +4766,13 @@ export default function VersaInventoryApp() {
     else if (sortBy === "sku-asc") items.sort((a,b) => (a.sku||"").localeCompare(b.sku||""));
     else if (sortBy === "sku-desc") items.sort((a,b) => (b.sku||"").localeCompare(a.sku||""));
     else if (sortBy === "arrival-asc") items.sort((a,b) => {
-      const da = getEarliestDates(a.sku, productionData, (a.jtw||0)+(a.tr||0)+(a.dcw||0)+(a.qa||0), suppressionOverrides).arrival || new Date("2099");
-      const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0), suppressionOverrides).arrival || new Date("2099");
+      const da = getEarliestDates(a.sku, productionData, (a.jtw||0)+(a.tr||0)+(a.dcw||0)+(a.qa||0)+(a.nj||0), suppressionOverrides).arrival || new Date("2099");
+      const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0)+(b.nj||0), suppressionOverrides).arrival || new Date("2099");
       return da - db;
     });
     else if (sortBy === "arrival-desc") items.sort((a,b) => {
-      const da = getEarliestDates(a.sku, productionData, (a.jtw||0)+(a.tr||0)+(a.dcw||0)+(a.qa||0), suppressionOverrides).arrival || new Date("1970");
-      const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0), suppressionOverrides).arrival || new Date("1970");
+      const da = getEarliestDates(a.sku, productionData, (a.jtw||0)+(a.tr||0)+(a.dcw||0)+(a.qa||0)+(a.nj||0), suppressionOverrides).arrival || new Date("1970");
+      const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0)+(b.nj||0), suppressionOverrides).arrival || new Date("1970");
       return db - da;
     });
 
@@ -4776,9 +4781,9 @@ export default function VersaInventoryApp() {
     if (flowMode && filterMode === "incoming") {
       let flowItems = [];
       items.forEach(item => {
-        // Get real warehouse qty from raw inventory (incoming mode zeros jtw/tr/dcw/qa)
+        // Get real warehouse qty from raw inventory (incoming mode zeros jtw/tr/dcw/qa/nj)
         const rawItem = inventory.find(d => d.sku === item.sku);
-        const rawWh = rawItem ? (rawItem.jtw||0)+(rawItem.tr||0)+(rawItem.dcw||0)+(rawItem.qa||0) : 0;
+        const rawWh = rawItem ? (rawItem.jtw||0)+(rawItem.tr||0)+(rawItem.dcw||0)+(rawItem.qa||0)+(rawItem.nj||0) : 0;
         const prods = getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides);
         if (prods.length > 0) {
           const sortedProds = [...prods].sort((a, b) => (a.arrival || new Date("2099")) - (b.arrival || new Date("2099")));
@@ -4957,6 +4962,7 @@ export default function VersaInventoryApp() {
             { key:"tr",  label:"TR",  icon:"🏭" },
             { key:"dcw", label:"DCW", icon:"🏭" },
             { key:"qa",  label:"QA",  icon:"🔍" },
+            { key:"nj",  label:"NJ",  icon:"🏭" },
           ].map(wf => (
             <button key={wf.key} onClick={() => setWarehouseFilter(wf.key)} style={{
               background: warehouseFilter === wf.key ? "linear-gradient(135deg,#3b82f6,#4f46e5)" : "rgba(255,255,255,.06)",
