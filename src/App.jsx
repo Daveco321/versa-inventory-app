@@ -257,7 +257,48 @@ const SIZE_PACKS = {
   "Von Dutch": { master_qty:36, inner_qty:9, sizes:[["S (14-14.5)",6],["M (15-15.5)",8],["L (16-16.5)",8],["XL (17-17.5)",8],["XXL (18-18.5)",6]] }
 };
 
+// Specific-size SKUs (AMNASU576SLP-1515.53233 etc): the case is a solid pack
+// of exactly that size. Modern bases only (legacy excluded); bare -V is a
+// style variant, not a size. Mirrors the desktop parseSizedSkuLabel.
+function parseSizedSkuLabel(sku) {
+  const s = String(sku || "").toUpperCase().trim();
+  const di = s.indexOf("-");
+  if (di < 0) return null;
+  const base = s.slice(0, di);
+  if (!/^[A-Z]{6}\d{3}[A-Z]{2,3}$/.test(base)) return null;
+  let suf = s.slice(di + 1);
+  if (suf.endsWith("-FBA")) suf = suf.slice(0, -4);
+  if (suf.endsWith("-V")) suf = suf.slice(0, -2);
+  if (!suf || suf === "V" || suf === "FBA") return null;
+  const neckOk = n => { const x = parseFloat(n); return x >= 13 && x <= 23; };
+  const slOk = n => { const x = parseFloat(n); return x >= 28 && x <= 40; };
+  let m;
+  if ((m = suf.match(/^(\d{2})(\d{2}(?:\.\d)?)(\d{2})(\d{2})$/))) {
+    return (neckOk(m[1]) && neckOk(m[2]) && slOk(m[3]) && slOk(m[4])) ? `${m[1]}-${m[2]} / ${m[3]}-${m[4]}` : null;
+  }
+  if ((m = suf.match(/^(\d{2}(?:\.\d)?)-(\d{2}(?:\.\d)?)(\d{2})\/(\d{2})$/))) {
+    return (neckOk(m[1]) && neckOk(m[2]) && slOk(m[3]) && slOk(m[4])) ? `${m[1]}-${m[2]} / ${m[3]}-${m[4]}` : null;
+  }
+  if ((m = suf.match(/^(\d{2}(?:\.\d)?)-(\d{2})(?:\/(\d{2}))?$/))) {
+    return (neckOk(m[1]) && slOk(m[2]) && (!m[3] || slOk(m[3]))) ? `${m[1]} / ${m[2]}${m[3] ? "-" + m[3] : ""}` : null;
+  }
+  if (/^(XS|S|M|L|XL|XXL|XXXL|[2-4]XL|ST|MT|LT|XLT|[2-3]XLT)$/.test(suf)) return suf;
+  return null;
+}
+
 function getSizePack(sku, brandAbbr, prepackDefaults, styleOverrides) {
+  const info = _getSizePackBase(sku, brandAbbr, prepackDefaults, styleOverrides);
+  const sized = parseSizedSkuLabel(sku);
+  if (!sized) return info;
+  // an override keyed EXACTLY to this sized SKU still wins (deliberate choice)
+  const skuU = String(sku || "").toUpperCase();
+  const exact = styleOverrides && styleOverrides[skuU];
+  if (exact && exact.sizePack && Array.isArray(exact.sizePack.sizes) && exact.sizePack.sizes.length > 0) return info;
+  const mq = parseInt(info.master_qty, 10) || 36;
+  return { master_qty: mq, inner_qty: info.inner_qty, sizes: [[sized, mq]], _sized: sized };
+}
+
+function _getSizePackBase(sku, brandAbbr, prepackDefaults, styleOverrides) {
   // Check style override sizePack first (matches desktop)
   if (styleOverrides) {
     const ov = getStyleOverride(sku, styleOverrides);
