@@ -1074,23 +1074,15 @@ function classifyColor(colorDisplay, brandAbbr) {
   // trim). Chambray/teal/turquoise are deliberately NOT blue words.
   const _solidLead = c.match(/^(.*?)\s*\bs(?:olid|ld)\b/);
   if (!_hasPrint && _solidLead && _BLUE_FAMILY.test(_solidLead[1])) return "navy";
-  // White/Black exact: "[color] solid" or "[color] sld" — nothing before or after
-  const exactMatch = c.match(/^(\S+)\s+s(?:olid|ld)$/);
-  if (exactMatch && !_hasPrint) {
-    const base = exactMatch[1];
-    if (base === "white") return "white";
-    if (base === "black") return "black";
+  // White / Black: judge the phrase LEADING the first "solid"/"sld", exactly
+  // like the Navy rule — trailing text after "Solid" ("W/ Chest Embroidery",
+  // "W/ Blue Contrast Trim") is detail on the garment, not its color. Mirrors
+  // desktop fix Sep 3 2026 (subsumes the old USPA-only leading-word rule).
+  if (!_hasPrint && _solidLead) {
+    const lead = _solidLead[1];
+    if (/\bwhite\b|\bivory\b|\bcream\b/.test(lead)) return "white";
+    if (/\bblack\b/.test(lead)) return "black";
     return "other_solids";
-  }
-  // USPA: "[color] solid/sld" at the start counts even with trailing text
-  if ((brandAbbr || "").toUpperCase() === "USPA" && !_hasPrint) {
-    const uspaMatch = c.match(/^(\S+)\s+s(?:olid|ld)/);
-    if (uspaMatch) {
-      const base = uspaMatch[1];
-      if (base === "white" || base === "ivory" || base === "cream") return "white";
-      if (base === "black") return "black";
-      return "other_solids";
-    }
   }
   // Other Solids: contains "solid" or "sld" anywhere, no disqualifiers
   if (!_hasPrint && /\bs(?:olid|ld)\b/.test(c)) return "other_solids";
@@ -1159,23 +1151,33 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
   const METRIC_LABELS = { ats:"\u{1F4E6} ATS", wh:whLabel, incoming:"\u{1F6A2} Incoming", total:"\u{1F4CA} Total" };
   const METRIC_COLORS = { ats:["#16a34a","#f0fdf4","#bbf7d0"], wh:["#6d28d9","#f5f3ff","#ddd6fe"], incoming:["#d97706","#fffbeb","#fde68a"], total:["#0369a1","#e0f2fe","#bae6fd"] };
 
+  // Multi-select (mirrors desktop's Color Family multi, Sep 3 2026): tapping a
+  // category ADDS it to the filter, tapping again removes it — so "Navy" and
+  // "Other Solids" can be active at the same time. The filter object keeps the
+  // legacy `cat` field (first active) plus a `cats` array; `skus` is the union.
+  const _activeCats = activeColorFilter ? (activeColorFilter.cats || [activeColorFilter.cat]) : [];
+  const _catActive = (cat) => _activeCats.includes(cat);
   const handleClick = (cat) => {
     if (!skuSets[cat] || skuSets[cat].size === 0) return;
-    if (activeColorFilter && activeColorFilter.cat === cat) onColorFilter(null);
-    else onColorFilter({ cat, label: LABEL_MAP[cat], skus: skuSets[cat] });
+    const cats = _catActive(cat) ? _activeCats.filter(c => c !== cat) : [..._activeCats, cat];
+    if (cats.length === 0) { onColorFilter(null); return; }
+    const skus = new Set();
+    cats.forEach(c => { (skuSets[c] || new Set()).forEach(s => skus.add(s)); });
+    const label = cats.length === 1 ? LABEL_MAP[cats[0]] : cats.map(c => LABEL_MAP[c]).join(" + ");
+    onColorFilter({ cat: cats[0], cats, label, skus });
   };
 
   const rowStyle = (cat, span2) => ({
     display:"flex", justifyContent:"space-between", alignItems:"center",
     padding:"7px 10px", borderRadius:6, cursor:"pointer", transition:"background 0.15s",
-    border: `1px solid ${activeColorFilter?.cat === cat ? "#93c5fd" : "#e2e8f0"}`,
-    background: activeColorFilter?.cat === cat ? "#dbeafe" : "#f8fafc",
+    border: `1px solid ${_catActive(cat) ? "#93c5fd" : "#e2e8f0"}`,
+    background: _catActive(cat) ? "#dbeafe" : "#f8fafc",
     ...(span2 ? { gridColumn:"span 2" } : {})
   });
 
   const barSegStyle = (bg, w, cat) => ({
     width:`${w}%`, background:bg, cursor:"pointer",
-    outline: activeColorFilter?.cat === cat ? "2px solid #6366f1" : "none"
+    outline: _catActive(cat) ? "2px solid #6366f1" : "none"
   });
 
   const mc = METRIC_COLORS[metric];
@@ -1281,11 +1283,17 @@ function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFil
   const METRIC_COLORS = { ats:["#16a34a","#f0fdf4","#bbf7d0"], wh:["#6d28d9","#f5f3ff","#ddd6fe"], incoming:["#d97706","#fffbeb","#fde68a"], total:["#0369a1","#e0f2fe","#bae6fd"] };
   const mc = METRIC_COLORS[metric];
 
+  // Multi-select (mirrors desktop's fabric multi-select, Sep 3 2026): tap to
+  // add a fabric, tap again to remove — several fabrics can filter at once.
+  const _activeCodes = activeFabricFilter ? (activeFabricFilter.codes || [activeFabricFilter.code]) : [];
   const handleClick = (code) => {
     const row = fabricMap[code];
     if (!row) return;
-    if (activeFabricFilter && activeFabricFilter.code === code) onFabricFilter(null);
-    else onFabricFilter({ code, label: code, skus: row.allSkus });
+    const codes = _activeCodes.includes(code) ? _activeCodes.filter(c => c !== code) : [..._activeCodes, code];
+    if (codes.length === 0) { onFabricFilter(null); return; }
+    const skus = new Set();
+    codes.forEach(c => { const r = fabricMap[c]; if (r) r.allSkus.forEach(s => skus.add(s)); });
+    onFabricFilter({ code: codes[0], codes, label: codes.join(" + "), skus });
   };
 
   const toggleStyle = (m) => ({
@@ -1331,7 +1339,7 @@ function FabricSummaryPanel({ items, filterMode, activeFabricFilter, onFabricFil
           <tbody>
             {rows.map(r => {
               const units = getUnits(r);
-              const isActive = activeFabricFilter?.code === r.code.toUpperCase();
+              const isActive = activeFabricFilter ? (activeFabricFilter.codes || [activeFabricFilter.code]).includes(r.code.toUpperCase()) : false;
               const pct = totalUnits ? Math.round(units / totalUnits * 100) : 0;
               return (
                 <tr key={r.code} onClick={() => handleClick(r.code.toUpperCase())}
