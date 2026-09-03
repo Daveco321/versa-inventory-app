@@ -4674,7 +4674,8 @@ export default function VersaInventoryApp() {
 
   // ─── Navigation with Browser History ────────────────────────
   const goToBrands = useCallback(() => { 
-    setView("brands"); setCurrentBrand(null); setSelectedItem(null); setSearchQuery(""); setFitFilter([]); setFabricFilter([]); 
+    setView("brands"); setCurrentBrand(null); setSelectedItem(null); setSearchQuery(""); setFitFilter([]); setFabricFilter([]);
+    setColorCategoryFilter(null); setFabricCodeFilter(null); setShowColorSummary(false); setShowFabricSummary(false);
     window.history.pushState({ view: "brands" }, "", "#brands");
   }, []);
   const goToInventory = useCallback((brandKey) => { 
@@ -4706,8 +4707,12 @@ export default function VersaInventoryApp() {
       const state = e.state;
       if (!state || state.view === "brands") {
         setView("brands"); setCurrentBrand(null); setSelectedItem(null); setSearchQuery(""); setFitFilter([]); setFabricFilter([]);
+        setColorCategoryFilter(null); setFabricCodeFilter(null); setShowColorSummary(false); setShowFabricSummary(false);
       } else if (state.view === "inventory" && state.brand) {
+        // Back-button entry into a brand mirrors goToInventory: the Color/Fabric
+        // summary drill filters are per-brand SKU sets and must not carry over.
         setCurrentBrand(state.brand); setView("inventory"); setSelectedItem(null); setSearchQuery(""); setFitFilter([]); setFabricFilter([]);
+        setColorCategoryFilter(null); setFabricCodeFilter(null); setShowColorSummary(false); setShowFabricSummary(false);
       } else if (state.view === "detail") {
         // just close the modal, stay on inventory
         setSelectedItem(null);
