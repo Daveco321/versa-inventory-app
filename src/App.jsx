@@ -2033,7 +2033,9 @@ function buildExportRow(item, { custView, filterMode, productionData, suppressio
   const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
   let delivery = "ATS";
   let arrivalStr = "", etdStr = "", nearestPoRef = "";
-  if (item._flow_etd || item._flow_arrival) {
+  // Per-PO flow rows keep their OWN dates only (blank when the ledger has none);
+  // never borrow a sibling production's dates (mirrors desktop, Sep 3 2026).
+  if (item._flow || item._flow_etd || item._flow_arrival) {
     // Flow row — per-PO dates already on the item
     etdStr = item._flow_etd ? formatDateShort(item._flow_etd) : "";
     arrivalStr = item._flow_arrival ? formatDateShort(item._flow_arrival) : "";
@@ -2081,7 +2083,7 @@ function buildExportRow(item, { custView, filterMode, productionData, suppressio
       if (item.tr > 0) whNames.push("TR");
       if (item.dcw > 0) whNames.push("DCW");
       if ((item.qa||0) > 0) whNames.push("QA");
-      if ((item.nj||0) > 0) whNames.push("NJ");
+      // NJ is admin-only: never named on a customer sheet (Sep 3 2026 audit).
       base.warehouse = whNames.join(", ") || "—";
     }
     base.incoming = incomingVal;
@@ -2152,8 +2154,18 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
 
   // Sort (customer = ATS desc like catalog exports, admin = warehouse desc),
   // force flow expansion where the desktop does, then build backend-ready rows.
+  // Customer view: NJ (Edison 3PL) is admin-only. The phone is always authenticated,
+  // so the server's anonymous-catalog scrub never runs — strip here (Sep 3 2026 audit).
+  const stripNjForCustomer = (items) => items.filter(i => !i._nj_synth).map(i => {
+    const nj = +(i.nj || 0);
+    if (!nj && !("nj" in i)) return i;
+    const c = { ...i };
+    if (nj) { c.total_warehouse = Math.max(0, (c.total_warehouse || 0) - nj); c.total_ats = (c.total_ats || 0) - nj; }
+    c.nj = 0;
+    return c;
+  });
   const buildRows = (items, { preSorted = false } = {}) => {
-    let out = [...items];
+    let out = custView ? stripNjForCustomer([...items]) : [...items];
     if (!preSorted) out.sort((a, b) => custView ? ((b.total_ats||0)-(a.total_ats||0)) : ((b.total_warehouse||0)-(a.total_warehouse||0)));
     if ((flowMode || custView) && filterMode === "incoming") {
       out = expandItemsToFlowRowsForExport(out, inventory, productionData, suppressionOverrides);
