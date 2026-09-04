@@ -158,9 +158,7 @@ const FIT_CODES = Object.assign({}, _LEGACY_FIT_CODES, PANTS_FIT_CODES, SHIRT_FI
 const BANNER_RULES_SEED = [
   { id:'seed-ss', text:'SHORT SLEEVE', bgColor:'rgba(14,165,233,0.9)', textColor:'#fff', position:'bottom-left', visibility:'both', category:'short_sleeve', fits:[], customers:[], brands:[], skus:[] },
   { id:'seed-bt', text:'BIG & TALL', bgColor:'rgba(124,58,237,0.9)', textColor:'#fff', position:'bottom-left', visibility:'both', category:'big_tall', fits:[], customers:[], brands:[], skus:[] },
-  { id:'seed-pants', text:'PANTS', bgColor:'rgba(107,114,128,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'pants', fits:[], customers:[], brands:[], skus:[] },
-  { id:'seed-vest', text:'VEST', bgColor:'rgba(120,53,15,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'vests', fits:[], customers:[], brands:[], skus:[] },
-  { id:'seed-sport', text:'SPORTSWEAR', bgColor:'rgba(234,88,12,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'sportswear', fits:[], customers:[], brands:[], skus:[] },
+  { id:'seed-pants', text:'PANTS', bgColor:'rgba(107,114,128,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'pants', fits:[], customers:[], brands:[], skus:[] },  { id:'seed-sport', text:'SPORTSWEAR', bgColor:'rgba(234,88,12,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'sportswear', fits:[], customers:[], brands:[], skus:[] },
   { id:'seed-acc-chaps', text:'TIE & HANKY', bgColor:'rgba(168,85,247,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'accessories', fits:[], customers:[], brands:['CHAPS'], skus:[] },
   { id:'seed-acc-shaq', text:'TIE', bgColor:'rgba(168,85,247,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'accessories', fits:[], customers:[], brands:['SHAQ'], skus:[] },
 ];
@@ -944,7 +942,8 @@ function isSportswear(sku, brandAbbr) {
 function isBlazer(sku) {
   if (!sku) return false;
   const base = sku.split("-")[0].toUpperCase();
-  return /^B\d\d$/.test(base.substring(6, 9));
+  // Vests (V01–V99) are part of this category — "Blazers/Vests" (David, Sep 4 2026).
+  return /^[BV]\d\d$/.test(base.substring(6, 9));
 }
 
 // Vests — Style Rules serial range V01-V99 at positions 6-8 (e.g. BUGBRPV01SLS),
@@ -1049,8 +1048,7 @@ function getDetailedCategory(sku, brandAbbr, styleOverrides) {
   if (base === "accessories") return "accessories";
   // Blazers (B## serial) — tailored category, takes precedence over the
   // long/short sleeve split and YM/B&T tags. Mirrors desktop ordering.
-  if (isBlazer(sku)) return "blazers";
-  if (isVest(sku)) return "vests";
+  if (isBlazer(sku)) return "blazers";   // includes vests (V## serial)
   if (isYoungMen(sku)) return "young_men";
   if (isBigAndTall(sku)) return "big_tall";
   return isShortSleeve(sku, styleOverrides) ? "short_sleeve" : "long_sleeve";
@@ -5123,8 +5121,7 @@ export default function VersaInventoryApp() {
                 { value:"big_tall",   label:"🧢 Big & Tall" },
                 { value:"pants",      label:"👖 Dress Pants" },
                 { value:"sportswear", label:"🏋️ Sportswear" },
-                { value:"blazers",    label:"🤵 Blazers" },
-                { value:"vests",      label:"🦺 Vests" },
+                { value:"blazers",    label:"🤵 Blazers/Vests" },
                 { value:"young_men",  label:"🧒 Young Men" },
                 { value:"accessories",label:"🎀 Accessories" },
               ].map(({ value, label }) => (
@@ -5258,8 +5255,7 @@ export default function VersaInventoryApp() {
                   <option value="big_tall">🧢 Big &amp; Tall</option>
                   <option value="pants">👖 Dress Pants</option>
                   <option value="sportswear">🏋️ Sportswear</option>
-                  <option value="blazers">🤵 Blazers</option>
-                  <option value="vests">🦺 Vests</option>
+                  <option value="blazers">🤵 Blazers/Vests</option>
                   <option value="young_men">🧒 Young Men</option>
                   <option value="accessories">🎀 Ties &amp; Accessories</option>
                 </select>
@@ -5284,7 +5280,7 @@ export default function VersaInventoryApp() {
                 </span>
                 {categoryFilter !== "all" && (
                   <span style={{ display:"inline-flex",alignItems:"center",gap:4,background:"rgba(99,102,241,.15)",color:"#818cf8",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,border:"1px solid rgba(99,102,241,.3)" }}>
-                    {{ long_sleeve:"👔 Long Sleeve", short_sleeve:"👕 Short Sleeve", big_tall:"🧢 Big & Tall", pants:"👖 Pants", sportswear:"🏋️ Sportswear", blazers:"🤵 Blazers", young_men:"🧒 Young Men", accessories:"🎀 Accessories" }[categoryFilter]}
+                    {{ long_sleeve:"👔 Long Sleeve", short_sleeve:"👕 Short Sleeve", big_tall:"🧢 Big & Tall", pants:"👖 Pants", sportswear:"🏋️ Sportswear", blazers:"🤵 Blazers/Vests", young_men:"🧒 Young Men", accessories:"🎀 Accessories" }[categoryFilter]}
                     <button onClick={() => setCategoryFilter("all")} style={{ background:"none",border:"none",color:"#818cf8",cursor:"pointer",fontSize:12,padding:0,lineHeight:1,marginLeft:2 }}>✕</button>
                   </span>
                 )}
