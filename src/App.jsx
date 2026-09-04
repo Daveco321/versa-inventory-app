@@ -1020,8 +1020,8 @@ function getItemCategory(sku, brandAbbr) {
   // e.g. "CUUSPPP01SLS", "PMGBDPP01SRS"). Per business rule: other brands don't use
   // the P## convention; their pants are identified by fabric code ("(Bottoms)" codes
   // from Style Rules — BC/BR/BH/BA), handled by isPants() via SPORTSWEAR_BOTTOM_CODES.
-  if (PANTS_SERIAL_BRANDS.has(skuBrand)
-      && base.length >= 10 && base[6] === "P"
+  // (Sep 4 2026) brand-agnostic: any P##X serial is pants — mirrors desktop hasPantsSerial.
+  if (base.length >= 10 && base[6] === "P"
       && /\d/.test(base[7]) && /\d/.test(base[8]) && /[A-Z]/.test(base[9])) return "pants";
   if (base.length >= 11 && SPORTSWEAR_COLLARS.has(base.slice(-1))) return "sportswear";
   // Sportswear by fabric code: polo/tee/henley fabrics are sportswear regardless of collar code
