@@ -457,9 +457,19 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     .slice()
     .sort((a, b) => (a.arrival || a.etd || new Date("2099-01-01")) - (b.arrival || b.etd || new Date("2099-01-01")));
 
+  // NJ = LAST RESORT (mirrors desktop _routeSku, David Sep 4 2026): NJ warehouse
+  // stock is its own slot (nj: true) and productions landing in NJ/AE/AW are
+  // flagged; both are visited after every other slot, and a dated order only
+  // takes NJ in the feasibility pass when the style has no other supply.
+  const NJ_LANDING_WH = ["NJ", "AE", "AW"];
+  const njTotal = matchingRows.reduce((s, r) => s + Math.max(0, r.nj || 0), 0);
+  const otherWarehouse = warehouseTotal - njTotal;
   const slots = [];
-  if (warehouseTotal > 0) {
-    slots.push({ type: "warehouse", po: null, originalUnits: warehouseTotal, units: warehouseTotal, arrival: today, etd: null, fob_flag: false, fob_note: "", consumers: [] });
+  if (otherWarehouse > 0) {
+    slots.push({ type: "warehouse", po: null, originalUnits: otherWarehouse, units: otherWarehouse, arrival: today, etd: null, fob_flag: false, fob_note: "", nj: false, consumers: [] });
+  }
+  if (njTotal > 0) {
+    slots.push({ type: "warehouse", po: null, originalUnits: njTotal, units: njTotal, arrival: today, etd: null, fob_flag: false, fob_note: "", nj: true, landing: "NJ", consumers: [] });
   }
   productions.forEach(p => {
     if ((p.units || 0) > 0) {
@@ -473,10 +483,14 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
         etd: p.etd,
         fob_flag: !!p.fob_flag,
         fob_note: p.fob_note || "",
+        landing: String(p.warehouse || "").toUpperCase(),
+        nj: NJ_LANDING_WH.includes(String(p.warehouse || "").toUpperCase()),
         consumers: []
       });
     }
   });
+  const hasNonNj = slots.some(s => !s.nj && s.units > 0);
+  const slotsNjLast = [...slots.filter(s => !s.nj), ...slots.filter(s => s.nj)];
 
   // Exact-SKU demand items
   const allSkus = new Set(matchingRows.map(r => (r.sku || "").toUpperCase()));
@@ -555,6 +569,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     const feasible = slots
       .filter(s => {
         if (s.units <= 0) return false;
+        if (s.nj && hasNonNj) return false;   // NJ only when it is the style's ONLY supply
         if (s.fob_flag) return false;
         if (s.type === "warehouse") return !isFob;
         const slotDate = isFob ? (s.etd || s.arrival) : s.arrival;
@@ -577,7 +592,10 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
         // slot — those were already tried in Pass 0)
         const fobForward = slots
           .filter(s => s.type === "production" && !s.fob_flag && s.units > 0)
-          .sort((a, b) => (a.etd || a.arrival || new Date("2099-12-31")) - (b.etd || b.arrival || new Date("2099-12-31")));
+          .sort((a, b) => {
+            if (!!a.nj !== !!b.nj) return a.nj ? 1 : -1;   // NJ-landing batches roll last
+            return (a.etd || a.arrival || new Date("2099-12-31")) - (b.etd || b.arrival || new Date("2099-12-31"));
+          });
         for (const s of fobForward) {
           if (needed <= 0) break;
           const take = Math.min(s.units, needed);
@@ -604,7 +622,8 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
         const fallback = slots
           .filter(s => s.units > 0)
           .sort((a, b) => {
-            // Non-FOB first, then by arrival ASC
+            // NJ absolute last, then non-FOB first, then by arrival ASC
+            if (!!a.nj !== !!b.nj) return a.nj ? 1 : -1;
             if (a.fob_flag !== b.fob_flag) return a.fob_flag ? 1 : -1;
             return (a.arrival || new Date("2099-12-31")) - (b.arrival || new Date("2099-12-31"));
           });
@@ -625,7 +644,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
   apos.forEach(apo => {
     let needed = apo.qty;
     // Non-FOB slots first
-    for (const s of slots) {
+    for (const s of slotsNjLast) {
       if (needed <= 0) break;
       if (s.units <= 0 || s.fob_flag) continue;
       const take = Math.min(s.units, needed);
@@ -635,7 +654,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     }
     // FOB slots last
     if (needed > 0) {
-      for (const s of slots) {
+      for (const s of slotsNjLast) {
         if (needed <= 0) break;
         if (s.units <= 0 || !s.fob_flag) continue;
         const take = Math.min(s.units, needed);
@@ -649,7 +668,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
   // Route VW: same pattern as APO
   vws.forEach(vw => {
     let needed = vw.qty;
-    for (const s of slots) {
+    for (const s of slotsNjLast) {
       if (needed <= 0) break;
       if (s.units <= 0 || s.fob_flag) continue;
       const take = Math.min(s.units, needed);
@@ -658,7 +677,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
       needed -= take;
     }
     if (needed > 0) {
-      for (const s of slots) {
+      for (const s of slotsNjLast) {
         if (needed <= 0) break;
         if (s.units <= 0 || !s.fob_flag) continue;
         const take = Math.min(s.units, needed);
@@ -669,8 +688,10 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     }
   });
 
-  const warehouseSlot = slots.find(s => s.type === "warehouse");
-  const warehouseConsumed = warehouseSlot ? (warehouseTotal - warehouseSlot.units) : 0;
+  // Two warehouse slots may exist (non-NJ stock + NJ last-resort stock): aggregate both.
+  const warehouseSlots = slots.filter(s => s.type === "warehouse");
+  const warehouseSlot = warehouseSlots.length ? warehouseSlots[0] : null;
+  const warehouseConsumed = warehouseSlots.reduce((sum, s) => sum + Math.max(0, (s.originalUnits || 0) - s.units), 0);
   const overseasConsumed = Math.max(0, totalDeduction - warehouseConsumed);
 
   // Per-SKU warehouse from consumer tags (exact)
@@ -679,7 +700,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
   if (warehouseSlot) {
     const skuToRow = new Map();
     matchingRows.forEach(r => skuToRow.set((r.sku||"").toUpperCase(), r));
-    warehouseSlot.consumers.forEach(c => {
+    warehouseSlots.flatMap(s => s.consumers || []).forEach(c => {
       const row = skuToRow.get((c.targetSku||"").toUpperCase());
       if (row) perSkuWarehouse[row.sku] += c.units;
     });
@@ -1883,12 +1904,15 @@ function RoutingModal({ baseStyle, onClose, inventory, productionData, openOrder
                   <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4 }}>
                     <div style={{ display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
                       {isWarehouse ? (
-                        <span style={{ fontSize:13,fontWeight:800,color:"#15803d" }}>🏠 Warehouse</span>
+                        <span style={{ fontSize:13,fontWeight:800,color:slot.nj?"#b45309":"#15803d" }}>{slot.nj ? "🏠 NJ Warehouse (last resort)" : "🏠 Warehouse"}</span>
                       ) : (
                         <>
                           <span style={{ fontFamily:"monospace",fontSize:13,fontWeight:800,color:isFob?"#1d4ed8":"#15803d" }}>🚢 {slot.po || "—"}</span>
                           {isFob && (
                             <span title={`David's ledger ETD: ${slot.fob_note || "be ready"}`} style={{ background:"#1d4ed8",color:"#fff",fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:99,letterSpacing:.3 }}>FOB</span>
+                          )}
+                          {slot.nj && (
+                            <span title="Lands at the NJ warehouse. Used only when no other supply exists for this style." style={{ background:"#b45309",color:"#fff",fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:99,letterSpacing:.3 }}>NJ LANDING · LAST RESORT</span>
                           )}
                         </>
                       )}
@@ -2170,17 +2194,56 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
     const nj = +(i.nj || 0);
     if (!nj && !("nj" in i)) return i;
     const c = { ...i };
-    if (nj) { c.total_warehouse = Math.max(0, (c.total_warehouse || 0) - nj); c.total_ats = (c.total_ats || 0) - nj; }
+    if (nj) {
+      c.total_warehouse = Math.max(0, (c.total_warehouse || 0) - nj); c.total_ats = (c.total_ats || 0) - nj;
+      // NJ was this row's ONLY stock (nothing else in any warehouse, nothing incoming,
+      // no ATS left): never on a customer sheet, not even as a zero row (Sep 4 2026).
+      if (c.total_warehouse <= 0 && (c.incoming || 0) <= 0 && c.total_ats <= 0) return null;
+    }
     c.nj = 0;
     return c;
-  });
+  }).filter(Boolean);
+  // Customer view: NJ/AE/AW-landing productions (ledger column I) are admin-only too.
+  // Their units come out of incoming + Total ATS, dates / PO Ref # come from visible
+  // productions only, and a style whose only supply lands there drops (Sep 4 2026).
+  const HIDDEN_LANDING_WH = ["NJ", "AE", "AW"];
+  const isHiddenLandingProd = (p) => HIDDEN_LANDING_WH.includes(String(p.warehouse || "").toUpperCase());
+  const customerProductionData = useMemo(() => (productionData || []).filter(p => !isHiddenLandingProd(p)), [productionData]);
+  const stripHiddenLandingForCustomer = (items) => {
+    const hidden = new Map(), visible = new Set();
+    (productionData || []).forEach(p => {
+      const st = String(p.style || "").toUpperCase();
+      if (!st) return;
+      if (isHiddenLandingProd(p)) hidden.set(st, (hidden.get(st) || 0) + (+p.units || 0));
+      else if ((+p.units || 0) > 0) visible.add(st);
+    });
+    if (!hidden.size) return items;
+    const out = [];
+    items.forEach(i => {
+      const st = String(i.sku || "").toUpperCase();
+      const h = hidden.get(st) || 0;
+      if (h <= 0) { out.push(i); return; }
+      const c = { ...i };
+      const inc = +(c.incoming || 0);
+      // every production hidden -> ALL overseas supply is invisible; mixed -> hidden units only
+      const cut = visible.has(st) ? Math.min(inc, h) : inc;
+      if (cut > 0) {
+        c.incoming = inc - cut;
+        if (filterMode !== "ats") c.total_ats = (+(c.total_ats || 0)) - cut;
+      }
+      if ((+(c.total_warehouse || 0)) <= 0 && (+(c.incoming || 0)) <= 0) return;   // only supply was hidden
+      out.push(c);
+    });
+    return out;
+  };
   const buildRows = (items, { preSorted = false } = {}) => {
-    let out = custView ? stripNjForCustomer([...items]) : [...items];
+    let out = custView ? stripHiddenLandingForCustomer(stripNjForCustomer([...items])) : [...items];
+    const prodData = custView ? customerProductionData : productionData;
     if (!preSorted) out.sort((a, b) => custView ? ((b.total_ats||0)-(a.total_ats||0)) : ((b.total_warehouse||0)-(a.total_warehouse||0)));
     if ((flowMode || custView) && filterMode === "incoming") {
-      out = expandItemsToFlowRowsForExport(out, inventory, productionData, suppressionOverrides);
+      out = expandItemsToFlowRowsForExport(out, inventory, prodData, suppressionOverrides);
     }
-    const opts = { custView, filterMode, productionData, suppressionOverrides, styleOverrides, colorMap, rawWhBySku };
+    const opts = { custView, filterMode, productionData: prodData, suppressionOverrides, styleOverrides, colorMap, rawWhBySku };
     return out.map(i => buildExportRow(i, opts));
   };
 
@@ -2226,6 +2289,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
         filename,
         view_mode: filterMode,
         catalog_mode: custView,
+        nj_stripped: custView,   // NJ already removed client-side; server must not subtract again
         flow_mode: flowFlagFor(filteredItems),
         prepack_defaults: prepackDefaults || []
       }, 300000);
@@ -2245,6 +2309,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
         filename: `${brandName}_${fileModeLabel}`,
         view_mode: filterMode,
         catalog_mode: custView,
+        nj_stripped: custView,
         flow_mode: flowFlagFor(brandInfo.items),
         prepack_defaults: prepackDefaults || []
       }, 300000);
@@ -2274,6 +2339,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
           filename: `All_Brands_${fileModeLabel}`,
           view_mode: filterMode,
           catalog_mode: custView,
+          nj_stripped: custView,
           flow_mode: flowFlagFor(allItems),
           prepack_defaults: prepackDefaults || []
         }, 600000);
@@ -2321,6 +2387,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
         filename,
         view_mode: filterMode,
         catalog_mode: custView,
+        nj_stripped: custView,
         flow_mode: flowFlagFor(allItems),
         prepack_defaults: prepackDefaults || []
       }, 600000);
@@ -4494,7 +4561,10 @@ export default function VersaInventoryApp() {
             // a real date. Engine treats these as dateless, preferred for FOB
             // customers, last-resort for warehouse-mode customers.
             fob_flag: !!p.fob_flag,
-            fob_note: p.fob_note || ""
+            fob_note: p.fob_note || "",
+            // Landing warehouse from ledger column I. NJ/AE/AW-landing batches are
+            // last-resort supply in routing and never appear on customer output.
+            warehouse: String(p.warehouse || "").toUpperCase()
           };
         });
         setProductionData(parsed);
