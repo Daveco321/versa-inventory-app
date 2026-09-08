@@ -157,11 +157,27 @@ const FIT_CODES = Object.assign({}, _LEGACY_FIT_CODES, PANTS_FIT_CODES, SHIRT_FI
 
 const BANNER_RULES_SEED = [
   { id:'seed-ss', text:'SHORT SLEEVE', bgColor:'rgba(14,165,233,0.9)', textColor:'#fff', position:'bottom-left', visibility:'both', category:'short_sleeve', fits:[], customers:[], brands:[], skus:[] },
+  // Button-down collar (Style Rules letters B/D/H/L/W/X on dress shirts) — boss via David, Sep 8 2026.
+  { id:'seed-bd', text:'BUTTON DOWN', bgColor:'rgba(15,118,110,0.92)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'button_down', fits:[], customers:[], brands:[], skus:[] },
   { id:'seed-bt', text:'BIG & TALL', bgColor:'rgba(124,58,237,0.9)', textColor:'#fff', position:'bottom-left', visibility:'both', category:'big_tall', fits:[], customers:[], brands:[], skus:[] },
   { id:'seed-pants', text:'PANTS', bgColor:'rgba(107,114,128,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'pants', fits:[], customers:[], brands:[], skus:[] },  { id:'seed-sport', text:'SPORTSWEAR', bgColor:'rgba(234,88,12,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'sportswear', fits:[], customers:[], brands:[], skus:[] },
   { id:'seed-acc-chaps', text:'TIE & HANKY', bgColor:'rgba(168,85,247,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'accessories', fits:[], customers:[], brands:['CHAPS'], skus:[] },
   { id:'seed-acc-shaq', text:'TIE', bgColor:'rgba(168,85,247,0.9)', textColor:'#fff', position:'bottom-right', visibility:'both', category:'accessories', fits:[], customers:[], brands:['SHAQ'], skus:[] },
 ];
+// Built-in rules that must render even when the S3 list predates them (the S3
+// list wins over the seeds as soon as it holds one rule). Merged by id after
+// every load — mirrors the desktop's _ensureBuiltinBanners.
+const BANNER_BUILTIN_IDS = ['seed-bd'];
+function ensureBuiltinBanners(rules) {
+  const out = Array.isArray(rules) ? [...rules] : [];
+  BANNER_BUILTIN_IDS.forEach(id => {
+    if (!out.some(r => r && r.id === id)) {
+      const seed = BANNER_RULES_SEED.find(r => r.id === id);
+      if (seed) out.push({ ...seed });
+    }
+  });
+  return out;
+}
 
 // ═══════════════════════════════════════════
 // UTILITY FUNCTIONS
@@ -998,7 +1014,28 @@ function matchesCategory(sku, brandAbbr, category) {
   if (category === "young_men")    return isYoungMen(sku);
   if (category === "short_sleeve") return isShortSleeve(sku);
   if (category === "long_sleeve")  return isLongSleeveShirt(sku);
+  if (category === "button_down")  return isButtonDown(sku, brandAbbr);
   return getDetailedCategory(sku, brandAbbr) === category;
+}
+
+// ── Button Down (boss via David, Sep 8 2026; mirrors desktop isButtonDown) ──
+// Style Rules collar letters that mean a BUTTON-DOWN collar on a dress shirt:
+// B Solid Button Down · D Print Button Down · H/L 2-Pocket Button Down ·
+// W/X 1-Pocket Button Down. Shirts only (pants/sportswear/blazers reuse the
+// letters), and only when the fit slot holds a real fit code — odd bases like
+// WACHAW283RF or Von Dutch ...PSS have no collar slot at all.
+const BUTTON_DOWN_COLLARS = new Set(["B", "D", "H", "L", "W", "X"]);
+function isButtonDown(sku, brandAbbr) {
+  if (!sku) return false;
+  const base = String(sku).split("-")[0].toUpperCase();
+  if (base.length < 11) return false;
+  if (!BUTTON_DOWN_COLLARS.has(base.slice(-1))) return false;
+  // same fit table as the desktop (shirt + pants codes only; the phone's FIT_CODES
+  // also carries legacy CF/AF codes the desktop and API do not recognise)
+  const _fit = extractFitCode(sku);
+  if (!(SHIRT_FIT_CODES[_fit] || PANTS_FIT_CODES[_fit])) return false;
+  if (isPants(sku, brandAbbr) || isSportswear(sku, brandAbbr) || isBlazer(sku)) return false;
+  return getItemCategory(sku, brandAbbr) === "shirts";
 }
 
 // Does this SKU use SHIRT image conventions (brand-folder URL, shirts Dropbox pattern)?
@@ -1076,7 +1113,17 @@ function getDetailedCategory(sku, brandAbbr, styleOverrides) {
 }
 
 // ─── Color Classification (mirrors main catalog) ──────────────
-const _BLUE_FAMILY = /\bnavy\b|\bblue\b|\bindigo\b/;
+// "All Shades of Blue" (boss via David, Sep 8 2026) — every blue SHADE word, mirrors
+// the desktop _BLUE_FAMILY exactly. Chambray stays out (a fabric, not a colour).
+const _BLUE_FAMILY = /\bnavy\b|\bblue\b|\bindigo\b|\bserenity\b|\bperiwinkle\b|\bturq[ou]+ise\b|\baqua\b|\bteal\b|\btanzine\b|\bcobalt\b|\bblueberry\b|\bseaspray\b|\bdeep sea\b|\bdenim\b|\bcerulean\b|\bsapphire\b|\bazure\b|\bcyan\b/;
+// Denim doubles as a wash word ("Denim Grey Solid" is a grey shirt): it only
+// counts as blue when no other colour word leads the phrase (mirrors desktop).
+const _NON_BLUE_WORDS = /\b(?:grey|gray|black|white|red|pink|green|brown|tan|khaki|olive|burgundy|wine|purple|plum|orange|yellow|gold|silver|charcoal|ivory|cream|beige|camel|rust|coral|lilac|lavender|mint|sage)\b/;
+function _isBlueLead(s) {
+  if (!_BLUE_FAMILY.test(s)) return false;
+  if (/\bdenim\b/.test(s) && !/\bnavy\b|\bblue\b|\bindigo\b/.test(s) && _NON_BLUE_WORDS.test(s)) return false;
+  return true;
+}
 function classifyColor(colorDisplay, brandAbbr) {
   if (!colorDisplay) return "fancies";
   const c = colorDisplay.trim().toLowerCase();
@@ -1095,7 +1142,7 @@ function classifyColor(colorDisplay, brandAbbr) {
   if (/\bdobby\b/.test(c)) {
     if (/\bwhite\b|\bivory\b|\bcream\b/.test(c)) return "white";
     if (/\bblack\b/.test(c)) return "black";
-    if (_BLUE_FAMILY.test(c)) return "navy";
+    if (_isBlueLead(c)) return "navy";
     return "other_solids";
   }
   // Navy/Blue = the BLUE FAMILY (mirrors desktop, Jul 31 2026): a solid lands
@@ -1104,7 +1151,7 @@ function classifyColor(colorDisplay, brandAbbr) {
   // leading phrase keeps "White Solid W/ Blue Contrast Trim" white (the blue is
   // trim). Chambray/teal/turquoise are deliberately NOT blue words.
   const _solidLead = c.match(/^(.*?)\s*\bs(?:olid|ld)\b/);
-  if (!_hasPrint && _solidLead && _BLUE_FAMILY.test(_solidLead[1])) return "navy";
+  if (!_hasPrint && _solidLead && _isBlueLead(_solidLead[1])) return "navy";
   // White / Black: judge the phrase LEADING the first "solid"/"sld", exactly
   // like the Navy rule — trailing text after "Solid" ("W/ Chest Embroidery",
   // "W/ Blue Contrast Trim") is detail on the garment, not its color. Mirrors
@@ -1177,7 +1224,7 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
   const pct = v => total ? Math.round(v / total * 100) : 0;
   const bW = pct(cWhite), bB = pct(cBlack), bN = pct(cNavy), bO = pct(cOther), bF = pct(cFancy);
 
-  const LABEL_MAP = { white:"White Solid", black:"Black Solid", navy:"Navy/Blue Solid", other_solids:"Other Solids", fancies:"Fancies", stripes:"Stripes", geo:"Geo", checks:"Checks" };
+  const LABEL_MAP = { white:"White Solid", black:"Black Solid", navy:"All Shades of Blue", other_solids:"Other Solids", fancies:"Fancies", stripes:"Stripes", geo:"Geo", checks:"Checks" };
   const whLabel = warehouseFilter && warehouseFilter !== "all" ? `\u{1F3ED} ${warehouseFilter.toUpperCase()}` : "\u{1F3ED} WH Stock";
   const METRIC_LABELS = { ats:"\u{1F4E6} ATS", wh:whLabel, incoming:"\u{1F6A2} Incoming", total:"\u{1F4CA} Total" };
   const METRIC_COLORS = { ats:["#16a34a","#f0fdf4","#bbf7d0"], wh:["#6d28d9","#f5f3ff","#ddd6fe"], incoming:["#d97706","#fffbeb","#fde68a"], total:["#0369a1","#e0f2fe","#bae6fd"] };
@@ -1246,14 +1293,14 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
       <div style={{ display:"flex",height:8,borderRadius:4,overflow:"hidden",marginBottom:14,background:"#f1f5f9" }}>
         {bW > 0 && <div style={barSegStyle("#e2e8f0", bW, "white")} onClick={() => handleClick("white")} title={`White Solid ${bW}%`} />}
         {bB > 0 && <div style={barSegStyle("#1e293b", bB, "black")} onClick={() => handleClick("black")} title={`Black Solid ${bB}%`} />}
-        {bN > 0 && <div style={barSegStyle("#1e3a5f", bN, "navy")} onClick={() => handleClick("navy")} title={`Navy/Blue Solid ${bN}%`} />}
+        {bN > 0 && <div style={barSegStyle("#1e3a5f", bN, "navy")} onClick={() => handleClick("navy")} title={`All Shades of Blue ${bN}%`} />}
         {bO > 0 && <div style={barSegStyle("linear-gradient(90deg,#3b82f6,#8b5cf6)", bO, "other_solids")} onClick={() => handleClick("other_solids")} title={`Other Solids ${bO}%`} />}
         {bF > 0 && <div style={barSegStyle("linear-gradient(90deg,#f59e0b,#ec4899)", bF, "fancies")} onClick={() => handleClick("fancies")} title={`Fancies ${bF}%`} />}
       </div>
 
       {/* Clickable grid */}
       <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:13 }}>
-        {[["white","\u2B1C White Solid",cWhite],["black","\u2B1B Black Solid",cBlack],["navy","\u{1F7E6} Navy/Blue Solid",cNavy],["other_solids","\u{1F3A8} Other Solids",cOther]].map(([cat, label, val]) => (
+        {[["white","\u2B1C White Solid",cWhite],["black","\u2B1B Black Solid",cBlack],["navy","\u{1F7E6} All Shades of Blue",cNavy],["other_solids","\u{1F3A8} Other Solids",cOther]].map(([cat, label, val]) => (
           <div key={cat} onClick={() => handleClick(cat)} style={rowStyle(cat)}>
             <span style={{ color:"#64748b" }}>{label}</span>
             <span style={{ fontWeight:700,color:"#1e293b" }}>{val.toLocaleString()}</span>
@@ -3090,7 +3137,7 @@ const COLOR_MAP_URL = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/Invento
 function formatColorName(raw) {
   if (!raw) return "";
   let s = raw.trim();
-  const replacements = { BLK:"Black", WHT:"White", BLU:"Blue", NVY:"Navy", GRY:"Grey" };
+  const replacements = { BLK:"Black", WHT:"White", BLU:"Blue", NVY:"Navy", GRY:"Grey", SRNTY:"Serenity", TRQ:"Turquoise" };
   s = s.replace(/\b([A-Za-z]+)\b/g, word => {
     const match = replacements[word.toUpperCase()];
     if (match) return match;
@@ -3321,7 +3368,7 @@ function BannerBadges({ sku, brandAbbr, bannerRules }) {
 // ANALYTICS VIEW — Brand → Color Breakdown
 // ═══════════════════════════════════════════
 const COLOR_CATS = ["white","black","navy","other_solids","fancies"];
-const COLOR_CAT_LABELS = { white:"White Solid", black:"Black Solid", navy:"Navy/Blue Solid", other_solids:"Other Solids", fancies:"Fancies" };
+const COLOR_CAT_LABELS = { white:"White Solid", black:"Black Solid", navy:"All Shades of Blue", other_solids:"Other Solids", fancies:"Fancies" };
 const COLOR_CAT_EMOJI = { white:"⬜", black:"⬛", navy:"🟦", other_solids:"🎨", fancies:"✨" };
 
 function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignments }) {
@@ -3494,7 +3541,7 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
 
       {/* Mode Toggle */}
       <div style={{ display:"flex", background:"linear-gradient(135deg,rgba(30,41,59,.9),rgba(15,23,42,.9))", borderRadius:12, border:"1px solid rgba(255,255,255,.1)", overflow:"hidden", marginBottom:12 }}>
-        {[{ key:"color", label:"🎨 By Color", desc:"White / Black / Navy-Blue / Solids / Fancies" }, { key:"fabric", label:"🧵 By Fabric", desc:"Fabric code breakdown" }].map(v => (
+        {[{ key:"color", label:"🎨 By Color", desc:"White / Black / All Shades of Blue / Solids / Fancies" }, { key:"fabric", label:"🧵 By Fabric", desc:"Fabric code breakdown" }].map(v => (
           <button key={v.key} onClick={() => { setMode(v.key); setExpandedBrand({}); }} style={{
             flex:1, padding:"12px 16px", border:"none", cursor:"pointer", transition:"all .15s", textAlign:"center",
             background: mode === v.key ? "rgba(129,140,248,.2)" : "transparent",
@@ -4660,11 +4707,11 @@ export default function VersaInventoryApp() {
         if (!resp.ok) return;
         const json = await resp.json();
         const loaded = Array.isArray(json.rules) ? json.rules : [];
-        setBannerRules(loaded.length > 0 ? loaded : BANNER_RULES_SEED);
+        setBannerRules(ensureBuiltinBanners(loaded.length > 0 ? loaded : BANNER_RULES_SEED));
         console.log("✓ Banner rules loaded:", loaded.length);
       } catch (e) {
         console.warn("Banner rules unavailable:", e.message);
-        setBannerRules(BANNER_RULES_SEED);
+        setBannerRules(ensureBuiltinBanners(BANNER_RULES_SEED));
       }
     };
     loadBannerRules();
