@@ -452,7 +452,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
   if (matchingRows.length === 0) return null;
 
   const warehouseTotal = matchingRows.reduce(
-    (s, r) => s + (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0), 0
+    (s, r) => s + (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0)+(r.abfi||0), 0
   );
   const totalDeduction = matchingRows.reduce(
     (s, r) => s + Math.abs(r.committed||0) + Math.abs(r.allocated||0), 0
@@ -477,15 +477,19 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
   // stock is its own slot (nj: true) and productions landing in NJ/AE/AW are
   // flagged; both are visited after every other slot, and a dated order only
   // takes NJ in the feasibility pass when the style has no other supply.
-  const NJ_LANDING_WH = ["NJ", "AE", "AW"];
+  const NJ_LANDING_WH = ["NJ", "AE", "AW", "ABFI"];
   const njTotal = matchingRows.reduce((s, r) => s + Math.max(0, r.nj || 0), 0);
-  const otherWarehouse = warehouseTotal - njTotal;
+  const abfiTotal = matchingRows.reduce((s, r) => s + Math.max(0, r.abfi || 0), 0);   // second restricted warehouse (Sep 9 2026)
+  const otherWarehouse = warehouseTotal - njTotal - abfiTotal;
   const slots = [];
   if (otherWarehouse > 0) {
     slots.push({ type: "warehouse", po: null, originalUnits: otherWarehouse, units: otherWarehouse, arrival: today, etd: null, fob_flag: false, fob_note: "", nj: false, consumers: [] });
   }
   if (njTotal > 0) {
     slots.push({ type: "warehouse", po: null, originalUnits: njTotal, units: njTotal, arrival: today, etd: null, fob_flag: false, fob_note: "", nj: true, landing: "NJ", consumers: [] });
+  }
+  if (abfiTotal > 0) {
+    slots.push({ type: "warehouse", po: null, originalUnits: abfiTotal, units: abfiTotal, arrival: today, etd: null, fob_flag: false, fob_note: "", nj: true, landing: "ABFI", consumers: [] });
   }
   productions.forEach(p => {
     if ((p.units || 0) > 0) {
@@ -723,7 +727,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     // Cascade overflow if any row claimed more than its physical warehouse
     let overflow = 0;
     matchingRows.forEach(r => {
-      const rowWh = (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0);
+      const rowWh = (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0)+(r.abfi||0);
       if (perSkuWarehouse[r.sku] > rowWh) {
         overflow += perSkuWarehouse[r.sku] - rowWh;
         perSkuWarehouse[r.sku] = rowWh;
@@ -732,7 +736,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     if (overflow > 0) {
       for (const r of matchingRows) {
         if (overflow <= 0) break;
-        const rowWh = (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0);
+        const rowWh = (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0)+(r.abfi||0);
         const spare = rowWh - perSkuWarehouse[r.sku];
         if (spare > 0) {
           const absorb = Math.min(spare, overflow);
@@ -804,7 +808,7 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
   if (filterMode === "incoming") {
     source = source.filter(i => (i.incoming || 0) > 0).map(item => {
       const incoming = item.incoming || 0;
-      const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
+      const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0)+(item.abfi||0);
       // Arrival suppression
       const suppressedQty = _getSuppressedIncoming(item.sku, prodData, wh, suppressionOverrides);
       const adjustedIncoming = Math.max(0, incoming - suppressedQty);
@@ -828,18 +832,19 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
           osDed = Math.max(0, ded - whAbsorbed);
         }
       }
-      return { ...item, incoming: adjustedIncoming, _suppressed_incoming: suppressedQty, total_ats: adjustedIncoming - osDed, total_warehouse: 0, jtw:0,tr:0,dcw:0,qa:0,nj:0, _overseas_deducted: osDed, _display_mode:"overseas" };
+      return { ...item, incoming: adjustedIncoming, _suppressed_incoming: suppressedQty, total_ats: adjustedIncoming - osDed, total_warehouse: 0, jtw:0,tr:0,dcw:0,qa:0,nj:0,abfi:0, _overseas_deducted: osDed, _display_mode:"overseas" };
     }).filter(Boolean);
   } else if (filterMode === "ats") {
     source = source.map(item => {
-      const fullWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
+      const fullWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0)+(item.abfi||0);
       // Warehouse sub-filter: show only selected warehouse's qty
       const wh = warehouseFilter === "all" ? fullWh
         : warehouseFilter === "jtw" ? (item.jtw||0)
         : warehouseFilter === "tr" ? (item.tr||0)
         : warehouseFilter === "dcw" ? (item.dcw||0)
         : warehouseFilter === "qa" ? (item.qa||0)
-        : warehouseFilter === "nj" ? (item.nj||0) : fullWh;
+        : warehouseFilter === "nj" ? (item.nj||0)
+        : warehouseFilter === "abfi" ? (item.abfi||0) : fullWh;
       if (wh <= 0) return null;
       const ded = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
       const incoming = item.incoming || 0;
@@ -874,6 +879,7 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
         dcw: warehouseFilter === "dcw" ? (item.dcw||0) : 0,
         qa: warehouseFilter === "qa" ? (item.qa||0) : 0,
         nj: warehouseFilter === "nj" ? (item.nj||0) : 0,
+        abfi: warehouseFilter === "abfi" ? (item.abfi||0) : 0,
       };
       return { ...displayItem, total_ats: sell, total_warehouse: wh, incoming: 0, _display_mode:"ats" };
     }).filter(Boolean);
@@ -881,7 +887,7 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
     // "all" mode: recalculate total_ats client-side (matches main catalog formula)
     // warehouse + incoming - committed - allocated (allows negative for over-allocated)
     source = source.map(item => {
-      const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
+      const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0)+(item.abfi||0);
       const incoming = item.incoming || 0;
       const committed = Math.abs(item.committed||0);
       const allocated = Math.abs(item.allocated||0);
@@ -1613,7 +1619,7 @@ function ProductCard({ item, onClick, onRoutingClick, filterMode, prodData, colo
   const transferTotalQty = transferHits.reduce((s, h) => s + h.qty, 0);
 
   // Production data — suppression-aware (skip for flow items which already have PO info)
-  const rawWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
+  const rawWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0)+(item.abfi||0);
   const prods = !isFlow ? getEarliestDates(item.sku, prodData, rawWh, suppressionOverrides).productions : [];
   const hasProd = prods.length > 0;
   const totalProdUnits = prods.reduce((s, p) => s + (p.units || 0), 0);
@@ -1665,7 +1671,7 @@ function ProductCard({ item, onClick, onRoutingClick, filterMode, prodData, colo
         {!isFlow && hasProd && (() => {
           // Compute FIFO waterfall deduction per PO (mirrors detail modal logic)
           const totalDed = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
-          const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
+          const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0)+(item.abfi||0);
           const incoming = item.incoming||0;
           let overseasDed = 0;
           if (totalDed > 0) {
@@ -1798,6 +1804,7 @@ function ProductCard({ item, onClick, onRoutingClick, filterMode, prodData, colo
             {item.dcw > 0 && <span style={{ fontSize:9,background:"#ffedd5",color:"#c2410c",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>DCW</span>}
             {(item.qa||0) > 0 && <span style={{ fontSize:9,background:"#ccfbf1",color:"#0f766e",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>QA</span>}
             {(item.nj||0) > 0 && <span style={{ fontSize:9,background:"#ffe4e6",color:"#e11d48",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>NJ</span>}
+            {(item.abfi||0) > 0 && <span style={{ fontSize:9,background:"#e2e8f0",color:"#475569",padding:"2px 6px",borderRadius:4,fontWeight:700 }}>ABFI</span>}
           </div>
         </div>
       </div>
@@ -1951,7 +1958,7 @@ function RoutingModal({ baseStyle, onClose, inventory, productionData, openOrder
                   <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4 }}>
                     <div style={{ display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
                       {isWarehouse ? (
-                        <span style={{ fontSize:13,fontWeight:800,color:slot.nj?"#b45309":"#15803d" }}>{slot.nj ? "🏠 NJ Warehouse (last resort)" : "🏠 Warehouse"}</span>
+                        <span style={{ fontSize:13,fontWeight:800,color:slot.nj?"#b45309":"#15803d" }}>{slot.nj ? `🏠 ${slot.landing || "NJ"} Warehouse (last resort)` : "🏠 Warehouse"}</span>
                       ) : (
                         <>
                           <span style={{ fontFamily:"monospace",fontSize:13,fontWeight:800,color:isFob?"#1d4ed8":"#15803d" }}>🚢 {slot.po || "—"}</span>
@@ -1959,7 +1966,7 @@ function RoutingModal({ baseStyle, onClose, inventory, productionData, openOrder
                             <span title={`David's ledger ETD: ${slot.fob_note || "be ready"}`} style={{ background:"#1d4ed8",color:"#fff",fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:99,letterSpacing:.3 }}>FOB</span>
                           )}
                           {slot.nj && (
-                            <span title="Lands at the NJ warehouse. Used only when no other supply exists for this style." style={{ background:"#b45309",color:"#fff",fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:99,letterSpacing:.3 }}>NJ LANDING · LAST RESORT</span>
+                            <span title={`Lands at the ${slot.landing || "NJ"} warehouse. Used only when no other supply exists for this style.`} style={{ background:"#b45309",color:"#fff",fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:99,letterSpacing:.3 }}>{slot.landing || "NJ"} LANDING · LAST RESORT</span>
                           )}
                         </>
                       )}
@@ -2075,7 +2082,7 @@ function expandItemsToFlowRowsForExport(items, inventory, productionData, suppre
   const flowItems = [];
   items.forEach(item => {
     const rawItem = invBySku.get(item.sku);
-    const rawWh = rawItem ? (rawItem.jtw||0)+(rawItem.tr||0)+(rawItem.dcw||0)+(rawItem.qa||0)+(rawItem.nj||0) : 0;
+    const rawWh = rawItem ? (rawItem.jtw||0)+(rawItem.tr||0)+(rawItem.dcw||0)+(rawItem.qa||0)+(rawItem.nj||0)+(rawItem.abfi||0) : 0;
     const prods = getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides);
     if (prods.length === 0) {
       flowItems.push({ ...item, _flow: true, _flow_production: "", _flow_po: "No Production Data", _flow_units: item.total_ats || 0, _flow_deducted: 0, _flow_etd: null, _flow_arrival: null });
@@ -2111,7 +2118,7 @@ function expandItemsToFlowRowsForExport(items, inventory, productionData, suppre
 // allocated, per-PO production detail); custView=true → catalog format (no
 // committed/allocated, warehouse NAMES not quantities, PO Ref #).
 function buildExportRow(item, { custView, filterMode, productionData, suppressionOverrides, styleOverrides, colorMap, rawWhBySku }) {
-  const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
+  const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0)+(item.abfi||0);
   let delivery = "ATS";
   let arrivalStr = "", etdStr = "", nearestPoRef = "";
   // Per-PO flow rows keep their OWN dates only (blank when the ledger has none);
@@ -2176,6 +2183,7 @@ function buildExportRow(item, { custView, filterMode, productionData, suppressio
     base.dcw = item.dcw;
     base.qa = item.qa || 0;
     base.nj = item.nj || 0;
+    base.abfi = item.abfi || 0;
     base.incoming = incomingVal;
     base.total_warehouse = item.total_warehouse;
     base.committed = item.committed;
@@ -2223,7 +2231,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
   // Raw warehouse per SKU for suppression checks (incoming mode zeroes item wh)
   const rawWhBySku = useMemo(() => {
     const m = new Map();
-    (inventory || []).forEach(r => m.set(r.sku, (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0)));
+    (inventory || []).forEach(r => m.set(r.sku, (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0)+(r.abfi||0)));
     return m;
   }, [inventory]);
 
@@ -2238,8 +2246,9 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
   // Customer view: NJ (Edison 3PL) is admin-only. The phone is always authenticated,
   // so the server's anonymous-catalog scrub never runs — strip here (Sep 3 2026 audit).
   const stripNjForCustomer = (items) => items.filter(i => !i._nj_synth).map(i => {
-    const nj = +(i.nj || 0);
-    if (!nj && !("nj" in i)) return i;
+    // Restricted warehouses NJ + ABFI (same rules, Sep 9 2026).
+    const nj = +(i.nj || 0) + +(i.abfi || 0);
+    if (!nj && !("nj" in i) && !("abfi" in i)) return i;
     const c = { ...i };
     if (nj) {
       c.total_warehouse = Math.max(0, (c.total_warehouse || 0) - nj); c.total_ats = (c.total_ats || 0) - nj;
@@ -2247,13 +2256,13 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
       // no ATS left): never on a customer sheet, not even as a zero row (Sep 4 2026).
       if (c.total_warehouse <= 0 && (c.incoming || 0) <= 0 && c.total_ats <= 0) return null;
     }
-    c.nj = 0;
+    c.nj = 0; c.abfi = 0;
     return c;
   }).filter(Boolean);
   // Customer view: NJ/AE/AW-landing productions (ledger column I) are admin-only too.
   // Their units come out of incoming + Total ATS, dates / PO Ref # come from visible
   // productions only, and a style whose only supply lands there drops (Sep 4 2026).
-  const HIDDEN_LANDING_WH = ["NJ", "AE", "AW"];
+  const HIDDEN_LANDING_WH = ["NJ", "AE", "AW", "ABFI"];
   const isHiddenLandingProd = (p) => HIDDEN_LANDING_WH.includes(String(p.warehouse || "").toUpperCase());
   const customerProductionData = useMemo(() => (productionData || []).filter(p => !isHiddenLandingProd(p)), [productionData]);
   const stripHiddenLandingForCustomer = (items) => {
@@ -2337,6 +2346,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
         view_mode: filterMode,
         catalog_mode: custView,
         nj_stripped: custView,   // NJ already removed client-side; server must not subtract again
+        abfi_stripped: custView,
         flow_mode: flowFlagFor(filteredItems),
         prepack_defaults: prepackDefaults || []
       }, 300000);
@@ -2357,6 +2367,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
         view_mode: filterMode,
         catalog_mode: custView,
         nj_stripped: custView,
+        abfi_stripped: custView,
         flow_mode: flowFlagFor(brandInfo.items),
         prepack_defaults: prepackDefaults || []
       }, 300000);
@@ -2387,6 +2398,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
           view_mode: filterMode,
           catalog_mode: custView,
           nj_stripped: custView,
+          abfi_stripped: custView,
           flow_mode: flowFlagFor(allItems),
           prepack_defaults: prepackDefaults || []
         }, 600000);
@@ -2435,6 +2447,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
         view_mode: filterMode,
         catalog_mode: custView,
         nj_stripped: custView,
+        abfi_stripped: custView,
         flow_mode: flowFlagFor(allItems),
         prepack_defaults: prepackDefaults || []
       }, 600000);
@@ -2673,7 +2686,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
   const fabric = getFabricFromSKU(item.sku, styleOverrides);
   const fit = getFitFromSKU(item.sku, styleOverrides);
   const sp = getSizePack(item.sku, item.brand_abbr || item.brand, prepackDefaults, styleOverrides);
-  const totalStock = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
+  const totalStock = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0)+(item.abfi||0);
   // Use the pre-computed total_ats from rebuildBrands (already includes incoming - committed - allocated)
   // Falls back to manual recomputation for raw items that haven't been processed
   const ats = typeof item.total_ats === "number" ? item.total_ats : (totalStock + (item.incoming||0) - Math.abs(item.committed||0) - Math.abs(item.allocated||0));
@@ -2797,7 +2810,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
 
           {/* Warehouse */}
           <div style={{ display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6,marginBottom:12 }}>
-            {[["JTW",item.jtw,"#dbeafe","#1d4ed8"],["TR",item.tr,"#f3e8ff","#7c3aed"],["DCW",item.dcw,"#ffedd5","#c2410c"],["QA",item.qa||0,"#ccfbf1","#0f766e"],["NJ",item.nj||0,"#ffe4e6","#e11d48"]].map(([label,val,bg,color]) => (
+            {[["JTW",item.jtw,"#dbeafe","#1d4ed8"],["TR",item.tr,"#f3e8ff","#7c3aed"],["DCW",item.dcw,"#ffedd5","#c2410c"],["QA",item.qa||0,"#ccfbf1","#0f766e"],["NJ",item.nj||0,"#ffe4e6","#e11d48"],["ABFI",item.abfi||0,"#e2e8f0","#475569"]].map(([label,val,bg,color]) => (
               <div key={label} style={{ background:bg,padding:8,borderRadius:8,textAlign:"center" }}>
                 <p style={{ fontSize:10,color,fontWeight:600 }}>{label}</p>
                 <p style={{ fontSize:18,fontWeight:800 }}>{val}</p>
@@ -2923,7 +2936,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
               {prods.length > 0 && (() => {
                 // Mirror main catalog waterfall logic: deduct from productions FIFO
                 const totalDed = Math.abs(item.committed||0)+Math.abs(item.allocated||0);
-                const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0);
+                const wh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0)+(item.abfi||0);
                 const incoming = item.incoming||0;
                 let overseasDed = 0;
                 if (totalDed > 0) {
@@ -3383,7 +3396,7 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
     const brandMap = {};
     inventory.forEach(item => {
       if (!item.sku) return;
-      const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0) + (item.nj||0);
+      const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0) + (item.nj||0) + (item.abfi||0);
       const incoming = item.incoming || 0;
       const committed = Math.abs(item.committed||0) + Math.abs(item.allocated||0);
       const totalStock = wh + incoming;
@@ -4087,7 +4100,7 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
   const flowItems = useMemo(() => {
     const items = [];
     inventory.forEach(item => {
-      const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0) + (item.nj||0);
+      const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0) + (item.nj||0) + (item.abfi||0);
       const prods = getActiveProductionForSku(item.sku, productionData, wh, suppressionOverrides);
       if (prods.length === 0) return; // no active production → skip
 
@@ -4959,13 +4972,13 @@ export default function VersaInventoryApp() {
     else if (sortBy === "sku-asc") items.sort((a,b) => (a.sku||"").localeCompare(b.sku||""));
     else if (sortBy === "sku-desc") items.sort((a,b) => (b.sku||"").localeCompare(a.sku||""));
     else if (sortBy === "arrival-asc") items.sort((a,b) => {
-      const da = getEarliestDates(a.sku, productionData, (a.jtw||0)+(a.tr||0)+(a.dcw||0)+(a.qa||0)+(a.nj||0), suppressionOverrides).arrival || new Date("2099");
-      const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0)+(b.nj||0), suppressionOverrides).arrival || new Date("2099");
+      const da = getEarliestDates(a.sku, productionData, (a.jtw||0)+(a.tr||0)+(a.dcw||0)+(a.qa||0)+(a.nj||0)+(a.abfi||0), suppressionOverrides).arrival || new Date("2099");
+      const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0)+(b.nj||0)+(b.abfi||0), suppressionOverrides).arrival || new Date("2099");
       return da - db;
     });
     else if (sortBy === "arrival-desc") items.sort((a,b) => {
-      const da = getEarliestDates(a.sku, productionData, (a.jtw||0)+(a.tr||0)+(a.dcw||0)+(a.qa||0)+(a.nj||0), suppressionOverrides).arrival || new Date("1970");
-      const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0)+(b.nj||0), suppressionOverrides).arrival || new Date("1970");
+      const da = getEarliestDates(a.sku, productionData, (a.jtw||0)+(a.tr||0)+(a.dcw||0)+(a.qa||0)+(a.nj||0)+(a.abfi||0), suppressionOverrides).arrival || new Date("1970");
+      const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0)+(b.nj||0)+(b.abfi||0), suppressionOverrides).arrival || new Date("1970");
       return db - da;
     });
 
@@ -4976,7 +4989,7 @@ export default function VersaInventoryApp() {
       items.forEach(item => {
         // Get real warehouse qty from raw inventory (incoming mode zeros jtw/tr/dcw/qa/nj)
         const rawItem = inventory.find(d => d.sku === item.sku);
-        const rawWh = rawItem ? (rawItem.jtw||0)+(rawItem.tr||0)+(rawItem.dcw||0)+(rawItem.qa||0)+(rawItem.nj||0) : 0;
+        const rawWh = rawItem ? (rawItem.jtw||0)+(rawItem.tr||0)+(rawItem.dcw||0)+(rawItem.qa||0)+(rawItem.nj||0)+(rawItem.abfi||0) : 0;
         const prods = getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides);
         if (prods.length > 0) {
           const sortedProds = [...prods].sort((a, b) => (a.arrival || new Date("2099")) - (b.arrival || new Date("2099")));
@@ -5156,6 +5169,7 @@ export default function VersaInventoryApp() {
             { key:"dcw", label:"DCW", icon:"🏭" },
             { key:"qa",  label:"QA",  icon:"🔍" },
             { key:"nj",  label:"NJ",  icon:"🏭" },
+            { key:"abfi", label:"ABFI", icon:"🏭" },
           ].map(wf => (
             <button key={wf.key} onClick={() => setWarehouseFilter(wf.key)} style={{
               background: warehouseFilter === wf.key ? "linear-gradient(135deg,#3b82f6,#4f46e5)" : "rgba(255,255,255,.06)",
