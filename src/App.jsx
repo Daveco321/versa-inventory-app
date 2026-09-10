@@ -216,9 +216,13 @@ function getImageUrl(item, styleOverrides) {
       return ov.image; // base64 data URLs pass through unchanged
     }
   }
-  const baseStyle = (item.sku || "").split("-")[0].toUpperCase();
+  const fullSku = (item.sku || "").toUpperCase();
+  const baseStyle = fullSku.split("-")[0];
   const brand = item.brand_abbr || item.brand || "";
-  return `${API_URL}/image/${baseStyle}?brand=${brand}&v=${_imageCacheVersion}`;
+  // A variant or size SKU (BUCHPT309SLS-V, 1PDKTS125SLS-LT) can have its own photo in
+  // STYLE OVERRIDES under the full SKU; the server serves that one first (Sep 10 2026).
+  const skuParam = fullSku !== baseStyle ? `&sku=${encodeURIComponent(fullSku)}` : "";
+  return `${API_URL}/image/${baseStyle}?brand=${brand}${skuParam}&v=${_imageCacheVersion}`;
 }
 
 function getFabricFromSKU(sku, styleOverrides) {
