@@ -4028,7 +4028,9 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
                   {sortedLines.map((l, li) => {
                     const arrival = l.etd ? getProdArrival(l.etd) : null;
                     const custPOs = getLinkedPOs(l.style);
-                    const imgUrl = `${API_URL}/image/${l.style}?brand=${l.brand || ""}`;
+                    // Same photo lookup as every other phone image: full SKU first, then base,
+                    // with the cache-buster (Sep 10 2026).
+                    const imgUrl = getImageUrl({ sku: l.style, brand_abbr: l.brand || "" }, styleOverrides);
                     return (
                       <div key={`${l.style}-${li}`} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 4px", borderBottom: li < sortedLines.length - 1 ? "1px solid rgba(255,255,255,.06)" : "none" }}>
                         <img src={imgUrl} alt={l.style} style={{ width:40, height:40, objectFit:"cover", borderRadius:8, border:"1px solid rgba(255,255,255,.1)", flexShrink:0 }}
