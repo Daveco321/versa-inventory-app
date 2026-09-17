@@ -5063,19 +5063,25 @@ export default function VersaInventoryApp() {
     return brandData.items.filter(i => matchesCategory(i.sku, i.brand_abbr || i.brand, categoryFilter));
   }, [brandData, categoryFilter, styleOverrides]);
 
-  // Get unique fits/fabrics for filters
+  // Get unique fits/fabrics for filters.
+  // Built from categoryFilteredItems, NOT brandData.items, so they only ever offer values that
+  // exist in the active category (David, Sep 17 2026 — on the desktop app, picking Dress Pants
+  // and then a brand still listed every shirt fabric). These two lists are not rendered today,
+  // so this changes nothing on screen; it means a Fabric or Fit control added later is correct
+  // by default instead of shipping the same bug again.
+  // styleOverrides is in the deps because both helpers read it.
   const availableFits = useMemo(() => {
     if (!brandData) return [];
-    const fits = new Set(brandData.items.map(i => getFitFromSKU(i.sku, styleOverrides)));
+    const fits = new Set(categoryFilteredItems.map(i => getFitFromSKU(i.sku, styleOverrides)));
     return [...fits].sort();
-  }, [brandData]);
+  }, [brandData, categoryFilteredItems, styleOverrides]);
 
   const availableFabrics = useMemo(() => {
     if (!brandData) return [];
     const fabs = {};
-    brandData.items.forEach(i => { const f = getFabricFromSKU(i.sku, styleOverrides); fabs[f.code] = f.description; });
+    categoryFilteredItems.forEach(i => { const f = getFabricFromSKU(i.sku, styleOverrides); fabs[f.code] = f.description; });
     return Object.entries(fabs).sort((a,b) => a[1].localeCompare(b[1]));
-  }, [brandData]);
+  }, [brandData, categoryFilteredItems, styleOverrides]);
 
   // ─── Sync Status Colors ────────────────
   const statusColors = { loading:"#fef3c7", success:"#dcfce7", cached:"#dbeafe", error:"#fee2e2" };
@@ -5384,7 +5390,16 @@ export default function VersaInventoryApp() {
                   {filterMode === "incoming" && <option value="arrival-asc">📅 Arriving Earliest</option>}
                   {filterMode === "incoming" && <option value="arrival-desc">📅 Arriving Latest</option>}
                 </select>
-                <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
+                <select value={categoryFilter} onChange={e => {
+                    // Changing the category drops the Color / Fabric drill selections first.
+                    // Those are FROZEN SKU SETS captured when the summary row was tapped, so
+                    // "shirt fabric" + "Dress Pants" intersects to zero: the grid shows
+                    // "No products match your filters" while a stale chip still renders, and
+                    // the panel row you'd tap to undo it has already vanished from the
+                    // recomputed list (David, Sep 17 2026).
+                    setColorCategoryFilter(null); setFabricCodeFilter(null);
+                    setCategoryFilter(e.target.value);
+                  }}
                   style={{ padding:"10px 14px",borderRadius:10,border:"2px solid #334155",background:"#1e293b",color:"#e2e8f0",fontSize:13,fontWeight:600,cursor:"pointer" }}>
                   <option value="all">All Products</option>
                   <option value="long_sleeve">👔 Long Sleeve Shirts</option>
