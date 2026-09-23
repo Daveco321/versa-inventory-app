@@ -124,8 +124,8 @@ const SHIRT_FIT_CODES = {
   "SB":"Short Sleeve Big",
   "ST":"Short Sleeve Tall",
   "TB":"Short Sleeve Big & Tall",
-  "BR":"Single Breaster Blazer",
-  "DB":"Double Breaster Blazer"
+  "BR":"Single Breasted Blazer",
+  "DB":"Double Breasted Blazer"
 };
 
 // ── Pants fit codes (mirrors desktop PANTS_FIT_CODES) ──
@@ -1023,7 +1023,9 @@ function matchesCategory(sku, brandAbbr, category) {
   if (category === "vests")        return isVest(sku);
   if (category === "young_men")    return isYoungMen(sku);
   if (category === "short_sleeve") return isShortSleeve(sku);
-  if (category === "long_sleeve")  return isLongSleeveShirt(sku);
+  // A blazer/vest is not a long-sleeve shirt on any filter (David, Sep 23 2026;
+  // mirrors the desktop, where only prepack RULE matching keeps the inclusive read).
+  if (category === "long_sleeve")  return isLongSleeveShirt(sku) && !isBlazer(sku);
   if (category === "button_down")  return isButtonDown(sku, brandAbbr);
   return getDetailedCategory(sku, brandAbbr) === category;
 }
