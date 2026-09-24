@@ -50,8 +50,27 @@ const BRAND_ORDER = ["NAUTICA","DKNY","EB","VINCE","KL","CHAPS","USPA","LUCKY","
 const SKU_BRAND_CODE_MAP = {};
 Object.entries(BRAND_IMAGE_PREFIX).forEach(([brand, prefix]) => { SKU_BRAND_CODE_MAP[prefix] = brand; });
 
-// Cache-bust version — updated whenever style overrides reload from S3
-let _imageCacheVersion = Date.now();
+// Photo URL version = first 8 characters of the overrides version + the current
+// half hour. It stays the same across app opens inside that window, so the
+// browser reuses the photos it already has, and it moves when the overrides
+// change or every 30 minutes, so replaced photos show up (Sep 24 2026 speed fix).
+// The server reads the 8-character tag to catch up on override edits it missed.
+const _photoBucket = () => Math.floor(Date.now() / 1800000);
+let _imgTag = (() => {
+  try { return localStorage.getItem("versa_img_tag") || "0"; } catch (e) { return "0"; }
+})();
+let _imageCacheVersion = `${_imgTag}-${_photoBucket()}`;
+function _refreshImageVersion() {   // true when photo URLs changed
+  const next = `${_imgTag}-${_photoBucket()}`;
+  if (next === _imageCacheVersion) return false;
+  _imageCacheVersion = next;
+  return true;
+}
+let _overridesVersion = "";   // S3 version of the overrides the app holds
+let _lastInvJson = null;      // last inventory applied, to skip identical refreshes
+// The server sends a JPEG this wide instead of the full-size original: "grid" for the
+// full-width product cards, "small" for the 40-180px tiles elsewhere.
+const THUMB_W = { grid: 960, small: 480 };
 
 // ═══════════════════════════════════════════
 // SAVED TRANSFERS (view-only, from web app's localStorage)
@@ -216,11 +235,18 @@ function getStyleOverride(sku, overrides) {
 }
 
 // Folder name mapping for brands whose S3 folder doesn't match brand_abbr
-function getImageUrl(item, styleOverrides) {
+// size: "small" (default), "grid", or "full" / true for the original
+function getImageUrl(item, styleOverrides, size = "small") {
+  const w = (size === true || size === "full") ? 0 : (THUMB_W[size] || THUMB_W.small);
   // Check for base64 image override first (matches desktop priority)
   if (styleOverrides) {
     const ov = getStyleOverride(item.sku, styleOverrides);
     if (ov && ov.image) {
+      // Lite overrides: the embedded photo by content hash (the URL changes with the photo)
+      if (ov.image.startsWith("/image/ovr/")) {
+        const sep = ov.image.includes("?") ? "&" : "?";
+        return `${API_URL}${ov.image}${w ? `${sep}w=${w}` : ""}`;
+      }
       // Add cache-buster to S3/HTTP URLs so updated images aren't served stale from browser cache
       if (ov.image.startsWith('http')) {
         const sep = ov.image.includes('?') ? '&' : '?';
@@ -235,7 +261,8 @@ function getImageUrl(item, styleOverrides) {
   // A variant or size SKU (BUCHPT309SLS-V, 1PDKTS125SLS-LT) can have its own photo in
   // STYLE OVERRIDES under the full SKU; the server serves that one first (Sep 10 2026).
   const skuParam = fullSku !== baseStyle ? `&sku=${encodeURIComponent(fullSku)}` : "";
-  return `${API_URL}/image/${baseStyle}?brand=${brand}${skuParam}&v=${_imageCacheVersion}`;
+  const sizeParam = w ? `&w=${w}` : "";
+  return `${API_URL}/image/${baseStyle}?brand=${brand}${skuParam}${sizeParam}&v=${_imageCacheVersion}`;
 }
 
 function getFabricFromSKU(sku, styleOverrides) {
@@ -1504,49 +1531,22 @@ function getBaseStyle(sku) {
   return (sku || "").split("-")[0].toUpperCase();
 }
 
-function resolveImageUrl(item, styleOverrides) {
-  return getImageUrl(item, styleOverrides);
+function resolveImageUrl(item, styleOverrides, size = "small") {
+  return getImageUrl(item, styleOverrides, size);
 }
 
-// Preload a batch of images into browser cache
-function preloadImages(items) {
+// Preload the first tiles of a brand into the browser cache. (The app used to
+// preload a full-size photo for EVERY style on open, thousands of them, and
+// restart it every 5 minutes; tiles now load as they scroll into view.)
+function preloadImages(items, styleOverrides) {
   const seen = new Set();
   items.slice(0, 30).forEach(item => {
     const base = getBaseStyle(item.sku);
     if (seen.has(base)) return;
     seen.add(base);
     const img = new Image();
-    img.src = resolveImageUrl(item);
+    img.src = resolveImageUrl(item, styleOverrides, "grid");
   });
-}
-
-// Background preloader — warm browser cache via backend proxy
-let _bgPreloadStarted = false;
-let _bgQueue = [];
-let _bgActive = 0;
-const BG_MAX = 15;
-
-function backgroundPreloadAll(inventory) {
-  if (_bgPreloadStarted) return;
-  _bgPreloadStarted = true;
-  const seen = new Set();
-  _bgQueue = inventory.filter(item => {
-    const base = getBaseStyle(item.sku);
-    if (!base || seen.has(base)) return false;
-    seen.add(base);
-    return true;
-  });
-  setTimeout(_bgPump, 2000);
-}
-
-function _bgPump() {
-  while (_bgActive < BG_MAX && _bgQueue.length > 0) {
-    const item = _bgQueue.shift();
-    _bgActive++;
-    const img = new Image();
-    img.onload = img.onerror = () => { _bgActive--; _bgPump(); };
-    img.src = resolveImageUrl(item);
-  }
 }
 
 function ImageWithFallback({ src, alt, style, className, onClick }) {
@@ -1648,7 +1648,7 @@ function ProductCard({ item, onClick, onRoutingClick, filterMode, prodData, colo
   return (
     <div onClick={onClick} className="product-card" style={{ background:"#fff",borderRadius:14,overflow:"hidden",border: isFlow ? "2px solid #fbbf24" : isOverseas ? "2px solid #fcd34d" : "2px solid #e5e7eb" }}>
       <div style={{ position:"relative",overflow:"hidden" }}>
-        <ImageWithFallback src={resolveImageUrl(item, styleOverrides)} alt={item.sku} style={{ width:"100%",height:220,objectFit:"cover",background:"#f3f4f6" }} />
+        <ImageWithFallback src={resolveImageUrl(item, styleOverrides, "grid")} alt={item.sku} style={{ width:"100%",height:220,objectFit:"cover",background:"#f3f4f6" }} />
         {isFlow && <span style={{ position:"absolute",top:8,right:8,background:"rgba(180,83,9,.9)",color:"#fff",padding:"3px 8px",borderRadius:8,fontSize:10,fontWeight:700 }}>📊 Flow</span>}
         {isOverseas && !isFlow && <span style={{ position:"absolute",top:8,right:8,background:"rgba(217,119,6,.9)",color:"#fff",padding:"3px 8px",borderRadius:8,fontSize:10,fontWeight:700 }}>🚢 Overseas</span>}
         {/* Dynamic banners from Banner Rules */}
@@ -2744,7 +2744,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
   return (
     <>
     {showFullImage && (
-      <FullscreenImage src={resolveImageUrl(item, styleOverrides)} alt={item.sku} onClose={() => setShowFullImage(false)} />
+      <FullscreenImage src={resolveImageUrl(item, styleOverrides, "full")} alt={item.sku} onClose={() => setShowFullImage(false)} />
     )}
     <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16 }} onClick={onClose}>
       <div style={{ background:"rgba(255,255,255,.97)",borderRadius:14,maxWidth:580,width:"100%",maxHeight:"85vh",display:"flex",flexDirection:"column",boxShadow:"0 25px 60px rgba(0,0,0,.3)",position:"relative" }} onClick={e => e.stopPropagation()}>
@@ -2778,7 +2778,7 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
           {/* Image + Key Stats Row */}
           <div style={{ display:"flex",gap:16,marginBottom:16 }}>
             <div style={{ position:"relative",flexShrink:0,cursor:"zoom-in" }} onClick={() => setShowFullImage(true)}>
-              <ImageWithFallback src={resolveImageUrl(item, styleOverrides)} alt={item.sku} style={{ width:140,height:180,borderRadius:10,objectFit:"cover",border:"2px solid #e5e7eb" }} />
+              <ImageWithFallback src={resolveImageUrl(item, styleOverrides, "grid")} alt={item.sku} style={{ width:140,height:180,borderRadius:10,objectFit:"cover",border:"2px solid #e5e7eb" }} />
               <div style={{ position:"absolute",bottom:6,right:6,background:"rgba(0,0,0,.5)",color:"#fff",borderRadius:6,padding:"3px 6px",fontSize:10,fontWeight:600,backdropFilter:"blur(4px)" }}>🔍 Tap</div>
             </div>
             <div style={{ flex:1,display:"flex",flexDirection:"column",gap:8 }}>
@@ -4443,6 +4443,7 @@ export default function VersaInventoryApp() {
   const [suppressionOverrides, setSuppressionOverrides] = useState(new Set());
   const [bannerRules, setBannerRules] = useState([]);
   const [styleOverrides, setStyleOverrides] = useState({});
+  const [, setImgVer] = useState(_imageCacheVersion);   // re-renders tiles when photo URLs move
   const [prepackDefaults, setPrepackDefaults] = useState([]);
   const [deductionAssignments, setDeductionAssignments] = useState({});
   const [showColorSummary, setShowColorSummary] = useState(false);
@@ -4559,11 +4560,11 @@ export default function VersaInventoryApp() {
         if (cached) {
           const data = JSON.parse(cached);
           if (data.length > 0) {
+            _lastInvJson = cached;
             setInventory(data);
             setBrands(rebuildBrands(data, "all"));
             setView("brands");
             setSyncStatus({ text: `📦 Cached · ${data.length} items`, type: "cached" });
-            backgroundPreloadAll(data);
           }
         }
       } catch (e) { /* ignore */ }
@@ -4578,14 +4579,16 @@ export default function VersaInventoryApp() {
         if (!resp.ok) throw new Error(`Status ${resp.status}`);
         const result = await resp.json();
         if (result.inventory?.length > 0) {
-          setInventory(result.inventory);
-          setBrands(rebuildBrands(result.inventory, "all"));
+          const s = JSON.stringify(result.inventory);
+          if (s !== _lastInvJson) {   // identical to the cached copy: skip the rebuild
+            _lastInvJson = s;
+            setInventory(result.inventory);
+            setBrands(rebuildBrands(result.inventory, "all"));
+            try { localStorage.setItem("versa_inventory_v2", s); } catch (e) { /* quota */ }
+          }
           setView("brands");
-          try { localStorage.setItem("versa_inventory_v2", JSON.stringify(result.inventory)); } catch (e) { /* quota */ }
           const t = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
           setSyncStatus({ text: `⚡ Live · ${result.inventory.length} items · ${t}`, type: "success" });
-          _bgPreloadStarted = false; // reset so live data gets preloaded
-          backgroundPreloadAll(result.inventory);
         }
       } catch (err) {
         console.warn("Sync failed:", err.message);
@@ -4760,7 +4763,9 @@ export default function VersaInventoryApp() {
         // NOTE: no Cache-Control request header — the API's CORS config only
         // allows Content-Type, so a Cache-Control header fails the preflight and
         // style overrides silently never load. Cache-bust via query param instead.
-        const resp = await fetch(`${API_URL}/overrides?t=${Date.now()}`, { signal: c.signal });
+        // lite=1: embedded photos come back as /image/ovr/<hash> links instead of
+        // base64, so the feed carries no photo data (Sep 24 2026 speed fix).
+        const resp = await fetch(`${API_URL}/overrides?lite=1&t=${Date.now()}`, { signal: c.signal });
         if (!resp.ok) return;
         const json = await resp.json();
         const raw = json.overrides || {};
@@ -4772,9 +4777,11 @@ export default function VersaInventoryApp() {
           // Object format (desktop standard): keys are SKUs, values are override objects
           Object.entries(raw).forEach(([sku, ov]) => { map[sku.toUpperCase()] = ov; });
         }
+        _overridesVersion = String(json.version || "");
+        _imgTag = _overridesVersion ? _overridesVersion.slice(0, 8) : "0";
+        _refreshImageVersion();
+        try { localStorage.setItem("versa_img_tag", _imgTag); } catch (e) { /* ignore */ }
         setStyleOverrides(map);
-        _imageCacheVersion = Date.now(); // bust browser cache for all image URLs
-        _bgPreloadStarted = false; // allow background preloader to re-run with fresh URLs
         console.log("✓ Style overrides loaded:", Object.keys(map).length, "| cache version:", _imageCacheVersion);
       } catch (e) { console.warn("Style overrides unavailable:", e.message); }
     };
@@ -4806,22 +4813,57 @@ export default function VersaInventoryApp() {
     };
     loadDeductionAssignments();
 
-    // Auto-refresh inventory + style overrides every 5 minutes
-    const refreshInterval = setInterval(async () => {
+    // Auto-refresh inventory + style overrides every 5 minutes, skipped while the
+    // app is in the background and caught up as soon as it comes back.
+    let lastRefreshAt = Date.now();
+    let refreshing = false;
+    const bumpPhotos = () => { if (_refreshImageVersion()) setImgVer(_imageCacheVersion); };
+    // Reload style overrides only when their version moved (a tiny request)
+    const checkOverrides = async () => {
       try {
-        const resp = await fetch(`${API_URL}/sync`);
-        if (!resp.ok) return;
-        const result = await resp.json();
-        if (result.inventory?.length > 0) {
-          setInventory(result.inventory);
-          const t = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
-          setSyncStatus({ text: `⚡ Live · ${result.inventory.length} items · ${t}`, type: "success" });
-          try { localStorage.setItem("versa_inventory_v2", JSON.stringify(result.inventory)); } catch (e) {}
+        const vr = await fetch(`${API_URL}/overrides/version?t=${Date.now()}`);
+        if (vr.ok) {
+          const v = await vr.json();
+          if (!v.version || v.version !== _overridesVersion) await loadStyleOverrides();
         }
       } catch (e) { /* silent retry next interval */ }
-      // Also refresh style overrides so new S3 images are picked up
-      loadStyleOverrides();
+    };
+    const refreshNow = async () => {
+      if (refreshing) return;   // a resume can fire the timer and the visibility handler together
+      refreshing = true;
+      lastRefreshAt = Date.now();
+      bumpPhotos();
+      const overridesDone = checkOverrides();
+      try {
+        const resp = await fetch(`${API_URL}/sync`);
+        if (resp.ok) {
+          const result = await resp.json();
+          if (result.inventory?.length > 0) {
+            const s = JSON.stringify(result.inventory);
+            if (s !== _lastInvJson) {
+              _lastInvJson = s;
+              setInventory(result.inventory);
+              try { localStorage.setItem("versa_inventory_v2", s); } catch (e) {}
+            }
+            const t = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
+            setSyncStatus({ text: `⚡ Live · ${result.inventory.length} items · ${t}`, type: "success" });
+          }
+        }
+      } catch (e) { /* silent retry next interval */ }
+      await overridesDone;
+      refreshing = false;
+    };
+    const refreshInterval = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (Date.now() - lastRefreshAt < 240000) return;   // the visibility handler just refreshed
+      refreshNow();
     }, 300000); // 5 min
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastRefreshAt > 300000) refreshNow();
+      else bumpPhotos();
+    };
+    document.addEventListener("visibilitychange", onVisible);
 
     // Daily refresh for production data and color map
     const dailyRefresh = setInterval(() => {
@@ -4836,7 +4878,10 @@ export default function VersaInventoryApp() {
       console.log("🔄 Weekly refresh: allocations reloaded");
     }, 604800000); // 7 days
 
-    return () => { clearInterval(refreshInterval); clearInterval(dailyRefresh); clearInterval(weeklyRefresh); };
+    return () => {
+      clearInterval(refreshInterval); clearInterval(dailyRefresh); clearInterval(weeklyRefresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   // Rebuild brands when filterMode or suppression-relevant data changes
@@ -4868,8 +4913,8 @@ export default function VersaInventoryApp() {
     window.history.pushState({ view: "inventory", brand: brandKey }, "", `#brand-${brandKey}`);
     // Preload images for this brand
     const b = brands[brandKey];
-    if (b?.items) preloadImages(b.items);
-  }, [brands, brandCategoryFilter]);
+    if (b?.items) preloadImages(b.items, styleOverrides);
+  }, [brands, brandCategoryFilter, styleOverrides]);
   const goToDetail = useCallback((item) => { 
     setSelectedItem(item); 
     window.history.pushState({ view: "detail", sku: item.sku }, "", `#sku-${item.sku}`);
