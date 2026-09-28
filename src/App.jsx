@@ -1058,6 +1058,27 @@ function isPants(sku, brandAbbr) {
 // primary-category check via getDetailedCategory.
 // A category filter is "all", one category, or a list ticked on the brand page
 // (David, Sep 28 2026). A list matches when ANY of its categories matches.
+// Totals of the list on screen: the brand tiles follow EVERY filter (category, color,
+// fabric, fit, search, delivery dates), as the desktop's tiles do (David, Sep 28 2026).
+// A Flow Mode row is one production order: its incoming is that order's share, and a
+// style's warehouse stock is counted once however many rows it has.
+function listTotals(items) {
+  let wh = 0, inc = 0, ats = 0;
+  const seen = new Set();
+  (items || []).forEach(i => {
+    inc += i._flow && i._flow_production ? (i._flow_units || 0) : (i.incoming || 0);
+    // A Flow row's own ATS stops at 0, so an oversold style would lose its negative; count
+    // the style's ATS once instead, so the tiles read the same with Flow Mode on or off.
+    if (!(i._flow && i._style_ats !== undefined)) ats += i.total_ats || 0;
+    if (!seen.has(i.sku)) {
+      seen.add(i.sku);
+      wh += i.total_warehouse || 0;
+      if (i._flow && i._style_ats !== undefined) ats += i._style_ats;
+    }
+  });
+  return { wh, inc, ats };
+}
+
 function categoryIsActive(filter) {
   return Array.isArray(filter) ? filter.length > 0 : !!filter && filter !== "all";
 }
@@ -5352,6 +5373,7 @@ export default function VersaInventoryApp() {
             flowItems.push({
               ...item,
               total_ats: r.ats,
+              _style_ats: item.total_ats || 0,
               _flow: true,
               _flow_key: `${item.sku}__flow_${idx}`,
               _flow_lot: r.lot,
@@ -5730,10 +5752,7 @@ export default function VersaInventoryApp() {
 
             {/* Brand Stats Bar */}
             {(() => {
-              const src = categoryFilteredItems;
-              const wh = src.reduce((s,i) => s + (i.total_warehouse||0), 0);
-              const inc = src.reduce((s,i) => s + (i.incoming||0), 0);
-              const ats = src.reduce((s,i) => s + (i.total_ats||0), 0);
+              const { wh, inc, ats } = listTotals(filteredItems);
               return (
                 <div style={{ display:"flex",gap:10,marginBottom:20,flexWrap:"wrap" }}>
                   <div style={{ flex:1,minWidth:100,background:"linear-gradient(135deg,#a78bfa,#7c3aed)",padding:"12px 16px",borderRadius:12,color:"#fff" }}>
@@ -5799,15 +5818,15 @@ export default function VersaInventoryApp() {
                 Showing <strong style={{ color:"#e2e8f0" }}>{filteredItems.length}</strong> {flowMode && filterMode === "incoming" ? "flow rows" : `of ${brandData.items.length} styles`}
                 <span style={{ display:"inline-flex",gap:6,alignItems:"center",marginLeft:4 }}>
                   <span style={{ fontSize:11,color:"#c4b5fd",background:"rgba(124,58,237,.15)",padding:"2px 8px",borderRadius:12,fontWeight:700,border:"1px solid rgba(124,58,237,.25)" }}>
-                    🏭 {filteredItems.reduce((s,i) => s + (i.total_warehouse||0), 0).toLocaleString()} {warehouseFilter !== "all" ? warehouseFilter.toUpperCase() : "WH"}
+                    🏭 {listTotals(filteredItems).wh.toLocaleString()} {warehouseFilter !== "all" ? warehouseFilter.toUpperCase() : "WH"}
                   </span>
-                  {filteredItems.reduce((s,i) => s + (i.incoming||0), 0) > 0 && (
+                  {listTotals(filteredItems).inc > 0 && (
                     <span style={{ fontSize:11,color:"#fbbf24",background:"rgba(245,158,11,.12)",padding:"2px 8px",borderRadius:12,fontWeight:700,border:"1px solid rgba(245,158,11,.25)" }}>
-                      🚢 {filteredItems.reduce((s,i) => s + (i.incoming||0), 0).toLocaleString()} Inc
+                      🚢 {listTotals(filteredItems).inc.toLocaleString()} Inc
                     </span>
                   )}
                   <span style={{ fontSize:11,color:"#93c5fd",background:"rgba(99,102,241,.12)",padding:"2px 8px",borderRadius:12,fontWeight:700,border:"1px solid rgba(99,102,241,.25)" }}>
-                    {filteredItems.reduce((s,i) => s + (i.total_ats||0), 0).toLocaleString()} ATS
+                    {listTotals(filteredItems).ats.toLocaleString()} ATS
                   </span>
                 </span>
                 {categoryIsActive(categoryFilter) && (
