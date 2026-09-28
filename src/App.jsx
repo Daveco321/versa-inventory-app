@@ -1680,7 +1680,7 @@ function DateWindowPanel({ value, onChange }) {
             <div style={{ fontSize:12, fontWeight:700, color:"#e2e8f0", marginBottom:6 }}>🛬 Arrival</div>
             <div style={{ display:"flex", gap:10 }}>{dateField("arrFrom", "On or after")}{dateField("arrTo", "On or before")}</div>
             <div style={{ display:"flex", gap:6, marginTop:8, flexWrap:"wrap" }}>
-              {[30, 60, 90].map(n => (
+              {[30, 60, 90, 120].map(n => (
                 <button key={n} type="button" className={`filter-pill${presetOn(n) ? " active" : ""}`}
                   onClick={() => onChange({ ...EMPTY_DATE_WINDOW, arrFrom: _isoInDays(0), arrTo: _isoInDays(n) })}>
                   Next {n} days
