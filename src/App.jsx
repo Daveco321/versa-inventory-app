@@ -408,7 +408,7 @@ function matchPrepackDefault(sku, brandAbbr, prepackDefaults) {
 
     const rCat = d.category || 'any';
     // Inclusive category match — a BC Carpenter matches 'pants', 'sportswear', AND 'young_men' rules
-    if (rCat !== 'any' && !matchesCategory(sku, brandAbbr, rCat)) continue;
+    if (rCat !== 'any' && !matchesCategory(sku, brandAbbr, rCat, true)) continue;
     const rFits = _ruleFits(d);
     if (rFits.length > 0 && !rFits.includes(fit)) continue;
     const rCusts = _ruleCustomers(d);
@@ -1071,17 +1071,20 @@ function categoryFilterLabel(filter) {
   return cats.map(c => CATEGORY_LABELS[c] || c).join(" + ");
 }
 
-function matchesCategory(sku, brandAbbr, category) {
+// forRule = matching a prepack or banner RULE: keeps the old inclusive sleeve read (a blazer
+// or a sportswear style still meets a 'long_sleeve' / 'short_sleeve' rule), as the desktop does.
+function matchesCategory(sku, brandAbbr, category, forRule) {
   if (!category || category === "all" || category === "any") return true;
   if (category === "sportswear")   return isSportswear(sku, brandAbbr);
   if (category === "pants")        return isPants(sku, brandAbbr);
   if (category === "blazers")      return isBlazer(sku);
   if (category === "vests")        return isVest(sku);
   if (category === "young_men")    return isYoungMen(sku);
-  if (category === "short_sleeve") return isShortSleeve(sku);
-  // A blazer/vest is not a long-sleeve shirt on any filter (David, Sep 23 2026;
-  // mirrors the desktop, where only prepack RULE matching keeps the inclusive read).
-  if (category === "long_sleeve")  return isLongSleeveShirt(sku) && !isBlazer(sku);
+  // Long Sleeve / Short Sleeve FILTERS list dress shirts only (David, Sep 28 2026): polos,
+  // tees and every Young Men/Sportswear fabric show under Sportswear. A blazer/vest is not a
+  // long-sleeve shirt on any filter either (Sep 23 2026). Rules keep the inclusive read.
+  if (category === "short_sleeve") return isShortSleeve(sku) && (forRule || !isSportswear(sku, brandAbbr));
+  if (category === "long_sleeve")  return isLongSleeveShirt(sku) && (forRule || (!isBlazer(sku) && !isSportswear(sku, brandAbbr)));
   if (category === "button_down")  return isButtonDown(sku, brandAbbr);
   return getDetailedCategory(sku, brandAbbr) === category;
 }
@@ -3609,7 +3612,7 @@ function getMatchingBanners(sku, brandAbbr, bannerRules) {
     // Dimension matching (all specified dimensions must match)
     const rCat = r.category || 'any';
     // Inclusive category match — a BC Carpenter matches 'pants', 'sportswear', AND 'young_men' rules
-    if (rCat !== 'any' && !matchesCategory(sku, brandAbbr, rCat)) return false;
+    if (rCat !== 'any' && !matchesCategory(sku, brandAbbr, rCat, true)) return false;
     const rFits = _ruleFits(r);
     if (rFits.length > 0 && !rFits.includes(fit)) return false;
     const rCusts = _ruleCustomers(r);
