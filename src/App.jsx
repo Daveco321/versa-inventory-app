@@ -1633,6 +1633,77 @@ function BrandCard({ abbr, data, onClick, filterMode, brandCategories, styleOver
   );
 }
 
+// ─── Overseas date filter panel ──────────
+function DateWindowPanel({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const active = dateWindowActive(value);
+  const set = (k, v) => onChange({ ...value, [k]: v });
+  const backwards = (value.arrFrom && value.arrTo && value.arrFrom > value.arrTo)
+    || (value.etdFrom && value.etdTo && value.etdFrom > value.etdTo);
+  const presetOn = n => value.arrFrom === _isoInDays(0) && value.arrTo === _isoInDays(n) && !value.etdFrom && !value.etdTo;
+  const dateField = (k, label) => (
+    <label style={{ flex:1, minWidth:0, display:"flex", flexDirection:"column", gap:4 }}>
+      <span style={{ fontSize:10, fontWeight:700, color:"#94a3b8", textTransform:"uppercase", letterSpacing:.4 }}>{label}</span>
+      <span style={{ display:"flex", alignItems:"center", gap:4 }}>
+        <input type="date" value={value[k]} onChange={e => set(k, e.target.value)}
+          style={{ flex:1, minWidth:0, padding:"9px 8px", borderRadius:10, border:`2px solid ${value[k] ? "#f59e0b" : "#334155"}`, background:"rgba(255,255,255,.05)", color:"#e2e8f0", fontSize:14, colorScheme:"dark" }} />
+        {/* always takes its space, so the two boxes in a row stay the same width */}
+        <button type="button" onClick={() => set(k, "")} aria-label={`Clear ${label}`} tabIndex={value[k] ? 0 : -1}
+          style={{ visibility: value[k] ? "visible" : "hidden", background:"none", border:"none", color:"#94a3b8", fontSize:16, cursor:"pointer", padding:"4px 2px" }}>✕</button>
+      </span>
+    </label>
+  );
+  return (
+    <div style={{ background:"rgba(245,158,11,.08)", border:`1px solid ${active ? "rgba(245,158,11,.55)" : "rgba(245,158,11,.25)"}`, borderRadius:14, marginBottom:16 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px" }}>
+        <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+          style={{ flex:1, minWidth:0, display:"flex", alignItems:"center", gap:10, background:"none", border:"none", cursor:"pointer", textAlign:"left", padding:0 }}>
+          <span style={{ fontSize:20 }}>📅</span>
+          <span style={{ flex:1, minWidth:0 }}>
+            <span style={{ display:"block", fontSize:13, fontWeight:800, color:"#fbbf24" }}>Delivery dates</span>
+            <span style={{ display:"block", fontSize:12, color: active ? "#fde68a" : "#94a3b8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+              {active ? dateWindowSummary(value) : "Filter by arrival or ex-factory date"}
+            </span>
+          </span>
+          <span style={{ color:"#94a3b8", fontSize:11 }}>{open ? "▲" : "▼"}</span>
+        </button>
+        {active && (
+          <button type="button" onClick={() => onChange(EMPTY_DATE_WINDOW)}
+            style={{ background:"rgba(245,158,11,.18)", border:"1px solid rgba(245,158,11,.45)", color:"#fde68a", fontSize:11, fontWeight:700, padding:"5px 10px", borderRadius:99, cursor:"pointer", whiteSpace:"nowrap" }}>
+            Clear
+          </button>
+        )}
+      </div>
+      {open && (
+        <div style={{ padding:"2px 12px 14px", display:"flex", flexDirection:"column", gap:14 }}>
+          <div>
+            <div style={{ fontSize:12, fontWeight:700, color:"#e2e8f0", marginBottom:6 }}>🛬 Arrival</div>
+            <div style={{ display:"flex", gap:10 }}>{dateField("arrFrom", "On or after")}{dateField("arrTo", "On or before")}</div>
+            <div style={{ display:"flex", gap:6, marginTop:8, flexWrap:"wrap" }}>
+              {[30, 60, 90].map(n => (
+                <button key={n} type="button" className={`filter-pill${presetOn(n) ? " active" : ""}`}
+                  onClick={() => onChange({ ...EMPTY_DATE_WINDOW, arrFrom: _isoInDays(0), arrTo: _isoInDays(n) })}>
+                  Next {n} days
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize:12, fontWeight:700, color:"#e2e8f0", marginBottom:6 }}>🏭 Ex-Factory</div>
+            <div style={{ display:"flex", gap:10 }}>{dateField("etdFrom", "On or after")}{dateField("etdTo", "On or before")}</div>
+          </div>
+          {backwards && (
+            <p style={{ fontSize:12, color:"#fca5a5", margin:0, fontWeight:600 }}>The "on or after" date is later than the "on or before" date, so nothing can match.</p>
+          )}
+          <p style={{ fontSize:11, color:"#94a3b8", margin:0, lineHeight:1.5 }}>
+            Each production order is checked on its own dates. Orders with no date on file stay in the list.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Product Card ────────────────────────
 function ProductCard({ item, onClick, onRoutingClick, filterMode, prodData, colorMap, bannerRules, suppressionOverrides, styleOverrides, warehouseFilter, deductionAssignments, transferIndex }) {
   const fabric = getFabricFromSKU(item.sku, styleOverrides);
@@ -1655,7 +1726,10 @@ function ProductCard({ item, onClick, onRoutingClick, filterMode, prodData, colo
 
   // Production data — suppression-aware (skip for flow items which already have PO info)
   const rawWh = (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0)+(item.abfi||0);
-  const prods = !isFlow ? getEarliestDates(item.sku, prodData, rawWh, suppressionOverrides).productions : [];
+  const allProds = !isFlow ? getEarliestDates(item.sku, prodData, rawWh, suppressionOverrides).productions : [];
+  // with a date window the card lists only the in-window lots (same lot objects as the ledger)
+  const winSet = item._dateFilteredProds ? new Set(item._dateFilteredProds) : null;
+  const prods = winSet ? allProds.filter(p => winSet.has(p)) : allProds;
   const hasProd = prods.length > 0;
   const totalProdUnits = prods.reduce((s, p) => s + (p.units || 0), 0);
   const nearestArrival = prods.length > 0 ? prods[0].arrival : null;
@@ -1716,12 +1790,14 @@ function ProductCard({ item, onClick, onRoutingClick, filterMode, prodData, colo
             else { const whAbsorbed = Math.min(totalDed, wh); overseasDed = Math.max(0, totalDed - whAbsorbed); }
           }
           let remaining = overseasDed;
-          const prodRows = [...prods].sort((a,b)=>(a.arrival||new Date("2099"))-(b.arrival||new Date("2099"))).map(p => {
+          // the waterfall runs over every lot, so a lot outside the date window still takes its
+          // share of the deduction; only the in-window lots are listed
+          const prodRows = [...allProds].sort((a,b)=>(a.arrival||new Date("2099"))-(b.arrival||new Date("2099"))).map(p => {
             const ded = Math.min(remaining, p.units||0);
             const flowAts = (p.units||0) - ded;
             remaining -= ded;
-            return { ...p, deducted: ded, flowAts };
-          });
+            return { ...p, _lot: p, deducted: ded, flowAts };
+          }).filter(r => !winSet || winSet.has(r._lot));
           const hasAnyDed = totalDed > 0;
           return (
           <div style={{ marginBottom:8 }} onClick={e => { e.stopPropagation(); setProdOpen(o => !o); }}>
@@ -2114,35 +2190,30 @@ function expandItemsToFlowRowsForExport(items, inventory, productionData, suppre
   if (items.some(i => i && i._flow)) return items; // already expanded
   const invBySku = new Map();
   (inventory || []).forEach(r => invBySku.set(r.sku, r));
+  // a date window's lot list must stay inside the ledger this export may use (customer
+  // exports pass a ledger without the admin-only hidden-landing lots)
+  const allowed = new Set(productionData || []);
   const flowItems = [];
   items.forEach(item => {
     const rawItem = invBySku.get(item.sku);
     const rawWh = rawItem ? (rawItem.jtw||0)+(rawItem.tr||0)+(rawItem.dcw||0)+(rawItem.qa||0)+(rawItem.nj||0)+(rawItem.abfi||0) : 0;
-    const prods = getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides);
-    if (prods.length === 0) {
+    const split = item._dateLotSplit
+      ? item._dateLotSplit.filter(r => allowed.has(r.lot))
+      : splitOverseasLots([...getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides)].sort(_byArrival),
+          item.incoming || 0, item._overseas_deducted || 0);
+    if (split.length === 0) {
       flowItems.push({ ...item, _flow: true, _flow_production: "", _flow_po: "No Production Data", _flow_units: item.total_ats || 0, _flow_deducted: 0, _flow_etd: null, _flow_arrival: null });
       return;
     }
-    const sortedProds = [...prods].sort((a, b) => (a.arrival || a.etd || new Date("2099-01-01")) - (b.arrival || b.etd || new Date("2099-01-01")));
-    const atsIncoming = item.incoming || 0;
-    const overseasDed = item._overseas_deducted || 0;
-    const totalProdUnits = sortedProds.reduce((s, p) => s + (p.units||0), 0);
-    let remaining = overseasDed;
-    let allocatedSoFar = 0;
-    sortedProds.forEach((p, idx) => {
-      let scaledUnits;
-      if (idx === sortedProds.length - 1) scaledUnits = atsIncoming - allocatedSoFar;
-      else scaledUnits = totalProdUnits > 0 ? Math.round((p.units||0) / totalProdUnits * atsIncoming) : atsIncoming;
-      allocatedSoFar += scaledUnits;
-      const ded = Math.min(remaining, scaledUnits);
-      remaining -= ded;
+    split.forEach(r => {
       flowItems.push({
         ...item,
-        total_ats: scaledUnits - ded,
+        total_ats: r.ats,
         _flow: true,
-        _flow_production: p.production, _flow_po: p.poName,
-        _flow_units: scaledUnits, _flow_deducted: ded,
-        _flow_etd: p.etd, _flow_arrival: p.arrival
+        _flow_lot: r.lot,
+        _flow_production: r.lot.production, _flow_po: r.lot.poName,
+        _flow_units: r.share, _flow_deducted: r.ded,
+        _flow_etd: r.lot.etd, _flow_arrival: r.lot.arrival
       });
     });
   });
@@ -2167,7 +2238,10 @@ function buildExportRow(item, { custView, filterMode, productionData, suppressio
     // Nearest arrival from production data. Suppression check needs the RAW
     // warehouse count — incoming mode zeroes the item's own wh fields.
     const rawWh = rawWhBySku && rawWhBySku.has(item.sku) ? rawWhBySku.get(item.sku) : wh;
-    const prods = getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides);
+    const allowed = item._dateFilteredProds ? new Set(productionData || []) : null;
+    const prods = item._dateFilteredProds
+      ? item._dateFilteredProds.filter(p => allowed.has(p))
+      : getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides);
     if (prods.length > 0) {
       const sorted = [...prods].sort((a, b) => (a.arrival || new Date("2099-01-01")) - (b.arrival || new Date("2099-01-01")));
       arrivalStr = sorted[0].arrival ? formatDateShort(sorted[0].arrival) : "";
@@ -2308,16 +2382,35 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
       if (isHiddenLandingProd(p)) hidden.set(st, (hidden.get(st) || 0) + (+p.units || 0));
       else if ((+p.units || 0) > 0) visible.add(st);
     });
-    if (!hidden.size) return items;
+    if (!hidden.size) return items;   // no hidden-landing lot in the ledger at all
     const out = [];
     items.forEach(i => {
       const st = String(i.sku || "").toUpperCase();
+      // A flow row (the on-screen Flow Mode list) is ONE lot: a hidden-landing lot's row never
+      // reaches a customer, any other row goes as it is (its units are already its own share).
+      if (i._flow) {
+        if (i._flow_lot && isHiddenLandingProd(i._flow_lot)) return;
+        out.push(i);
+        return;
+      }
+      // A date-filtered style carries the exact split of its in-window lots: keep the visible
+      // lots and their numbers, drop the hidden ones.
+      if (i._dateLotSplit) {
+        const vis = i._dateLotSplit.filter(r => !isHiddenLandingProd(r.lot));
+        if (vis.length === i._dateLotSplit.length) { out.push(i); return; }
+        const inc = vis.reduce((s, r) => s + r.share, 0);
+        if (inc <= 0 && (+(i.total_warehouse || 0)) <= 0) return;   // only hidden supply was in the window
+        out.push({ ...i, incoming: inc, total_ats: vis.reduce((s, r) => s + r.ats, 0),
+          _dateLotSplit: vis, _dateFilteredProds: vis.map(r => r.lot) });
+        return;
+      }
       const h = hidden.get(st) || 0;
+      const hasVisible = visible.has(st);
       if (h <= 0) { out.push(i); return; }
       const c = { ...i };
       const inc = +(c.incoming || 0);
       // every production hidden -> ALL overseas supply is invisible; mixed -> hidden units only
-      const cut = visible.has(st) ? Math.min(inc, h) : inc;
+      const cut = hasVisible ? Math.min(inc, h) : inc;
       if (cut > 0) {
         c.incoming = inc - cut;
         if (filterMode !== "ats") c.total_ats = (+(c.total_ats || 0)) - cut;
@@ -2728,8 +2821,14 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
   const [showFullImage, setShowFullImage] = useState(false);
   const [showAllocations, setShowAllocations] = useState(false);
   const isOverseas = filterMode === "incoming";
-  const dates = getEarliestDates(item.sku, prodData, totalStock, suppressionOverrides);
-  const prods = dates.productions;
+  const allDates = getEarliestDates(item.sku, prodData, totalStock, suppressionOverrides);
+  // with a date window the popup lists only the in-window lots, and its first dates are theirs
+  const winSet = item._dateFilteredProds ? new Set(item._dateFilteredProds) : null;
+  const allProds = allDates.productions;
+  const prods = winSet ? allProds.filter(p => winSet.has(p)) : allProds;
+  const dates = winSet
+    ? { ex_factory: prods[0] ? prods[0].etd : null, arrival: prods[0] ? prods[0].arrival : null, productions: prods }
+    : allDates;
   const colorInfo = getStyleColorInfo(item.sku, item.brand_abbr || item.brand, colorMap, styleOverrides);
 
   // Manual holds from /allocations — exact SKU match
@@ -2987,12 +3086,12 @@ function ProductDetailModal({ item, onClose, onAddToCart, filterMode, prodData, 
                   }
                 }
                 let remaining = overseasDed;
-                const prodRows = [...prods].sort((a,b)=>(a.arrival||new Date("2099"))-(b.arrival||new Date("2099"))).map(p => {
+                const prodRows = [...allProds].sort((a,b)=>(a.arrival||new Date("2099"))-(b.arrival||new Date("2099"))).map(p => {
                   const ded = Math.min(remaining, p.units||0);
                   const flowAts = (p.units||0) - ded;
                   remaining -= ded;
-                  return { ...p, deducted: ded, flowAts };
-                });
+                  return { ...p, _lot: p, deducted: ded, flowAts };
+                }).filter(r => !winSet || winSet.has(r._lot));   // every lot takes its deduction; the window's are listed
                 const totalProduced = prodRows.reduce((s,p)=>s+(p.units||0),0);
                 return (
                   <>
@@ -3270,6 +3369,152 @@ function getActiveProductionForSku(sku, prodData, warehouseQty, suppressionOverr
   const all = getProductionForSku(sku, prodData);
   if (typeof warehouseQty !== 'number') return all;
   return all.filter(p => !_isProductionSuppressed(warehouseQty, p, sku, suppressionOverrides));
+}
+
+// ═══════════════════════════════════════════
+// OVERSEAS DATE WINDOW (David, Sep 28 2026)
+// ═══════════════════════════════════════════
+// Filter the overseas view by arrival and/or ex-factory date. Like the desktop's
+// _overseasDateWindow, every production lot is judged on its own dates, a lot with no
+// date on file for the field being filtered stays in (same rule as the desktop and the
+// server decks), and a style keeps only its qualifying lots. Its incoming / ATS become
+// those lots' numbers from the same lot split Flow Mode uses (splitOverseasLots). Dates are
+// inclusive calendar days ("on or after", "on or before"), in the phone's local time.
+const EMPTY_DATE_WINDOW = { arrFrom: "", arrTo: "", etdFrom: "", etdTo: "" };
+const _FAR_DATE = new Date("2099-01-01");
+function dateWindowActive(w) {
+  return !!(w && (w.arrFrom || w.arrTo || w.etdFrom || w.etdTo));
+}
+function _isoDay(iso, endOfDay) {
+  const [y, m, d] = String(iso).split("-").map(Number);
+  return endOfDay ? new Date(y, m - 1, d, 23, 59, 59, 999) : new Date(y, m - 1, d);
+}
+function prodInDateWindow(p, w) {
+  const a = p.arrival, e = p.etd;
+  if (w.arrFrom && a && a < _isoDay(w.arrFrom)) return false;
+  if (w.arrTo && a && a > _isoDay(w.arrTo, true)) return false;
+  if (w.etdFrom && e && e < _isoDay(w.etdFrom)) return false;
+  if (w.etdTo && e && e > _isoDay(w.etdTo, true)) return false;
+  return true;
+}
+// production lots by base style, built once per production load (a per-style scan of the
+// whole ledger for every style is too slow on a phone)
+const _prodIndexCache = new WeakMap();
+function _prodByStyle(prodData) {
+  let m = _prodIndexCache.get(prodData);
+  if (!m) {
+    m = new Map();
+    (prodData || []).forEach(p => {
+      const k = (p.style || "").split("-")[0].toUpperCase();
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(p);
+    });
+    if (prodData) _prodIndexCache.set(prodData, m);
+  }
+  return m;
+}
+// Split a style's incoming and overseas deduction over its lots, in the order given
+// (earliest arrival first). Each lot gets its units share of incoming by cumulative rounding,
+// so shares are never negative and always add up to incoming (an equal split when no lot has
+// units on file). The deduction is charged to the earliest lots first, like the phone's
+// Flow Mode has always done. Returns [{ lot, share, ded, ats }] plus .leftover: deduction
+// beyond incoming (an oversold style), which no single lot absorbs.
+function splitOverseasLots(lots, incoming, deducted) {
+  const n = lots.length;
+  const tot = lots.reduce((s, p) => s + Math.max(0, p.units || 0), 0);
+  let cum = 0, prev = 0, rem = Math.max(0, deducted || 0);
+  const rows = lots.map(p => {
+    cum += tot > 0 ? Math.max(0, p.units || 0) : 1;
+    const upTo = Math.round(cum / (tot > 0 ? tot : n) * (incoming || 0));
+    const share = upTo - prev;
+    prev = upTo;
+    const ded = Math.min(rem, share);
+    rem -= ded;
+    return { lot: p, share, ded, ats: share - ded };
+  });
+  rows.leftover = rem;
+  return rows;
+}
+const _byArrival = (a, b) => (a.arrival || a.etd || _FAR_DATE) - (b.arrival || b.etd || _FAR_DATE);
+
+function applyOverseasDateWindow(items, w, prodData, inventory, suppressionOverrides, rawBySku) {
+  if (!dateWindowActive(w)) return items;
+  if (!rawBySku) {
+    rawBySku = new Map();
+    (inventory || []).forEach(r => rawBySku.set(r.sku, r));
+  }
+  const byStyle = _prodByStyle(prodData);
+  return items.map(item => {
+    const raw = rawBySku.get(item.sku);
+    const wh = raw ? (raw.jtw||0)+(raw.tr||0)+(raw.dcw||0)+(raw.qa||0)+(raw.nj||0)+(raw.abfi||0) : 0;
+    // same lots as getActiveProductionForSku, from the index
+    const prods = (byStyle.get((item.sku || "").split("-")[0].toUpperCase()) || [])
+      .filter(p => !_isProductionSuppressed(wh, p, item.sku, suppressionOverrides));
+    if (prods.length === 0) return item;                     // no lots on file: cannot be dated, keep
+    const q = prods.filter(p => prodInDateWindow(p, w));
+    if (q.length === 0) return null;                          // no lot in the window
+    if (q.length === prods.length) return item;               // every lot in the window: unchanged
+    // Split the style over ALL its lots exactly as Flow Mode does (splitOverseasLots), then
+    // keep the in-window lots and their split. The card, the brand totals, Flow Mode rows and
+    // exports then show the same number for the same lot. (The desktop's date filter still
+    // scales by units share, so the two apps can differ for a style with deductions.)
+    const sorted = [...prods].sort(_byArrival);
+    const split = splitOverseasLots(sorted, item.incoming || 0, item._overseas_deducted || 0);
+    const inWin = new Set(q);
+    const kept = split.filter(r => inWin.has(r.lot));
+    const qInc = kept.reduce((s, r) => s + r.share, 0);
+    // an oversold style stays negative when its last lot is in the window
+    const qDed = kept.reduce((s, r) => s + r.ded, 0) + (inWin.has(sorted[sorted.length - 1]) ? split.leftover : 0);
+    return { ...item, incoming: qInc, _overseas_deducted: qDed, total_ats: qInc - qDed,
+      _dateFilteredProds: kept.map(r => r.lot), _dateLotSplit: kept };
+  }).filter(Boolean);
+}
+function windowBrands(brands, w, prodData, inventory, suppressionOverrides) {
+  if (!dateWindowActive(w)) return brands;
+  const rawBySku = new Map();
+  (inventory || []).forEach(r => rawBySku.set(r.sku, r));
+  const out = {};
+  Object.entries(brands).forEach(([abbr, b]) => {
+    const items = applyOverseasDateWindow(b.items || [], w, prodData, inventory, suppressionOverrides, rawBySku);
+    if (!items.length) return;
+    out[abbr] = {
+      ...b, items,
+      sku_count: items.length,
+      total_ats: items.reduce((s, i) => s + (i.total_ats || 0), 0),
+      total_warehouse: items.reduce((s, i) => s + (i.total_warehouse || 0), 0),
+    };
+  });
+  return out;
+}
+// the lots a style shows: the date window's lots when some were cut, else all active lots
+function itemEarliestArrival(item, prodData, suppressionOverrides, fallback) {
+  const lots = item._dateFilteredProds
+    || getEarliestDates(item.sku, prodData, (item.jtw||0)+(item.tr||0)+(item.dcw||0)+(item.qa||0)+(item.nj||0)+(item.abfi||0), suppressionOverrides).productions;
+  let best = null;
+  lots.forEach(p => { if (p.arrival && (!best || p.arrival < best)) best = p.arrival; });
+  return best || fallback;
+}
+function _shortDay(iso) {
+  const d = _isoDay(iso);
+  const opts = { month: "short", day: "numeric" };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString(undefined, opts);
+}
+function _rangeText(from, to) {
+  if (from && to) return `${_shortDay(from)} to ${_shortDay(to)}`;
+  if (from) return `on or after ${_shortDay(from)}`;
+  return `on or before ${_shortDay(to)}`;
+}
+function dateWindowSummary(w) {
+  const bits = [];
+  if (w.arrFrom || w.arrTo) bits.push(`Arriving ${_rangeText(w.arrFrom, w.arrTo)}`);
+  if (w.etdFrom || w.etdTo) bits.push(`Ex-factory ${_rangeText(w.etdFrom, w.etdTo)}`);
+  return bits.join(" · ");
+}
+function _isoInDays(n) {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 function _getSuppressedIncoming(sku, prodData, warehouseQty, suppressionOverrides) {
@@ -4119,7 +4364,7 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
 // production order/delivery appears as its own row. Mirrors the desktop tool:
 // search by SKU/PO/production ref, filter by brand & customer, sort by date.
 // ═══════════════════════════════════════════
-function OverseasSummaryView({ inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, colorMap, brands, onItemClick }) {
+function OverseasSummaryView({ inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, colorMap, brands, onItemClick, dateWindow = EMPTY_DATE_WINDOW, onDateWindowChange }) {
   const [search, setSearch] = useState("");
   const [brandFilter, setBrandFilter] = useState("");
   const [customerFilter, setCustomerFilter] = useState("");
@@ -4228,6 +4473,9 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
   // Apply filters + sort
   const visible = useMemo(() => {
     let items = flowItems;
+    if (dateWindowActive(dateWindow)) {
+      items = items.filter(i => prodInDateWindow({ arrival: i._flow_arrival, etd: i._flow_etd }, dateWindow));
+    }
     if (brandFilter) items = items.filter(i => i.brand_abbr === brandFilter);
     if (customerFilter) items = items.filter(i => (i.sku || "").substring(0, 2).toUpperCase() === customerFilter);
     if (searchDebounced) {
@@ -4245,7 +4493,7 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
     else if (sortBy === "etd-asc") sorted.sort((a, b) => (a._flow_etd || new Date("2099")) - (b._flow_etd || new Date("2099")));
     else if (sortBy === "etd-desc") sorted.sort((a, b) => (b._flow_etd || new Date("1970")) - (a._flow_etd || new Date("1970")));
     return sorted;
-  }, [flowItems, brandFilter, customerFilter, searchDebounced, sortBy]);
+  }, [flowItems, brandFilter, customerFilter, searchDebounced, sortBy, dateWindow]);
 
   // Stats
   const totalUnits = visible.reduce((s, i) => s + (i._flow_units || 0), 0);
@@ -4310,6 +4558,8 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
           <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>Flow ATS</div>
         </div>
       </div>
+
+      {onDateWindowChange && <DateWindowPanel value={dateWindow} onChange={onDateWindowChange} />}
 
       {/* Search */}
       <input
@@ -4441,6 +4691,13 @@ export default function VersaInventoryApp() {
   const [routingItem, setRoutingItem] = useState(null);
   const [filterMode, setFilterMode] = useState("all");
   const [flowMode, setFlowMode] = useState(false);
+  const [dateWindow, setDateWindowRaw] = useState(EMPTY_DATE_WINDOW);   // overseas arrival / ex-factory filter
+  // The Color / Fabric drill filters are frozen SKU sets taken from the windowed list, so a
+  // new window clears them first, as a new category does (David, Sep 17 2026).
+  const setDateWindow = useCallback(w => {
+    setColorCategoryFilter(null); setFabricCodeFilter(null);
+    setDateWindowRaw(w);
+  }, []);
   const [warehouseFilter, setWarehouseFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState("ats-desc");
@@ -4900,11 +5157,27 @@ export default function VersaInventoryApp() {
   }, []);
 
   // Rebuild brands when filterMode or suppression-relevant data changes
+  // The full rebuild (smart routing included) is slow on a phone, so a date change never
+  // re-runs it: the rebuild is kept, and the delivery-date window (overseas view only) is
+  // applied to it separately, which is quick.
+  const [builtBrands, setBuiltBrands] = useState(null);
   useEffect(() => {
     if (inventory.length > 0) {
-      setBrands(rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData, openOrdersData, apoData));
+      setBuiltBrands({ mode: filterMode, brands: rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData, openOrdersData, apoData) });
     }
   }, [filterMode, inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData, openOrdersData, apoData]);
+  useEffect(() => {
+    if (!builtBrands) return;
+    setBrands(builtBrands.mode === "incoming"
+      ? windowBrands(builtBrands.brands, dateWindow, productionData, inventory, suppressionOverrides)
+      : builtBrands.brands);
+    // productionData / inventory / suppressionOverrides changes arrive through a new builtBrands
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [builtBrands, dateWindow]);
+  // the Production tab has no date filter, so it reads the build before the window
+  const recapItems = useMemo(() =>
+    builtBrands ? Object.values(builtBrands.brands).flatMap(b => b.items || []) : [],
+  [builtBrands]);
 
   // ─── Navigation with Browser History ────────────────────────
   const goToBrands = useCallback(() => { 
@@ -5054,16 +5327,10 @@ export default function VersaInventoryApp() {
     else if (sortBy === "ats-asc") items.sort((a,b) => (a.total_ats||0)-(b.total_ats||0));
     else if (sortBy === "sku-asc") items.sort((a,b) => (a.sku||"").localeCompare(b.sku||""));
     else if (sortBy === "sku-desc") items.sort((a,b) => (b.sku||"").localeCompare(a.sku||""));
-    else if (sortBy === "arrival-asc") items.sort((a,b) => {
-      const da = getEarliestDates(a.sku, productionData, (a.jtw||0)+(a.tr||0)+(a.dcw||0)+(a.qa||0)+(a.nj||0)+(a.abfi||0), suppressionOverrides).arrival || new Date("2099");
-      const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0)+(b.nj||0)+(b.abfi||0), suppressionOverrides).arrival || new Date("2099");
-      return da - db;
-    });
-    else if (sortBy === "arrival-desc") items.sort((a,b) => {
-      const da = getEarliestDates(a.sku, productionData, (a.jtw||0)+(a.tr||0)+(a.dcw||0)+(a.qa||0)+(a.nj||0)+(a.abfi||0), suppressionOverrides).arrival || new Date("1970");
-      const db = getEarliestDates(b.sku, productionData, (b.jtw||0)+(b.tr||0)+(b.dcw||0)+(b.qa||0)+(b.nj||0)+(b.abfi||0), suppressionOverrides).arrival || new Date("1970");
-      return db - da;
-    });
+    else if (sortBy === "arrival-asc") items.sort((a,b) =>
+      itemEarliestArrival(a, productionData, suppressionOverrides, new Date("2099")) - itemEarliestArrival(b, productionData, suppressionOverrides, new Date("2099")));
+    else if (sortBy === "arrival-desc") items.sort((a,b) =>
+      itemEarliestArrival(b, productionData, suppressionOverrides, new Date("1970")) - itemEarliestArrival(a, productionData, suppressionOverrides, new Date("1970")));
 
     // ── FLOW MODE: Expand overseas items by production order ──
     // Production data provides DATES and PO names; QUANTITIES come from the ATS file.
@@ -5073,36 +5340,24 @@ export default function VersaInventoryApp() {
         // Get real warehouse qty from raw inventory (incoming mode zeros jtw/tr/dcw/qa/nj)
         const rawItem = inventory.find(d => d.sku === item.sku);
         const rawWh = rawItem ? (rawItem.jtw||0)+(rawItem.tr||0)+(rawItem.dcw||0)+(rawItem.qa||0)+(rawItem.nj||0)+(rawItem.abfi||0) : 0;
-        const prods = getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides);
+        const prods = item._dateFilteredProds || getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides);
         if (prods.length > 0) {
-          const sortedProds = [...prods].sort((a, b) => (a.arrival || new Date("2099")) - (b.arrival || new Date("2099")));
-          const atsIncoming = item.incoming || 0;
-          const overseasDed = item._overseas_deducted || 0;
-          const totalProdUnits = sortedProds.reduce((s, p) => s + (p.units||0), 0);
-          let remaining = overseasDed;
-          let allocatedSoFar = 0;
-          sortedProds.forEach((p, idx) => {
-            let scaledUnits;
-            if (idx === sortedProds.length - 1) {
-              scaledUnits = atsIncoming - allocatedSoFar;
-            } else {
-              scaledUnits = totalProdUnits > 0 ? Math.round((p.units||0) / totalProdUnits * atsIncoming) : atsIncoming;
-            }
-            allocatedSoFar += scaledUnits;
-            const deductFromThis = Math.min(remaining, scaledUnits);
-            const flowAts = scaledUnits - deductFromThis;
-            remaining -= deductFromThis;
+          // a date-filtered style carries its lots' split from the full list; otherwise split now
+          const split = item._dateLotSplit
+            || splitOverseasLots([...prods].sort(_byArrival), item.incoming || 0, item._overseas_deducted || 0);
+          split.forEach((r, idx) => {
             flowItems.push({
               ...item,
-              total_ats: flowAts,
+              total_ats: r.ats,
               _flow: true,
               _flow_key: `${item.sku}__flow_${idx}`,
-              _flow_production: p.production,
-              _flow_po: p.poName,
-              _flow_units: scaledUnits,
-              _flow_deducted: deductFromThis,
-              _flow_etd: p.etd,
-              _flow_arrival: p.arrival
+              _flow_lot: r.lot,
+              _flow_production: r.lot.production,
+              _flow_po: r.lot.poName,
+              _flow_units: r.share,
+              _flow_deducted: r.ded,
+              _flow_etd: r.lot.etd,
+              _flow_arrival: r.lot.arrival
             });
           });
         } else {
@@ -5306,6 +5561,10 @@ export default function VersaInventoryApp() {
       <main style={{ maxWidth:1280,margin:"0 auto",padding:"24px 20px 100px",minHeight:"calc(100vh - 68px)" }}>
         
         {activeTab === "inventory" && <>
+        {/* Delivery-date filter: Overseas mode, brand list and brand screens */}
+        {filterMode === "incoming" && (view === "brands" || view === "inventory") && (
+          <DateWindowPanel value={dateWindow} onChange={setDateWindow} />
+        )}
         {/* LOADING */}
         {view === "loading" && <LoadingSpinner text="Loading Inventory..." />}
 
@@ -5378,10 +5637,23 @@ export default function VersaInventoryApp() {
               {filteredBrands.length === 0 ? (
                 <div style={{ textAlign:"center",padding:60,color:"#64748b" }}>
                   <p style={{ fontSize:48,marginBottom:12 }}>🔍</p>
-                  <p style={{ fontSize:16 }}>No brands found for {brandCategories.length > 1 ? "these categories" : "this category"}</p>
-                  <button onClick={() => setBrandCategories([])} style={{ marginTop:16,background:"linear-gradient(135deg,#818cf8,#6366f1)",color:"#fff",border:"none",padding:"10px 24px",borderRadius:10,fontWeight:700,cursor:"pointer",fontSize:14 }}>
-                    Show All Brands
-                  </button>
+                  <p style={{ fontSize:16 }}>
+                    {filterMode === "incoming" && dateWindowActive(dateWindow)
+                      ? "Nothing overseas arrives in these delivery dates"
+                      : `No brands found for ${brandCategories.length > 1 ? "these categories" : "this category"}`}
+                  </p>
+                  <div style={{ display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap",marginTop:16 }}>
+                    {filterMode === "incoming" && dateWindowActive(dateWindow) && (
+                      <button onClick={() => setDateWindow(EMPTY_DATE_WINDOW)} style={{ background:"linear-gradient(135deg,#f59e0b,#d97706)",color:"#fff",border:"none",padding:"10px 24px",borderRadius:10,fontWeight:700,cursor:"pointer",fontSize:14 }}>
+                        Clear dates
+                      </button>
+                    )}
+                    {brandCategories.length > 0 && (
+                      <button onClick={() => setBrandCategories([])} style={{ background:"linear-gradient(135deg,#818cf8,#6366f1)",color:"#fff",border:"none",padding:"10px 24px",borderRadius:10,fontWeight:700,cursor:"pointer",fontSize:14 }}>
+                        Show All Brands
+                      </button>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:16 }}>
@@ -5395,6 +5667,24 @@ export default function VersaInventoryApp() {
         )}
 
         {/* INVENTORY VIEW */}
+        {/* the open brand dropped out of the view (e.g. nothing arrives in the date window) */}
+        {view === "inventory" && currentBrand && !brandData && (
+          <div style={{ textAlign:"center",padding:60,color:"#64748b" }}>
+            <p style={{ fontSize:48,marginBottom:12 }}>🔍</p>
+            <p style={{ fontSize:16,color:"#cbd5e1" }}>
+              {filterMode === "incoming" && dateWindowActive(dateWindow)
+                ? `${(BRAND_MAPPING[currentBrand] || {}).full_name || currentBrand} has nothing arriving in these delivery dates`
+                : `${(BRAND_MAPPING[currentBrand] || {}).full_name || currentBrand} has no styles in this view`}
+            </p>
+            <div style={{ display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap",marginTop:16 }}>
+              {filterMode === "incoming" && dateWindowActive(dateWindow) && (
+                <button onClick={() => setDateWindow(EMPTY_DATE_WINDOW)} className="filter-pill active">Clear dates</button>
+              )}
+              <button onClick={goToBrands} className="filter-pill">← All Brands</button>
+            </div>
+          </div>
+        )}
+
         {view === "inventory" && brandData && (
           <>
             {/* Header */}
@@ -5643,7 +5933,7 @@ export default function VersaInventoryApp() {
 
         {/* PRODUCTION TAB */}
         {activeTab === "production" && (
-          <ProductionRecapView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} inventory={allItems} onStyleClick={(item) => setSelectedItem(item)} />
+          <ProductionRecapView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} inventory={recapItems.length ? recapItems : allItems} onStyleClick={(item) => setSelectedItem(item)} />
         )}
 
         {/* OVERSEAS SUMMARY TAB */}
@@ -5657,6 +5947,8 @@ export default function VersaInventoryApp() {
             colorMap={colorMap}
             brands={brands}
             onItemClick={(item) => setSelectedItem(item)}
+            dateWindow={dateWindow}
+            onDateWindowChange={setDateWindow}
           />
         )}
 
