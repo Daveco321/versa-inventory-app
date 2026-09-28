@@ -1056,6 +1056,21 @@ function isPants(sku, brandAbbr) {
 // a VD shacket with fit SS matches 'young_men', 'sportswear', AND 'short_sleeve').
 // For non-overlapping categories (big_tall, accessories) falls through to the
 // primary-category check via getDetailedCategory.
+// A category filter is "all", one category, or a list ticked on the brand page
+// (David, Sep 28 2026). A list matches when ANY of its categories matches.
+function categoryIsActive(filter) {
+  return Array.isArray(filter) ? filter.length > 0 : !!filter && filter !== "all";
+}
+function matchesAnyCategory(sku, brandAbbr, filter) {
+  if (Array.isArray(filter)) return filter.length === 0 || filter.some(c => matchesCategory(sku, brandAbbr, c));
+  return matchesCategory(sku, brandAbbr, filter);
+}
+const CATEGORY_LABELS = { long_sleeve:"👔 Long Sleeve", short_sleeve:"👕 Short Sleeve", big_tall:"🧢 Big & Tall", pants:"👖 Pants", sportswear:"🏋️ Sportswear", blazers:"🤵 Blazers/Vests", young_men:"🧒 Young Men", accessories:"🎀 Accessories" };
+function categoryFilterLabel(filter) {
+  const cats = Array.isArray(filter) ? filter : [filter];
+  return cats.map(c => CATEGORY_LABELS[c] || c).join(" + ");
+}
+
 function matchesCategory(sku, brandAbbr, category) {
   if (!category || category === "all" || category === "any") return true;
   if (category === "sportswear")   return isSportswear(sku, brandAbbr);
@@ -1579,11 +1594,11 @@ function ImageWithFallback({ src, alt, style, className, onClick }) {
 }
 
 // ─── Brand Card ──────────────────────────
-function BrandCard({ abbr, data, onClick, filterMode, brandCategoryFilter, styleOverrides, warehouseFilter }) {
-  // When a category filter is active, recompute totals from only matching items
+function BrandCard({ abbr, data, onClick, filterMode, brandCategories, styleOverrides, warehouseFilter }) {
+  // When categories are ticked, recompute totals from only matching items
   let displayData = data;
-  if (brandCategoryFilter && brandCategoryFilter !== "all" && data.items) {
-    const filtered = data.items.filter(i => matchesCategory(i.sku, i.brand_abbr || i.brand, brandCategoryFilter));
+  if (categoryIsActive(brandCategories) && data.items) {
+    const filtered = data.items.filter(i => matchesAnyCategory(i.sku, i.brand_abbr || i.brand, brandCategories));
     displayData = {
       ...data,
       sku_count: filtered.length,
@@ -4450,8 +4465,8 @@ export default function VersaInventoryApp() {
   const [showFabricSummary, setShowFabricSummary] = useState(false);
   const [colorCategoryFilter, setColorCategoryFilter] = useState(null); // { cat, label, skus: Set }
   const [fabricCodeFilter, setFabricCodeFilter] = useState(null);       // { code, label, skus: Set }
-  const [categoryFilter, setCategoryFilter] = useState("all");
-  const [brandCategoryFilter, setBrandCategoryFilter] = useState("all"); // filters brand cards in brands view
+  const [categoryFilter, setCategoryFilter] = useState("all"); // "all", one category, or the brand page's ticked list
+  const [brandCategories, setBrandCategories] = useState([]); // ticked on the brands view ([] = All Products)
   const [showExport, setShowExport] = useState(false);
   const [activeTab, setActiveTab] = useState("inventory"); // "inventory" | "production" | "analytics"
 
@@ -4538,18 +4553,18 @@ export default function VersaInventoryApp() {
 
   // allItems filtered by the brands-view category pill — used by stats bar
   const allItemsFiltered = useMemo(() => {
-    if (brandCategoryFilter === "all") return allItems;
-    return allItems.filter(i => matchesCategory(i.sku, i.brand_abbr || i.brand, brandCategoryFilter));
-  }, [allItems, brandCategoryFilter, styleOverrides]);
+    if (!brandCategories.length) return allItems;
+    return allItems.filter(i => matchesAnyCategory(i.sku, i.brand_abbr || i.brand, brandCategories));
+  }, [allItems, brandCategories, styleOverrides]);
 
   // Filter brand cards when a category is selected on the brands view
   const filteredBrands = useMemo(() => {
     const entries = sortBrands(Object.entries(brands));
-    if (brandCategoryFilter === "all") return entries;
+    if (!brandCategories.length) return entries;
     return entries.filter(([, data]) =>
-      (data.items || []).some(i => matchesCategory(i.sku, i.brand_abbr || i.brand, brandCategoryFilter))
+      (data.items || []).some(i => matchesAnyCategory(i.sku, i.brand_abbr || i.brand, brandCategories))
     );
-  }, [brands, brandCategoryFilter, styleOverrides]);
+  }, [brands, brandCategories, styleOverrides]);
 
   // ─── Data Loading ──────────────────────
   useEffect(() => {
@@ -4908,13 +4923,14 @@ export default function VersaInventoryApp() {
     setShowFabricSummary(false);
     setColorCategoryFilter(null);
     setFabricCodeFilter(null);
-    // Pre-seed inventory category filter from brands-view filter when drilling in
-    setCategoryFilter(brandCategoryFilter !== "all" ? brandCategoryFilter : "all");
+    // Pre-seed the brand's category filter from the categories ticked on the brands view
+    setCategoryFilter(brandCategories.length === 0 ? "all"
+      : brandCategories.length === 1 ? brandCategories[0] : [...brandCategories]);
     window.history.pushState({ view: "inventory", brand: brandKey }, "", `#brand-${brandKey}`);
     // Preload images for this brand
     const b = brands[brandKey];
     if (b?.items) preloadImages(b.items, styleOverrides);
-  }, [brands, brandCategoryFilter, styleOverrides]);
+  }, [brands, brandCategories, styleOverrides]);
   const goToDetail = useCallback((item) => { 
     setSelectedItem(item); 
     window.history.pushState({ view: "detail", sku: item.sku }, "", `#sku-${item.sku}`);
@@ -5006,8 +5022,8 @@ export default function VersaInventoryApp() {
     if (!brandData) return [];
     let items = [...brandData.items];
     // Category filter — inclusive: items can match multiple categories (e.g. BC bottom matches pants+sportswear+young_men)
-    if (categoryFilter !== "all") {
-      items = items.filter(i => matchesCategory(i.sku, i.brand_abbr || i.brand, categoryFilter));
+    if (categoryIsActive(categoryFilter)) {
+      items = items.filter(i => matchesAnyCategory(i.sku, i.brand_abbr || i.brand, categoryFilter));
     }
     // Color category filter (from Color Summary panel click)
     if (colorCategoryFilter) {
@@ -5120,8 +5136,8 @@ export default function VersaInventoryApp() {
   // affected by their own click-to-filter selections (which would be circular).
   const categoryFilteredItems = useMemo(() => {
     if (!brandData) return [];
-    if (categoryFilter === "all") return brandData.items;
-    return brandData.items.filter(i => matchesCategory(i.sku, i.brand_abbr || i.brand, categoryFilter));
+    if (!categoryIsActive(categoryFilter)) return brandData.items;
+    return brandData.items.filter(i => matchesAnyCategory(i.sku, i.brand_abbr || i.brand, categoryFilter));
   }, [brandData, categoryFilter, styleOverrides]);
 
   // Get unique fits/fabrics for filters.
@@ -5328,14 +5344,22 @@ export default function VersaInventoryApp() {
                 { value:"blazers",    label:"🤵 Blazers/Vests" },
                 { value:"young_men",  label:"🧒 Young Men" },
                 { value:"accessories",label:"🎀 Accessories" },
-              ].map(({ value, label }) => (
-                <button key={value}
-                  onClick={() => setBrandCategoryFilter(value)}
-                  className={`filter-pill${brandCategoryFilter === value ? " active" : ""}`}
-                >
-                  {label}
-                </button>
-              ))}
+              ].map(({ value, label }) => {
+                // "All Products" clears; every other box toggles on its own (tick several at once)
+                const on = value === "all" ? brandCategories.length === 0 : brandCategories.includes(value);
+                return (
+                  <button key={value}
+                    role="checkbox" aria-checked={on}
+                    onClick={() => setBrandCategories(prev => value === "all" ? []
+                      : prev.includes(value) ? prev.filter(c => c !== value) : [...prev, value])}
+                    className={`filter-pill${on ? " active" : ""}`}
+                    style={{ display:"inline-flex",alignItems:"center",gap:6 }}
+                  >
+                    <span aria-hidden="true" style={{ width:14,height:14,borderRadius:4,flexShrink:0,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:900,lineHeight:1,border:on ? "2px solid #818cf8" : "2px solid #64748b",background:on ? "#6366f1" : "transparent",color:"#fff" }}>{on ? "✓" : ""}</span>
+                    {label}
+                  </button>
+                );
+              })}
             </div>
 
             {/* Brand Grid */}
@@ -5345,7 +5369,7 @@ export default function VersaInventoryApp() {
                 <span style={{ fontSize:13,fontWeight:500,color:"#64748b",marginLeft:8 }}>
                   {filterMode === "incoming" ? "🚢 Overseas" : filterMode === "ats" ? (warehouseFilter !== "all" ? `🏭 ${warehouseFilter.toUpperCase()} Only` : "🏭 Warehouse ATS") : "📦 All"}
                 </span>
-                {brandCategoryFilter !== "all" && (
+                {brandCategories.length > 0 && (
                   <span style={{ fontSize:12,fontWeight:700,color:"#818cf8",marginLeft:8,background:"rgba(99,102,241,.15)",padding:"3px 10px",borderRadius:20,border:"1px solid rgba(99,102,241,.3)" }}>
                     {filteredBrands.length} brand{filteredBrands.length !== 1 ? "s" : ""}
                   </span>
@@ -5354,15 +5378,15 @@ export default function VersaInventoryApp() {
               {filteredBrands.length === 0 ? (
                 <div style={{ textAlign:"center",padding:60,color:"#64748b" }}>
                   <p style={{ fontSize:48,marginBottom:12 }}>🔍</p>
-                  <p style={{ fontSize:16 }}>No brands found for this category</p>
-                  <button onClick={() => setBrandCategoryFilter("all")} style={{ marginTop:16,background:"linear-gradient(135deg,#818cf8,#6366f1)",color:"#fff",border:"none",padding:"10px 24px",borderRadius:10,fontWeight:700,cursor:"pointer",fontSize:14 }}>
+                  <p style={{ fontSize:16 }}>No brands found for {brandCategories.length > 1 ? "these categories" : "this category"}</p>
+                  <button onClick={() => setBrandCategories([])} style={{ marginTop:16,background:"linear-gradient(135deg,#818cf8,#6366f1)",color:"#fff",border:"none",padding:"10px 24px",borderRadius:10,fontWeight:700,cursor:"pointer",fontSize:14 }}>
                     Show All Brands
                   </button>
                 </div>
               ) : (
                 <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:16 }}>
                   {filteredBrands.map(([abbr, data]) => (
-                    <BrandCard key={abbr} abbr={abbr} data={data} onClick={() => goToInventory(abbr)} filterMode={filterMode} brandCategoryFilter={brandCategoryFilter} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} />
+                    <BrandCard key={abbr} abbr={abbr} data={data} onClick={() => goToInventory(abbr)} filterMode={filterMode} brandCategories={brandCategories} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} />
                   ))}
                 </div>
               )}
@@ -5451,7 +5475,8 @@ export default function VersaInventoryApp() {
                   {filterMode === "incoming" && <option value="arrival-asc">📅 Arriving Earliest</option>}
                   {filterMode === "incoming" && <option value="arrival-desc">📅 Arriving Latest</option>}
                 </select>
-                <select value={categoryFilter} onChange={e => {
+                <select value={Array.isArray(categoryFilter) ? "__multi__" : categoryFilter} onChange={e => {
+                    if (e.target.value === "__multi__") return;
                     // Changing the category drops the Color / Fabric drill selections first.
                     // Those are FROZEN SKU SETS captured when the summary row was tapped, so
                     // "shirt fabric" + "Dress Pants" intersects to zero: the grid shows
@@ -5462,6 +5487,7 @@ export default function VersaInventoryApp() {
                     setCategoryFilter(e.target.value);
                   }}
                   style={{ padding:"10px 14px",borderRadius:10,border:"2px solid #334155",background:"#1e293b",color:"#e2e8f0",fontSize:13,fontWeight:600,cursor:"pointer" }}>
+                  {Array.isArray(categoryFilter) && <option value="__multi__">✓ {categoryFilter.length} categories</option>}
                   <option value="all">All Products</option>
                   <option value="long_sleeve">👔 Long Sleeve Shirts</option>
                   <option value="short_sleeve">👕 Short Sleeve Shirts</option>
@@ -5491,9 +5517,9 @@ export default function VersaInventoryApp() {
                     {filteredItems.reduce((s,i) => s + (i.total_ats||0), 0).toLocaleString()} ATS
                   </span>
                 </span>
-                {categoryFilter !== "all" && (
+                {categoryIsActive(categoryFilter) && (
                   <span style={{ display:"inline-flex",alignItems:"center",gap:4,background:"rgba(99,102,241,.15)",color:"#818cf8",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,border:"1px solid rgba(99,102,241,.3)" }}>
-                    {{ long_sleeve:"👔 Long Sleeve", short_sleeve:"👕 Short Sleeve", big_tall:"🧢 Big & Tall", pants:"👖 Pants", sportswear:"🏋️ Sportswear", blazers:"🤵 Blazers/Vests", young_men:"🧒 Young Men", accessories:"🎀 Accessories" }[categoryFilter]}
+                    {categoryFilterLabel(categoryFilter)}
                     <button onClick={() => setCategoryFilter("all")} style={{ background:"none",border:"none",color:"#818cf8",cursor:"pointer",fontSize:12,padding:0,lineHeight:1,marginLeft:2 }}>✕</button>
                   </span>
                 )}
