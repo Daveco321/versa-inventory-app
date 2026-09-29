@@ -3308,6 +3308,464 @@ function UniversalSearch({ items, onSelect, placeholder, styleOverrides }) {
   );
 }
 
+// ═══════════════════════════════════════════
+// PO SEARCH (David, Sep 29 2026)
+// ═══════════════════════════════════════════
+// The desktop brand page's "Search by PO (Customer or Production)", view only (no
+// presentation set). Customer POs are the A2000 open orders (label = PO, else order #),
+// grouped as on the desktop. Production POs are the Style Ledger's column A ref and
+// column B PO name; one ref can carry several PO names (DP26021 = five TK Maxx POs), so
+// each (ref, name) pair is also its own result, as on the desktop (performPoSearch).
+function _poNorm(s) { return String(s == null ? "" : s).toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+function _orderUnits(o) { return (parseInt(o.openQty) || 0) + (parseInt(o.pickQty) || 0); }
+function _poDate(v) { if (!v) return null; const d = v instanceof Date ? v : new Date(v); return isNaN(d) ? null : d; }
+// A pasted list splits on newline, comma, semicolon, pipe, tab or 2+ spaces. One space is
+// NOT a separator, because "50 667206" is one PO.
+function splitPoTokens(raw) {
+  return String(raw || "").split(/[\n,;|\t]+|\s{2,}/).map(t => t.trim()).filter(Boolean);
+}
+
+function buildPoIndex(openOrdersData, productionData) {
+  const byId = new Map(), cust = [], prod = [];
+  const custByNorm = new Map(), prodByRefNorm = new Map(), prodByNameNorm = new Map();
+  (openOrdersData || []).forEach(o => {
+    const qty = _orderUnits(o);
+    if (qty <= 0) return;
+    const label = String(o.po || "").trim() || String(o.orderNo || o.ctrlNo || "").trim();
+    if (!label) return;
+    const id = "c|" + label.toUpperCase();
+    let e = byId.get(id);
+    if (!e) {
+      e = { id, kind: "cust", label, customer: o.customerFull || o.shipToName || o.customer || "—",
+            fob: false, bulk: false, units: 0, styles: new Set(), startMin: null, cancelMax: null, rows: [] };
+      byId.set(id, e); cust.push(e);
+      const n = _poNorm(label);
+      if (n && !custByNorm.has(n)) custByNorm.set(n, e);
+    }
+    e.units += qty;
+    e.rows.push(o);
+    const sk = String(o.style || o.baseStyle || "").trim().toUpperCase();
+    if (sk) e.styles.add(sk);
+    const sd = _poDate(o.startDate), cd = _poDate(o.cancelDate);
+    if (sd && (!e.startMin || sd < e.startMin)) e.startMin = sd;
+    if (cd && (!e.cancelMax || cd > e.cancelMax)) e.cancelMax = cd;
+    if (o.isPipeline) e.bulk = true;
+    if (_isFobCustomer(o.customer)) e.fob = true;
+  });
+
+  const namesByRef = new Map();
+  (productionData || []).forEach(p => {
+    if (!p.production || !p.poName) return;
+    if (!namesByRef.has(p.production)) namesByRef.set(p.production, new Set());
+    namesByRef.get(p.production).add(p.poName);
+  });
+  const addProd = (id, fields, p) => {
+    let e = byId.get(id);
+    if (!e) { e = { id, kind: "prod", ...fields, units: 0, styles: new Set(), etd: null, rows: [] }; byId.set(id, e); prod.push(e); }
+    e.units += p.units || 0;
+    e.rows.push(p);
+    if (p.style) e.styles.add(p.style);
+    if (!e.poName && p.poName) e.poName = p.poName;
+    if (p.etd && (!e.etd || p.etd < e.etd)) e.etd = p.etd;
+    return e;
+  };
+  (productionData || []).forEach(p => {
+    const key = p.production || p.poName;
+    if (!key) return;
+    const nNames = p.production ? (namesByRef.get(p.production) || new Set()).size : 0;
+    const whole = addProd("p|" + key, { ref: p.production || "", poName: p.poName || "", multiPo: false, poNameCount: nNames > 1 ? nNames : 0 }, p);
+    const sub = p.production && p.poName && nNames > 1
+      ? addProd("s|" + p.production + "||" + p.poName, { ref: p.production, poName: p.poName, multiPo: true }, p)
+      : null;
+    // exact matches for a typed or pasted PO: the ref first, then a ledger PO name
+    const nr = _poNorm(p.production);
+    if (nr && !prodByRefNorm.has(nr)) prodByRefNorm.set(nr, whole);
+    const nn = _poNorm(p.poName);
+    if (nn && !prodByNameNorm.has(nn)) prodByNameNorm.set(nn, sub || whole);
+  });
+  return { byId, cust, prod, custByNorm, prodByRefNorm, prodByNameNorm };
+}
+
+// Dropdown results: up to 8 customer POs (latest start first), then up to 10 productions
+// (latest ex-factory first). Same matching as the desktop.
+function searchPoIndex(index, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (q.length < 2) return [];
+  const qn = _poNorm(q);
+  const hitC = e => e.label.toLowerCase().includes(q) || e.customer.toLowerCase().includes(q)
+    || (qn.length >= 3 && _poNorm(e.label).includes(qn));
+  const hitP = e => e.ref.toLowerCase().includes(q) || e.poName.toLowerCase().includes(q)
+    || (qn.length >= 3 && (_poNorm(e.ref).includes(qn) || _poNorm(e.poName).includes(qn)));
+  const t = d => (d ? d.getTime() : 0);
+  return [
+    ...index.cust.filter(hitC).sort((a, b) => t(b.startMin) - t(a.startMin)).slice(0, 8),
+    ...index.prod.filter(hitP).sort((a, b) => t(b.etd) - t(a.etd)).slice(0, 10),
+  ];
+}
+
+// Exact match per token: a customer PO first, then a production ref, then a ledger PO name
+// (the desktop's _poSetAddTokens order).
+function resolvePoTokens(index, tokens) {
+  const ids = [], missing = [];
+  tokens.forEach(tok => {
+    const n = _poNorm(tok);
+    if (!n) return;
+    const e = index.custByNorm.get(n) || index.prodByRefNorm.get(n) || index.prodByNameNorm.get(n);
+    if (!e) missing.push(tok);
+    else if (!ids.includes(e.id)) ids.push(e.id);
+  });
+  return { ids, missing };
+}
+
+// One tile per style on the PO (a production can ship a style in several lots).
+function poStyleRows(e) {
+  const byStyle = new Map();
+  e.rows.forEach(r => {
+    if (e.kind === "cust") {
+      const sk = String(r.style || r.baseStyle || "").trim().toUpperCase();
+      if (!sk) return;
+      if (!byStyle.has(sk)) byStyle.set(sk, { style: sk, brand: "", units: 0, start: null, cancel: null });
+      const s = byStyle.get(sk);
+      s.units += _orderUnits(r);
+      const sd = _poDate(r.startDate), cd = _poDate(r.cancelDate);
+      if (sd && (!s.start || sd < s.start)) s.start = sd;
+      if (cd && (!s.cancel || cd > s.cancel)) s.cancel = cd;
+    } else {
+      if (!r.style) return;
+      if (!byStyle.has(r.style)) byStyle.set(r.style, { style: r.style, brand: r.brand || "", units: 0, etd: null, arrival: null, lots: 0, fob: false });
+      const s = byStyle.get(r.style);
+      s.units += r.units || 0;
+      s.lots += 1;
+      if (r.fob_flag) s.fob = true;
+      if (r.etd && (!s.etd || r.etd < s.etd)) s.etd = r.etd;
+      if (r.arrival && (!s.arrival || r.arrival < s.arrival)) s.arrival = r.arrival;
+    }
+  });
+  return [...byStyle.values()].sort((a, b) => a.style.localeCompare(b.style));
+}
+
+function _poTitle(e) { return e.kind === "cust" ? e.label : (e.ref || e.poName || "(no ref)"); }
+function _poSub(e) {
+  if (e.kind === "cust") return e.customer;
+  if (e.multiPo) return `PO name ${e.poName}`;
+  if (e.poNameCount > 1) return `${e.poNameCount} PO names on this production (whole run)`;
+  return e.ref ? e.poName : "";
+}
+function _poDateRange(dates) {
+  const ts = dates.filter(Boolean).map(d => d.getTime());
+  if (!ts.length) return "—";
+  const a = Math.min(...ts), b = Math.max(...ts);
+  return a === b ? formatDateShort(a) : `${formatDateShort(a)} to ${formatDateShort(b)}`;
+}
+
+const _PO_CHIPS = {
+  cust: { text: "CUSTOMER PO", bg: "#eef2ff", color: "#4338ca", border: "#c7d2fe" },
+  prod: { text: "PRODUCTION", bg: "#f0f9ff", color: "#0369a1", border: "#bae6fd" },
+  name: { text: "PO NAME", bg: "#f5f3ff", color: "#6d28d9", border: "#ddd6fe" },
+  bulk: { text: "BULK", bg: "#fffbeb", color: "#b45309", border: "#fde68a" },
+  fob:  { text: "🚢 FOB", bg: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe" },
+};
+function PoChip({ k }) {
+  const c = _PO_CHIPS[k];
+  return <span style={{ fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:5,background:c.bg,color:c.color,border:`1px solid ${c.border}`,whiteSpace:"nowrap",letterSpacing:".02em" }}>{c.text}</span>;
+}
+function PoChips({ e }) {
+  return (
+    <>
+      <PoChip k={e.kind === "cust" ? "cust" : e.multiPo ? "name" : "prod"} />
+      {e.bulk && <PoChip k="bulk" />}
+      {e.fob && <PoChip k="fob" />}
+    </>
+  );
+}
+
+// The search box. mode "open" (brand page) opens the PO screen; mode "add" (on the PO
+// screen) adds to it. Tap a result, or paste several POs and tap "Show all".
+function PoSearch({ index, onOpen, ordersStatus, onRetryOrders, mode = "open" }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const ref = useRef(null);
+  const tokens = useMemo(() => splitPoTokens(query), [query]);
+  const multi = tokens.length > 1;
+  const results = useMemo(() => (multi ? [] : searchPoIndex(index, query)), [index, query, multi]);
+  const resolved = useMemo(() => (multi ? resolvePoTokens(index, tokens) : null), [index, tokens, multi]);
+
+  useEffect(() => {
+    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+  // a "no match" note is stale once the POs change (customer orders arrived)
+  useEffect(() => { setNote(""); }, [index]);
+
+  const finish = (ids, missing) => { onOpen(ids, missing || []); setQuery(""); setNote(""); setOpen(false); };
+  const ordersNote = ordersStatus === "loading" ? " Customer orders are still loading."
+    : ordersStatus === "failed" ? " Customer orders did not load." : "";
+  const submit = () => {
+    if (!tokens.length) return;
+    const r = resolvePoTokens(index, tokens);
+    if (r.ids.length) { finish(r.ids, r.missing); return; }
+    if (!multi && results.length === 1) { finish([results[0].id]); return; }
+    setNote(multi ? `None of these match a PO exactly.${ordersNote}`
+      : results.length ? "No exact match. Tap one of the results." : `No PO matches "${tokens[0]}".${ordersNote}`);
+    setOpen(true);
+  };
+  // A column pasted from Excel arrives with line breaks, which a one-line box would drop
+  // (gluing the POs together), so they become commas.
+  const onPaste = e => {
+    const t = e.clipboardData && e.clipboardData.getData("text");
+    if (!t || !/[\r\n\t]/.test(t.trim())) return;
+    e.preventDefault();
+    const joined = t.split(/[\r\n\t]+/).map(x => x.trim()).filter(Boolean).join(", ");
+    const el = e.target;
+    const a = el.selectionStart == null ? query.length : el.selectionStart;
+    const b = el.selectionEnd == null ? query.length : el.selectionEnd;
+    setQuery(query.slice(0, a) + joined + query.slice(b));
+    setNote(""); setOpen(true);
+  };
+  const adding = mode === "add";
+  const showList = open && (query.trim().length >= 2 || multi || note || !query.trim());
+
+  return (
+    <div ref={ref} style={{ position:"relative",maxWidth:600,margin: adding ? "0 0 16px" : "0 auto 24px" }}>
+      <input value={query} type="text" enterKeyHint="search" autoComplete="off" autoCorrect="off" spellCheck={false}
+        onChange={e => { setQuery(e.target.value); setNote(""); setOpen(true); }}
+        onFocus={e => { setOpen(true); e.target.style.borderColor = "#667eea"; }}
+        onBlur={e => { e.target.style.borderColor = "#d1d5db"; }}
+        onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
+        onPaste={onPaste}
+        placeholder={adding ? "＋ Add another PO..." : "📦 Search a customer PO or production PO..."}
+        style={{ width:"100%",padding:"14px 20px",border:"2px solid #d1d5db",borderRadius:14,fontSize:15,outline:"none",background:"#fff",transition:"border-color .2s" }}
+      />
+      {showList && (
+        <div style={{ position:"absolute",top:"100%",left:0,right:0,background:"#fff",border:"2px solid #e5e7eb",borderTop:"none",borderRadius:"0 0 14px 14px",maxHeight:420,overflowY:"auto",zIndex:100,boxShadow:"0 10px 25px rgba(0,0,0,.12)" }}>
+          {!query.trim() && (
+            <p style={{ padding:"12px 16px",fontSize:12,color:"#6b7280",lineHeight:1.5 }}>
+              Type part of a customer PO, a production ref or a PO name. To see several at once, paste them separated by commas.
+            </p>
+          )}
+          {note && <p style={{ padding:"10px 16px",fontSize:12,fontWeight:600,color:"#b45309",background:"#fffbeb",borderBottom:"1px solid #fde68a" }}>{note}</p>}
+          {multi && resolved && (
+            <div style={{ padding:"12px 16px",borderBottom:"1px solid #f3f4f6" }}>
+              <button disabled={!resolved.ids.length} onClick={() => finish(resolved.ids, resolved.missing)}
+                style={{ width:"100%",padding:"11px 14px",borderRadius:10,border:"none",fontWeight:800,fontSize:14,cursor: resolved.ids.length ? "pointer" : "default",
+                         color:"#fff",background: resolved.ids.length ? "linear-gradient(135deg,#6366f1,#4f46e5)" : "#cbd5e1" }}>
+                {resolved.ids.length
+                  ? (adding ? `＋ Add ${resolved.ids.length} PO${resolved.ids.length === 1 ? "" : "s"} to this screen` : `Show all ${resolved.ids.length} PO${resolved.ids.length === 1 ? "" : "s"} on one screen`)
+                  : "None of these match a PO"}
+              </button>
+              {resolved.missing.length > 0 && (
+                <p style={{ fontSize:11,color:"#b45309",marginTop:8 }}>
+                  Not found: {resolved.missing.slice(0, 8).join(", ")}{resolved.missing.length > 8 ? " ..." : ""}{ordersNote}
+                </p>
+              )}
+            </div>
+          )}
+          {results.map(e => (
+            <div key={e.id} onClick={() => finish([e.id])}
+              style={{ padding:"10px 16px",cursor:"pointer",borderBottom:"1px solid #f3f4f6" }}
+              onMouseEnter={ev => ev.currentTarget.style.background = "#f3f4f6"}
+              onMouseLeave={ev => ev.currentTarget.style.background = "transparent"}>
+              <div style={{ display:"flex",alignItems:"center",gap:6,flexWrap:"wrap" }}>
+                <PoChips e={e} />
+                <span style={{ fontFamily:"monospace",fontWeight:800,fontSize:13,color:"#1f2937" }}>{_poTitle(e)}</span>
+              </div>
+              {_poSub(e) && <p style={{ fontSize:12,color:"#4b5563",marginTop:3 }}>{_poSub(e)}</p>}
+              <p style={{ fontSize:11,color:"#6b7280",marginTop:2 }}>
+                {e.kind === "cust" ? "🧾" : "📦"} {e.units.toLocaleString()} units · {e.styles.size} style{e.styles.size === 1 ? "" : "s"}
+                {e.kind === "cust"
+                  ? ((e.startMin || e.cancelMax) ? ` · ${formatDateShort(e.startMin)} → cancel ${formatDateShort(e.cancelMax)}` : "")
+                  : ` · Ex-Fty ${formatDateShort(e.etd)}`}
+              </p>
+            </div>
+          ))}
+          {!multi && query.trim().length >= 2 && !results.length && !note && (
+            <p style={{ padding:"14px 16px",fontSize:13,color:"#6b7280",textAlign:"center" }}>No customer or production POs match "{query.trim()}"</p>
+          )}
+          {query.trim().length >= 2 && ordersStatus === "loading" && (
+            <p style={{ padding:"8px 16px",fontSize:11,color:"#9ca3af",textAlign:"center" }}>Loading customer orders...</p>
+          )}
+          {query.trim().length >= 2 && ordersStatus === "failed" && (
+            <p style={{ padding:"8px 16px",fontSize:11,color:"#b91c1c",textAlign:"center" }}>
+              Customer orders did not load, so only production POs are listed.{" "}
+              <button onClick={onRetryOrders} style={{ background:"none",border:"none",color:"#4f46e5",fontWeight:700,textDecoration:"underline",cursor:"pointer",fontSize:11 }}>Try again</button>
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PoLine({ k, v, color }) {
+  return (
+    <div style={{ display:"flex",justifyContent:"space-between",gap:6 }}>
+      <span style={{ color:"#6b7280" }}>{k}</span>
+      <span style={{ fontWeight:600,color: color || "#1f2937",textAlign:"right",whiteSpace:"nowrap" }}>{v}</span>
+    </div>
+  );
+}
+
+function PoStyleTile({ s, kind, hit, atsLabel, filterMode, colorMap, styleOverrides, onClick }) {
+  const item = hit ? hit.item : null;
+  const brandAbbr = item ? (item.brand_abbr || item.brand || "") : (s.brand || SKU_BRAND_CODE_MAP[s.style.substring(2, 4)] || "");
+  const brandFull = item && item.brand_full ? item.brand_full : ((BRAND_MAPPING[brandAbbr] || {}).full_name || brandAbbr);
+  const colorInfo = getStyleColorInfo(s.style, brandAbbr, colorMap, styleOverrides);
+  const inView = hit && hit.inView;
+  const ats = inView ? (item.total_ats || 0) : 0;
+  return (
+    <div onClick={() => onClick(s.style, brandAbbr)} className="product-card" style={{ background:"#fff",borderRadius:14,overflow:"hidden",border:"2px solid #e5e7eb" }}>
+      <ImageWithFallback src={resolveImageUrl(item || { sku: s.style, brand_abbr: brandAbbr }, styleOverrides, "grid")} alt={s.style}
+        style={{ width:"100%",height:170,objectFit:"cover",background:"#f3f4f6",display:"block" }} />
+      <div style={{ padding:"10px 12px" }}>
+        <h3 style={{ fontSize:14,fontWeight:700,color:"#1f2937",wordBreak:"break-all" }}>{s.style}</h3>
+        {brandFull && <p style={{ fontSize:11,color:"#6b7280" }}>{brandFull}</p>}
+        {colorInfo && (
+          <p style={{ fontSize:11,marginTop:2 }}>
+            {colorInfo.hasPrint
+              ? <><span style={{ color:"#7c3aed",fontWeight:600 }}>{colorInfo.ground}</span> <span style={{ color:"#6b7280" }}>/ {colorInfo.print}</span></>
+              : <span style={{ color:"#7c3aed",fontWeight:600 }}>{colorInfo.display}</span>}
+          </p>
+        )}
+        <div style={{ borderTop:"1px solid #f1f5f9",marginTop:8,paddingTop:8,fontSize:11,display:"flex",flexDirection:"column",gap:2 }}>
+          <div style={{ display:"flex",justifyContent:"space-between",alignItems:"baseline" }}>
+            <span style={{ color:"#6b7280" }}>On this PO</span>
+            <span style={{ fontSize:20,fontWeight:800,color: kind === "cust" ? "#4f46e5" : "#d97706" }}>{s.units.toLocaleString()}</span>
+          </div>
+          {kind === "cust" ? (
+            <>
+              <PoLine k="Starts" v={formatDateShort(s.start)} />
+              <PoLine k="Cancel" v={formatDateShort(s.cancel)} />
+            </>
+          ) : (
+            <>
+              <PoLine k="Ex-Fty" v={s.etd ? formatDateShort(s.etd) : s.fob ? "FOB" : "—"} />
+              <PoLine k="Arrival" v={s.arrival ? formatDateShort(s.arrival) : s.fob ? "FOB" : "—"} />
+            </>
+          )}
+          {inView
+            ? <PoLine k={atsLabel} v={ats.toLocaleString()} color={ats > 0 ? "#059669" : "#dc2626"} />
+            : <span style={{ color:"#9ca3af" }}>{item && filterMode !== "all" ? "Not in this view" : "Not in inventory feed yet"}</span>}
+          {kind !== "cust" && s.lots > 1 && <span style={{ color:"#9ca3af",fontSize:10 }}>{s.lots} shipments on this PO</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// The PO screen: one section per PO, every style as a tappable tile.
+function PoResultsView({ ids, missing, index, lookup, ordersStatus, onRetryOrders, onAdd, onRemove, onBack, onTile, filterMode, warehouseFilter, colorMap, styleOverrides }) {
+  const entries = ids.map(id => index.byId.get(id) || { id, unresolved: true });
+  const found = entries.filter(e => !e.unresolved);
+  const styleRows = useMemo(() => {
+    const m = new Map();
+    ids.forEach(id => { const e = index.byId.get(id); if (e) m.set(id, poStyleRows(e)); });
+    return m;
+  }, [ids, index]);
+  // Customer order units and production units are different things, so they are totalled
+  // apart, and a lot or order line on two of these POs (a whole run and one of its PO names)
+  // counts once.
+  const custRows = new Set(), prodRows = new Set(), styleSet = new Set();
+  found.forEach(e => {
+    e.rows.forEach(r => (e.kind === "cust" ? custRows : prodRows).add(r));
+    e.styles.forEach(st => styleSet.add(st));
+  });
+  let custUnits = 0, prodUnits = 0;
+  custRows.forEach(r => { custUnits += _orderUnits(r); });
+  prodRows.forEach(r => { prodUnits += r.units || 0; });
+  const atsLabel = filterMode === "incoming" ? "Overseas ATS"
+    : filterMode === "ats" ? (warehouseFilter !== "all" ? `${warehouseFilter.toUpperCase()} ATS` : "WH ATS") : "ATS now";
+
+  return (
+    <>
+      <div style={{ display:"flex",alignItems:"center",gap:12,marginBottom:14,flexWrap:"wrap" }}>
+        <button onClick={onBack} style={{ background:"rgba(255,255,255,.08)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,.1)",padding:"9px 16px",borderRadius:10,fontWeight:600,fontSize:13,cursor:"pointer" }}>
+          ← All Brands
+        </button>
+        <div style={{ flex:1,minWidth:0 }}>
+          <h2 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9" }}>📦 PO Search</h2>
+          <p style={{ fontSize:12,color:"#94a3b8" }}>
+            {found.length} PO{found.length === 1 ? "" : "s"} · {styleSet.size} style{styleSet.size === 1 ? "" : "s"}
+            {custRows.size > 0 && <> · 🧾 {custUnits.toLocaleString()} ordered</>}
+            {prodRows.size > 0 && <> · 📦 {prodUnits.toLocaleString()} in production</>}
+          </p>
+        </div>
+      </div>
+
+      <PoSearch index={index} onOpen={onAdd} ordersStatus={ordersStatus} onRetryOrders={onRetryOrders} mode="add" />
+
+      {missing.length > 0 && (
+        <div style={{ background:"rgba(245,158,11,.12)",border:"1px solid rgba(245,158,11,.35)",color:"#fbbf24",borderRadius:12,padding:"10px 14px",fontSize:12,fontWeight:600,marginBottom:16 }}>
+          Not found: {missing.slice(0, 10).join(", ")}{missing.length > 10 ? " ..." : ""}
+          {ordersStatus !== "ok" && (ordersStatus === "loading" ? " (customer orders are still loading)" : " (customer orders did not load)")}
+        </div>
+      )}
+
+      {entries.map(e => {
+        if (e.unresolved) {
+          const label = e.id.slice(2).replace("||", " · ");
+          return (
+            <div key={e.id} style={{ background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",borderRadius:16,padding:14,marginBottom:18,color:"#94a3b8",fontSize:13,display:"flex",alignItems:"center",gap:10 }}>
+              <span style={{ flex:1 }}>
+                <b style={{ color:"#e2e8f0",fontFamily:"monospace" }}>{label}</b>{" "}
+                {e.id.startsWith("c|") && ordersStatus === "loading" ? "Loading customer orders..."
+                  : e.id.startsWith("c|") && ordersStatus === "failed" ? "Customer orders did not load."
+                  : "No open lines on this PO any more."}
+              </span>
+              {e.id.startsWith("c|") && ordersStatus === "failed" && (
+                <button onClick={onRetryOrders} className="filter-pill active">Try again</button>
+              )}
+              {ids.length > 1 && <button onClick={() => onRemove(e.id)} aria-label="Remove this PO" style={{ background:"none",border:"none",color:"#94a3b8",fontSize:18,cursor:"pointer" }}>✕</button>}
+            </div>
+          );
+        }
+        const rows = styleRows.get(e.id) || [];
+        const isCust = e.kind === "cust";
+        const brands = isCust ? [] : [...new Set(e.rows.map(r => r.brand).filter(Boolean))];
+        const lands = isCust ? [] : [...new Set(e.rows.map(r => r.warehouse).filter(Boolean))];
+        return (
+          <div key={e.id} style={{ background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",borderRadius:16,padding:14,marginBottom:18 }}>
+            <div style={{ display:"flex",alignItems:"flex-start",gap:8,marginBottom:12 }}>
+              <div style={{ flex:1,minWidth:0 }}>
+                <div style={{ display:"flex",alignItems:"center",gap:6,flexWrap:"wrap" }}>
+                  <PoChips e={e} />
+                  <span style={{ fontFamily:"monospace",fontWeight:800,fontSize:18,color:"#f1f5f9",wordBreak:"break-all" }}>{_poTitle(e)}</span>
+                </div>
+                {_poSub(e) && <p style={{ fontSize:13,fontWeight:700,color: isCust ? "#a5b4fc" : "#c4b5fd",marginTop:4 }}>{_poSub(e)}</p>}
+                <div style={{ display:"flex",gap:"4px 14px",flexWrap:"wrap",fontSize:12,color:"#94a3b8",marginTop:6 }}>
+                  <span><b style={{ color:"#e2e8f0" }}>{e.units.toLocaleString()}</b> {isCust ? "open units" : "units"}</span>
+                  <span><b style={{ color:"#e2e8f0" }}>{rows.length}</b> style{rows.length === 1 ? "" : "s"}</span>
+                  {isCust ? (
+                    (e.startMin || e.cancelMax) && <span>Starts <b style={{ color:"#e2e8f0" }}>{formatDateShort(e.startMin)}</b> → cancel <b style={{ color:"#e2e8f0" }}>{formatDateShort(e.cancelMax)}</b></span>
+                  ) : (
+                    <>
+                      <span>Ex-Factory <b style={{ color:"#e2e8f0" }}>{_poDateRange(e.rows.map(r => r.etd))}</b></span>
+                      <span>Est. Arrival <b style={{ color:"#e2e8f0" }}>{_poDateRange(e.rows.map(r => r.arrival))}</b></span>
+                      {brands.length > 0 && <span>Brand <b style={{ color:"#e2e8f0" }}>{brands.join(", ")}</b></span>}
+                      {lands.length > 0 && <span>Lands <b style={{ color:"#e2e8f0" }}>{lands.join(", ")}</b></span>}
+                    </>
+                  )}
+                </div>
+              </div>
+              {ids.length > 1 && (
+                <button onClick={() => onRemove(e.id)} aria-label="Remove this PO" title="Remove this PO"
+                  style={{ background:"rgba(255,255,255,.08)",border:"1px solid rgba(255,255,255,.12)",color:"#cbd5e1",width:32,height:32,borderRadius:10,fontSize:14,cursor:"pointer",flexShrink:0 }}>✕</button>
+              )}
+            </div>
+            <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(145px,1fr))",gap:12 }}>
+              {rows.map(s => (
+                <PoStyleTile key={s.style} s={s} kind={e.kind} hit={lookup(s.style)} atsLabel={atsLabel} filterMode={filterMode}
+                  colorMap={colorMap} styleOverrides={styleOverrides} onClick={onTile} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 // ─── Color Name Helpers ─────────────────
 const COLOR_MAP_URL = "https://nauticaslimfit.s3.us-east-2.amazonaws.com/Inventory+Colors+Data/style_color_map.xlsx?v=" + Math.floor(Date.now() / (1000 * 60 * 60));
 
@@ -4756,6 +5214,27 @@ export default function VersaInventoryApp() {
   const [brandCategories, setBrandCategories] = useState([]); // ticked on the brands view ([] = All Products)
   const [showExport, setShowExport] = useState(false);
   const [activeTab, setActiveTab] = useState("inventory"); // "inventory" | "production" | "analytics"
+  const [poIds, setPoIds] = useState([]);           // the POs on the PO screen (buildPoIndex ids)
+  const [poMissing, setPoMissing] = useState([]);   // typed or pasted POs that matched nothing
+  // Customer open orders load once at start; the PO search says when they are still loading
+  // or did not load, and can try again (the orders API can be slow to wake up).
+  const [ordersStatus, setOrdersStatus] = useState("loading"); // loading | ok | failed
+  const loadOpenOrders = useCallback(async (timeoutMs = 12000) => {
+    setOrdersStatus("loading");
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), timeoutMs);
+    try {
+      const resp = await fetch(`${ORDERS_API_URL}/api/orders`, { signal: c.signal });
+      if (!resp.ok) throw new Error(`Status ${resp.status}`);
+      const json = await resp.json();
+      setOpenOrdersData(json.orders || []);
+      setOrdersStatus("ok");
+      console.log("✓ Open orders loaded:", (json.orders || []).length, "rows");
+    } catch (e) {
+      console.warn("Open orders unavailable:", e.message);
+      setOrdersStatus("failed");
+    } finally { clearTimeout(t); }
+  }, []);
 
   // ─── Saved Transfers (view-only, sourced from web app's localStorage) ───
   // Mobile app never writes to this — it just reads `versa_saved_transfers`
@@ -5014,16 +5493,6 @@ export default function VersaInventoryApp() {
     loadApo();
 
     // Load open orders (A2000 committed PO breakdown)
-    const loadOpenOrders = async () => {
-      try {
-        const c = new AbortController(); setTimeout(() => c.abort(), 12000);
-        const resp = await fetch(`${ORDERS_API_URL}/api/orders`, { signal: c.signal });
-        if (!resp.ok) return;
-        const json = await resp.json();
-        setOpenOrdersData(json.orders || []);
-        console.log("✓ Open orders loaded:", (json.orders || []).length, "rows");
-      } catch (e) { console.warn("Open orders unavailable:", e.message); }
-    };
     loadOpenOrders();
 
     // Load suppression overrides (S3-backed SKU exemptions)
@@ -5234,10 +5703,53 @@ export default function VersaInventoryApp() {
     const b = brands[brandKey];
     if (b?.items) preloadImages(b.items, styleOverrides);
   }, [brands, brandCategories, styleOverrides]);
-  const goToDetail = useCallback((item) => { 
-    setSelectedItem(item); 
+  const goToDetail = useCallback((item) => {
+    setSelectedItem(item);
     window.history.pushState({ view: "detail", sku: item.sku }, "", `#sku-${item.sku}`);
   }, []);
+
+  // ─── PO search screen ────────────────────────
+  const poIndex = useMemo(() => buildPoIndex(openOrdersData, productionData), [openOrdersData, productionData]);
+  // Tile numbers come from the current view's styles (the build before any date window, since
+  // the PO screen has none), else from the raw feed, which is marked as not in this view.
+  const poLookup = useMemo(() => {
+    const exact = new Map(), base = new Map();
+    const put = (list, inView) => (list || []).forEach(i => {
+      if (!i || !i.sku) return;
+      const k = i.sku.toUpperCase(), b = k.split("-")[0];
+      exact.set(k, { item: i, inView });
+      if (!base.has(b) || inView) base.set(b, { item: i, inView });
+    });
+    put(inventory, false); put(allItems, true); put(recapItems, true);
+    return style => { const k = String(style || "").toUpperCase(); return exact.get(k) || base.get(k.split("-")[0]) || null; };
+  }, [inventory, allItems, recapItems]);
+  const openPoView = useCallback((ids, missing) => {
+    setPoIds(ids); setPoMissing(missing || []); setSelectedItem(null); setView("po");
+    window.history.pushState({ view: "po", ids }, "", "#po");
+    window.scrollTo(0, 0);
+  }, []);
+  const addToPoView = useCallback((ids, missing) => {
+    const next = [...poIds, ...ids.filter(id => !poIds.includes(id))];
+    setPoIds(next); setPoMissing(missing || []);
+    window.history.replaceState({ view: "po", ids: next }, "", "#po");
+  }, [poIds]);
+  const removeFromPoView = useCallback(id => {
+    const next = poIds.filter(x => x !== id);
+    setPoIds(next); setPoMissing([]);
+    window.history.replaceState({ view: "po", ids: next }, "", "#po");
+  }, [poIds]);
+  const openPoStyle = useCallback((style, brandAbbr) => {
+    const hit = poLookup(style);
+    let item = hit ? hit.item : null;
+    if (!item) {   // not in the inventory feed yet: the popup still lists its production and orders
+      const b = brandAbbr || "";
+      item = { sku: style, brand: b, brand_abbr: b, brand_full: (BRAND_MAPPING[b] || {}).full_name || b, total_ats: 0 };
+    } else if (!item.brand_full) {
+      const b = item.brand_abbr || item.brand || brandAbbr || "";
+      item = { ...item, brand_abbr: b, brand_full: (BRAND_MAPPING[b] || {}).full_name || b };
+    }
+    goToDetail(item);
+  }, [poLookup, goToDetail]);
 
   // ─── Browser Back Button Support ────────────────────────
   useEffect(() => {
@@ -5251,6 +5763,9 @@ export default function VersaInventoryApp() {
         // summary drill filters are per-brand SKU sets and must not carry over.
         setCurrentBrand(state.brand); setView("inventory"); setSelectedItem(null); setSearchQuery(""); setFitFilter([]); setFabricFilter([]);
         setColorCategoryFilter(null); setFabricCodeFilter(null); setShowColorSummary(false); setShowFabricSummary(false);
+      } else if (state.view === "po") {
+        setPoIds(Array.isArray(state.ids) ? state.ids : []); setPoMissing([]);
+        setView("po"); setSelectedItem(null);
       } else if (state.view === "detail") {
         // just close the modal, stay on inventory
         setSelectedItem(null);
@@ -5274,7 +5789,7 @@ export default function VersaInventoryApp() {
           window.history.back();
         } else if (showCart) {
           setShowCart(false);
-        } else if (view === "inventory") {
+        } else if (view === "inventory" || view === "po") {
           goToBrands();
         }
       }
@@ -5603,7 +6118,8 @@ export default function VersaInventoryApp() {
         {view === "brands" && (
           <>
             <UniversalSearch items={allItems} onSelect={item => { goToInventory(item.brand_abbr || item.brand); setTimeout(() => goToDetail(item), 100); }} placeholder="🔍 Search any SKU across all brands..." styleOverrides={styleOverrides} />
-            
+            <PoSearch index={poIndex} onOpen={openPoView} ordersStatus={ordersStatus} onRetryOrders={() => loadOpenOrders(30000)} />
+
             {/* Stats Bar */}
             <div style={{ display:"flex",gap:12,marginBottom:24,flexWrap:"wrap" }}>
               {[
@@ -5695,6 +6211,14 @@ export default function VersaInventoryApp() {
               )}
             </div>
           </>
+        )}
+
+        {/* PO SEARCH VIEW */}
+        {view === "po" && (
+          <PoResultsView ids={poIds} missing={poMissing} index={poIndex} lookup={poLookup}
+            ordersStatus={ordersStatus} onRetryOrders={() => loadOpenOrders(30000)}
+            onAdd={addToPoView} onRemove={removeFromPoView} onBack={goToBrands} onTile={openPoStyle}
+            filterMode={filterMode} warehouseFilter={warehouseFilter} colorMap={colorMap} styleOverrides={styleOverrides} />
         )}
 
         {/* INVENTORY VIEW */}
@@ -5987,7 +6511,7 @@ export default function VersaInventoryApp() {
       </main>
 
       {/* ─── FLOATING BACK BUTTON (inventory view) ─── */}
-      {activeTab === "inventory" && view === "inventory" && (
+      {activeTab === "inventory" && (view === "inventory" || view === "po") && (
         <button onClick={goToBrands} style={{
           position:"fixed", bottom:88, left:24, zIndex:900,
           background:"linear-gradient(135deg,#334155,#1e293b)", color:"#e2e8f0",
