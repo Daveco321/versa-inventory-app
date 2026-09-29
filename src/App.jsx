@@ -1216,6 +1216,10 @@ function _isBlueLead(s) {
   if (/\bdenim\b/.test(s) && !/\bnavy\b|\bblue\b|\bindigo\b/.test(s) && _NON_BLUE_WORDS.test(s)) return false;
   return true;
 }
+// Colour names that are SOLIDS although the name has no "Solid" in it, and their bucket
+// (David, Sep 29 2026: "Tony Blue" is a blue solid). Mirrors the desktop's NAMED_SOLID_COLORS.
+const NAMED_SOLID_COLORS = { "tony blue": "navy" };
+
 function classifyColor(colorDisplay, brandAbbr) {
   if (!colorDisplay) return "fancies";
   const c = colorDisplay.trim().toLowerCase();
@@ -1225,6 +1229,8 @@ function classifyColor(colorDisplay, brandAbbr) {
   // ("White Grnd W/ Blue Gingham") and must never split.
   const _cParts = c.split(/\s+\/\s+/);
   if (_cParts.length > 1 && _cParts[0].trim()) return classifyColor(_cParts[0].trim(), brandAbbr);
+  const _named = NAMED_SOLID_COLORS[c.replace(/\s+/g, " ")];
+  if (_named) return _named;
   // Disqualifiers: presence of any of these forces fancies regardless of solid/sld
   const _hasPrint = /\bprint\b|\bprnt\b|\bgrnd\b|\bstripe\b|\bstripes\b|\bgeo\b|\bcheck\b/.test(c);
   // DOBBY rule (all brands): dobby is a woven texture, not a print — ANY name
