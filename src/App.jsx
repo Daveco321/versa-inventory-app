@@ -500,8 +500,18 @@ function _isFobCustomer(customerCode) {
 // smart routing and should never be used again". Do not add styles or reuse this. It
 // switches itself off after Dec 31 2026. Mirrors the desktop _oneTimeNjFirst.
 function _oneTimeNjFirst(sku) {
-  return String(sku || "").toUpperCase().split("-")[0] === "TMVDSL032SSE"
+  return String(sku || "").toUpperCase() === "TMVDSL032SSE"
     && Date.now() <= new Date(2026, 11, 31, 23, 59, 59).getTime();
+}
+// Customer sheets: the one-time style's NJ units across its base and size rows (once the
+// goods land the feed puts them on 'TMVDSL032SSE-S'... rows, not on the row with the order).
+function _oneTimeNjStyleNj(rows) {
+  if (!_oneTimeNjFirst("TMVDSL032SSE")) return 0;
+  return (rows || []).reduce((t, r) => {
+    const s = String((r && r.sku) || "").toUpperCase();
+    return t + ((s === "TMVDSL032SSE" || s.startsWith("TMVDSL032SSE-") || s.startsWith("TMVDSL032SSE "))
+      ? Math.max(0, +r.nj || 0) : 0);
+  }, 0);
 }
 // Customer sheets: how much of this row's order deduction the NJ units just removed from it
 // covered (0 for every other style).
@@ -646,9 +656,12 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
       for (const s of njFirst) {
         if (needed <= 0) break;
         if (s.units <= 0) continue;
+        if (s.type === "warehouse" && isFob) continue;   // FOB never takes US stock
         const take = Math.min(s.units, needed);
         s.units -= take;
-        s.consumers.push({ kind: "order", customer: o.customer || o.customerFull || "—", orderNo: o.orderNo || o.ctrlNo || "", units: take, startDate: o._startDate, targetSku: o._targetSku, isFob, _oneTimeNj: true });
+        // still late when the lot lands after the order's start date
+        const late = s.type === "production" && !!(o._startDate && s.arrival && s.arrival > o._startDate);
+        s.consumers.push({ kind: "order", customer: o.customer || o.customerFull || "—", orderNo: o.orderNo || o.ctrlNo || "", units: take, startDate: o._startDate, targetSku: o._targetSku, isFob, _oneTimeNj: true, _forced: late });
         needed -= take;
       }
     }
@@ -2425,23 +2438,30 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
   // force flow expansion where the desktop does, then build backend-ready rows.
   // Customer view: NJ (Edison 3PL) is admin-only. The phone is always authenticated,
   // so the server's anonymous-catalog scrub never runs — strip here (Sep 3 2026 audit).
-  const stripNjForCustomer = (items) => items.filter(i => !i._nj_synth).map(i => {
+  const stripNjForCustomer = (items) => {
+   // one-time NJ exception: the style's NJ units (on its size rows once landed) take the order
+   // they cover with them, on the row that carries the order (the base row, whose own nj can be 0)
+   const oneOffNj = _oneTimeNjStyleNj(inventory);
+   return items.filter(i => !i._nj_synth).map(i => {
     // Restricted warehouses NJ + ABFI (same rules, Sep 9 2026).
     const nj = +(i.nj || 0) + +(i.abfi || 0);
-    if (!nj && !("nj" in i) && !("abfi" in i)) return i;
+    const cover = _oneTimeNjCover(i, oneOffNj);
+    if (!nj && !cover && !("nj" in i) && !("abfi" in i)) return i;
     const c = { ...i };
-    if (nj) {
-      // one-time NJ exception: the order these units cover leaves with them
-      const cover = _oneTimeNjCover(c, nj);
-      if (cover) _oneTimeNjUncommit(c, cover);
+    if (cover) _oneTimeNjUncommit(c, cover);
+    if (nj || cover) {
       c.total_warehouse = Math.max(0, (c.total_warehouse || 0) - nj); c.total_ats = (c.total_ats || 0) - nj + cover;
       // NJ was this row's ONLY stock (nothing else in any warehouse, nothing incoming,
       // no ATS left): never on a customer sheet, not even as a zero row (Sep 4 2026).
-      if (c.total_warehouse <= 0 && (c.incoming || 0) <= 0 && c.total_ats <= 0) return null;
+      if (nj && c.total_warehouse <= 0 && (c.incoming || 0) <= 0 && c.total_ats <= 0) return null;
     }
     c.nj = 0; c.abfi = 0;
     return c;
-  }).filter(Boolean);
+   }).filter(Boolean);
+  };
+  // The server cuts NJ/AE/AW/ABFI-landing units from customer rows unless told they were
+  // already cut. They are, whenever the ledger loaded (stripHiddenLandingForCustomer).
+  const landingStripped = custView && (productionData || []).length > 0;
   // Customer view: NJ/AE/AW-landing productions (ledger column I) are admin-only too.
   // Their units come out of incoming + Total ATS, dates / PO Ref # come from visible
   // productions only, and a style whose only supply lands there drops (Sep 4 2026).
@@ -2554,6 +2574,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
         catalog_mode: custView,
         nj_stripped: custView,   // NJ already removed client-side; server must not subtract again
         abfi_stripped: custView,
+        hidden_landing_stripped: landingStripped,
         flow_mode: flowFlagFor(filteredItems),
         prepack_defaults: prepackDefaults || []
       }, 300000);
@@ -2575,6 +2596,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
         catalog_mode: custView,
         nj_stripped: custView,
         abfi_stripped: custView,
+        hidden_landing_stripped: landingStripped,
         flow_mode: flowFlagFor(brandInfo.items),
         prepack_defaults: prepackDefaults || []
       }, 300000);
@@ -2606,6 +2628,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
           catalog_mode: custView,
           nj_stripped: custView,
           abfi_stripped: custView,
+          hidden_landing_stripped: landingStripped,
           flow_mode: flowFlagFor(allItems),
           prepack_defaults: prepackDefaults || []
         }, 600000);
@@ -2655,6 +2678,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
         catalog_mode: custView,
         nj_stripped: custView,
         abfi_stripped: custView,
+        hidden_landing_stripped: landingStripped,
         flow_mode: flowFlagFor(allItems),
         prepack_defaults: prepackDefaults || []
       }, 600000);
