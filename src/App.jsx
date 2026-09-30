@@ -491,6 +491,30 @@ function _isFobCustomer(customerCode) {
   return _FOB_CUSTOMER_SET.has((customerCode || "").toString().toUpperCase().trim());
 }
 
+// ── ONE-TIME NJ EXCEPTION (David, Sep 30 2026) ───────────────────────────
+// TMVDSL032SSE ONLY. Its goods were rushed to NJ for Burlington's PO, so this style's
+// open orders take its NJ units first (the NJ-landing lot now, the NJ warehouse stock
+// once it lands) instead of NJ being the last resort, and the PO lines up with the NJ
+// units exactly. On customer sheets those NJ units and the order they cover drop out
+// together, so the other delivery shows as free. David: "a one time update for the
+// smart routing and should never be used again". Do not add styles or reuse this. It
+// switches itself off after Dec 31 2026. Mirrors the desktop _oneTimeNjFirst.
+function _oneTimeNjFirst(sku) {
+  return String(sku || "").toUpperCase().split("-")[0] === "TMVDSL032SSE"
+    && Date.now() <= new Date(2026, 11, 31, 23, 59, 59).getTime();
+}
+// Customer sheets: how much of this row's order deduction the NJ units just removed from it
+// covered (0 for every other style).
+function _oneTimeNjCover(row, removedUnits) {
+  if (!row || !_oneTimeNjFirst(row.sku)) return 0;
+  return Math.max(0, Math.min(+removedUnits || 0, Math.abs(+row.committed || 0)));
+}
+function _oneTimeNjUncommit(row, cover) {
+  const c = +row.committed || 0;
+  row.committed = c < 0 ? c + cover : Math.max(0, c - cover);
+  if (row._overseas_deducted) row._overseas_deducted = Math.max(0, row._overseas_deducted - cover);
+}
+
 function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, apoData, allocationData, suppressionOverrides) {
   const matchingRows = inventory.filter(r => (r.sku || "").toUpperCase().split("-")[0] === baseStyle);
   if (matchingRows.length === 0) return null;
@@ -612,6 +636,22 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     let needed = o._qty;
     const isFob = o._isFob;
     const effDeadline = o._startDate ? new Date(Math.max(today.getTime(), o._startDate.getTime())) : null;
+
+    // ── One-time NJ exception (_oneTimeNjFirst): this style's orders take its NJ units
+    // first (NJ stock, then NJ-landing lots by arrival); the rest routes normally below.
+    if (_oneTimeNjFirst(baseStyle)) {
+      const njFirst = slots.filter(s => s.nj).sort((a, b) =>
+        ((a.type === "warehouse" ? 0 : 1) - (b.type === "warehouse" ? 0 : 1))
+        || ((a.arrival || new Date("2099-12-31")) - (b.arrival || new Date("2099-12-31"))));
+      for (const s of njFirst) {
+        if (needed <= 0) break;
+        if (s.units <= 0) continue;
+        const take = Math.min(s.units, needed);
+        s.units -= take;
+        s.consumers.push({ kind: "order", customer: o.customer || o.customerFull || "—", orderNo: o.orderNo || o.ctrlNo || "", units: take, startDate: o._startDate, targetSku: o._targetSku, isFob, _oneTimeNj: true });
+        needed -= take;
+      }
+    }
 
     // ── PASS 0 (FOB customers only): drain FOB-flagged slots first ──
     if (isFob) {
@@ -2171,6 +2211,7 @@ function RoutingModal({ baseStyle, onClose, inventory, productionData, openOrder
                               {c._fobWarehouseFallback
                                 ? <span title="FOB customer pulled from US warehouse — no production batches available. Verify customer FOB flag and ledger." style={{ marginLeft:5,fontSize:8,fontWeight:700,background:"#fef3c7",color:"#92400e",padding:"1px 5px",borderRadius:99 }}>⚠ WH FALLBACK</span>
                                 : (c._forced && <span title="Forced into earlier slot — could not meet ship date" style={{ marginLeft:5,fontSize:9,color:"#d97706" }}>⚠</span>)}
+                              {c._oneTimeNj && <span title="One-time exception for this style only (David, Sep 30 2026): this order takes the NJ units first." style={{ marginLeft:5,fontSize:8,fontWeight:700,background:"#ffe4e6",color:"#e11d48",padding:"1px 5px",borderRadius:99 }}>📌 NJ ONE-TIME</span>}
                             </p>
                             {isOrder && c.orderNo && (
                               <p style={{ fontSize:9,color:"#6b7280",fontFamily:"monospace",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>PO {c.orderNo}</p>
@@ -2390,7 +2431,10 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
     if (!nj && !("nj" in i) && !("abfi" in i)) return i;
     const c = { ...i };
     if (nj) {
-      c.total_warehouse = Math.max(0, (c.total_warehouse || 0) - nj); c.total_ats = (c.total_ats || 0) - nj;
+      // one-time NJ exception: the order these units cover leaves with them
+      const cover = _oneTimeNjCover(c, nj);
+      if (cover) _oneTimeNjUncommit(c, cover);
+      c.total_warehouse = Math.max(0, (c.total_warehouse || 0) - nj); c.total_ats = (c.total_ats || 0) - nj + cover;
       // NJ was this row's ONLY stock (nothing else in any warehouse, nothing incoming,
       // no ATS left): never on a customer sheet, not even as a zero row (Sep 4 2026).
       if (c.total_warehouse <= 0 && (c.incoming || 0) <= 0 && c.total_ats <= 0) return null;
@@ -2443,7 +2487,12 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
       const cut = hasVisible ? Math.min(inc, h) : inc;
       if (cut > 0) {
         c.incoming = inc - cut;
-        if (filterMode !== "ats") c.total_ats = (+(c.total_ats || 0)) - cut;
+        if (filterMode !== "ats") {
+          // one-time NJ exception: the order these units cover leaves with them
+          const cover = _oneTimeNjCover(c, cut);
+          c.total_ats = (+(c.total_ats || 0)) - cut + cover;
+          if (cover) _oneTimeNjUncommit(c, cover);
+        }
       }
       if ((+(c.total_warehouse || 0)) <= 0 && (+(c.incoming || 0)) <= 0) return;   // only supply was hidden
       out.push(c);
