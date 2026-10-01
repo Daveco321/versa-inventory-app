@@ -476,7 +476,7 @@ function sortBrands(entries) {
 // friendly name. Codes distinguish 'TJXUK' from 'TJXAU' from 'TJMA' cleanly.
 // CURATED — edit this array to add/remove FOB accounts.
 const FOB_CUSTOMER_CODES = [
-  "CENT1",   // Centric Brands (Robert Graham etc.)
+  // CENT1 (Century 21) is NOT an FOB account (David, Oct 1 2026)
   "GLOB",    // BBZ (Global)
   "BFL",     // Brands for Less
   "TJXAU",   // TJX Australia
@@ -2248,7 +2248,7 @@ function RoutingModal({ baseStyle, onClose, inventory, productionData, openOrder
           {result && !result.skipped && slots.length > 0 && (
             <div style={{ marginTop:14,padding:"10px 12px",background:"#f9fafb",border:"1px solid #e5e7eb",borderRadius:8,fontSize:10,color:"#6b7280",lineHeight:1.5 }}>
               <p style={{ fontWeight:700,color:"#374151",marginBottom:5 }}>How it works</p>
-              <p>Tightest order start dates take from the LATEST production batch they can hit, leaving earlier supply free for orders downstream. FOB customers (CENT1, GLOB, BFL, TJXAU, TJXUK, HALF, MULT, MULT1) pick up overseas — they prefer FOB-flagged batches and use ex-factory dates, never US warehouse.</p>
+              <p>Tightest order start dates take from the LATEST production batch they can hit, leaving earlier supply free for orders downstream. FOB customers (GLOB, BFL, TJXAU, TJXUK, HALF, MULT, MULT1) pick up overseas — they prefer FOB-flagged batches and use ex-factory dates, never US warehouse.</p>
             </div>
           )}
         </div>
