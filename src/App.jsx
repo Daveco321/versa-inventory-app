@@ -3916,6 +3916,10 @@ const _SUPPRESS_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // 2 weeks
 const _SUPPRESS_TOLERANCE = 0.10; // 10%
 
 function _isProductionSuppressed(warehouseQty, prod, sku, suppressionOverrides) {
+  // Arrival suppression is OFF (David, Oct 19 2026), same as the desktop and the server:
+  // a program shipping the same carton count monthly lost a real in-transit lot to it.
+  return false;
+  // eslint-disable-next-line no-unreachable
   if (sku && suppressionOverrides && suppressionOverrides.has(sku.toUpperCase())) return false;
   if (!prod.arrival) return false;
   const now = new Date();
