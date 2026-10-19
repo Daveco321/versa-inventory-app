@@ -49,6 +49,45 @@ const BRAND_ORDER = ["NAUTICA","DKNY","EB","VINCE","KL","CHAPS","USPA","LUCKY","
 
 const SKU_BRAND_CODE_MAP = {};
 Object.entries(BRAND_IMAGE_PREFIX).forEach(([brand, prefix]) => { SKU_BRAND_CODE_MAP[prefix] = brand; });
+// Same extras as the desktop (Oct 19 2026): Divine 9 / Versa / Chaps shirt-and-tie codes,
+// and NT = Nautica overflow (NT 201 is a different style from NA 201).
+SKU_BRAND_CODE_MAP.DN = "DN";
+SKU_BRAND_CODE_MAP.VS = "VERSA";
+SKU_BRAND_CODE_MAP.CS = "CHAPS";
+SKU_BRAND_CODE_MAP.NT = "NAUTICA";
+
+// Colour-map prefix for a SKU: the SKU's own brand code when it is an alternate code of
+// the same brand (NT), else the brand's default prefix. Port of desktop skuImagePrefix.
+function skuImagePrefix(sku, brandAbbr) {
+  const s = (sku || "").toUpperCase();
+  for (const code of [s.substring(2, 4), s.substring(0, 2)]) {
+    if (code.length === 2 && brandAbbr && SKU_BRAND_CODE_MAP[code] === brandAbbr) return code;
+  }
+  return BRAND_IMAGE_PREFIX[brandAbbr] || (brandAbbr || "").substring(0, 2);
+}
+
+// Style Rules P##X serial = dress pants for every brand (desktop hasPantsSerial).
+function hasPantsSerial(base) {
+  return base.length >= 10 && base[6] === "P" && /\d/.test(base[7]) && /\d/.test(base[8]) && /[A-Z]/.test(base[9]);
+}
+
+// Ordered XX_NNN colour-map fallback keys, category namespace first (GB_P01 pants,
+// GB_B05 blazers / GB_V01 vests, GB_SW_036 sportswear), then the bare key. Port of the
+// desktop styleColorFallbackKeys (Oct 19 2026: 102 phone styles showed another style's
+// colour, e.g. NT styles read NA's and GB blazers read the GB dress shirts').
+function styleColorFallbackKeys(baseSku, brandAbbr) {
+  const b = (baseSku || "").toUpperCase();
+  const prefix = skuImagePrefix(b, brandAbbr);
+  const keys = [];
+  const serial = b.length >= 9 ? b.substring(6, 9) : "";
+  const numbers = b.match(/\d+/g);
+  const padded = numbers && numbers.length ? numbers.reduce((a, c) => a.length > c.length ? a : c).padStart(3, "0") : null;
+  if (/^P\d\d$/.test(serial) || hasPantsSerial(b)) keys.push(`${prefix}_${serial}`);
+  else if (isBlazer(b) || isVest(b)) keys.push(`${prefix}_${serial}`);
+  else if (padded && isSportswear(b, brandAbbr)) keys.push(`${prefix}_SW_${padded}`);
+  if (padded) keys.push(`${prefix}_${padded}`);
+  return keys;
+}
 
 // Photo URL version = first 8 characters of the overrides version + the current
 // half hour. It stays the same across app opens inside that window, so the
@@ -3859,21 +3898,25 @@ function getStyleColorInfo(sku, brandAbbr, colorMap, styleOverrides) {
   const fullSku = (sku || "").toUpperCase().trim();
   const baseSku = fullSku.split("-")[0];
 
-  // 0) Style override color — highest priority (matches desktop, including prefix matching)
+  // 0) Style override color — highest priority. The row's OWN override first, then the
+  //    style's, then a prefix key: a base record without a colour used to hide the
+  //    colour saved on a -V (Oct 19 2026, same as the desktop).
   if (styleOverrides) {
-    const ov = getStyleOverride(sku, styleOverrides);
-    if (ov && ov.color) return { display: formatColorName(ov.color), ground: formatColorName(ov.color), hasPrint: false };
+    const exact = (styleOverrides[fullSku] || {}).color || (styleOverrides[baseSku] || {}).color;
+    const ov = exact ? null : getStyleOverride(sku, styleOverrides);
+    const oc = exact || (ov && ov.color);
+    if (oc) return { display: formatColorName(oc), ground: formatColorName(oc), hasPrint: false };
   }
 
   let raw = fullSku.includes("-") ? colorMap[fullSku] : undefined;
   if (!raw) raw = colorMap[baseSku];
   if (!raw) {
-    const prefix = BRAND_IMAGE_PREFIX[brandAbbr] || (brandAbbr || "").substring(0, 2);
-    const numbers = baseSku.match(/\d+/g);
-    if (!numbers || numbers.length === 0) return null;
-    const mainNumber = numbers.reduce((a, b) => a.length > b.length ? a : b);
-    const key = prefix + "_" + mainNumber.padStart(3, "0");
-    raw = colorMap[key];
+    const fbKeys = styleColorFallbackKeys(baseSku, brandAbbr);
+    if (fbKeys.length === 0) return null;
+    for (const k of fbKeys) {
+      raw = colorMap[k];
+      if (raw) break;
+    }
   }
   if (!raw) return null;
   if (raw.includes("||")) {
