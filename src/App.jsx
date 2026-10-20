@@ -4602,20 +4602,24 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
 // ═══════════════════════════════════════════
 // PRODUCTION RECAP VIEW
 // ═══════════════════════════════════════════
-// Transit time from ex-factory to US warehouse arrival. Pants take longer than
-// shirts because of the heavier weight class on container manifests. Style code
-// or brand can both feed isPants() — passing brand helps it disambiguate ambiguous
-// codes when a style might be either-or.
-const FOB_WAREHOUSE_DAYS_SHIRTS = 45; // raised from 37 on Jul 16 2026 — matches the web platform's rule
-const FOB_WAREHOUSE_DAYS_PANTS  = 55;
+// Transit time from ex-factory to US warehouse arrival for a lot with no port
+// date (David, Oct 20 2026; was 45 / 55): 55 days for shirts and every other
+// category, 60 for pants, and 60 for any style on a Pinnacle (PC) production
+// order. Same rule as the web platform's _transitDaysFor and the API. Style code
+// or brand can both feed isPants(); passing brand helps it disambiguate.
+const FOB_WAREHOUSE_DAYS_SHIRTS = 55;
+const FOB_WAREHOUSE_DAYS_PANTS  = 60;
+const FOB_WAREHOUSE_DAYS_PINNACLE = 60;
 // Kept as a no-arg back-compat alias for older callers that don't have style/brand;
 // defaults to shirts since most items are shirts and that's the legacy behavior.
 const FOB_WAREHOUSE_DAYS = FOB_WAREHOUSE_DAYS_SHIRTS;
-function getProdArrival(etd, style, brandAbbr) {
+function getProdArrival(etd, style, brandAbbr, production) {
   if (!etd) return null;
-  const transitDays = (style && isPants(style, brandAbbr))
-    ? FOB_WAREHOUSE_DAYS_PANTS
-    : FOB_WAREHOUSE_DAYS_SHIRTS;
+  const transitDays = String(production || "").trim().toUpperCase().startsWith("PC")
+    ? FOB_WAREHOUSE_DAYS_PINNACLE
+    : (style && isPants(style, brandAbbr))
+      ? FOB_WAREHOUSE_DAYS_PANTS
+      : FOB_WAREHOUSE_DAYS_SHIRTS;
   const d = new Date(etd.getTime());
   d.setDate(d.getDate() + transitDays);
   return d;
@@ -4655,9 +4659,11 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
   const getStatus = useCallback((g) => {
     const now = new Date();
     if (g.etds.length === 0) return { key:"noetd", label:"NO ETD", emoji:"❓", bg:"#fef2f2", color:"#dc2626" };
-    const latestArr = getProdArrival(new Date(Math.max(...g.etds.map(d => d.getTime()))));
+    // Each line's own arrival (port date, else ETD + transit by category and factory).
+    const arrs = g.lines.map(l => l.arrival).filter(Boolean);
+    const latestArr = arrs.length ? new Date(Math.max(...arrs.map(d => d.getTime()))) : null;
     const etdMin = new Date(Math.min(...g.etds.map(d => d.getTime())));
-    if (latestArr < now) return { key:"arrived", label:"ARRIVED", emoji:"✅", bg:"#d1fae5", color:"#065f46" };
+    if (latestArr && latestArr < now) return { key:"arrived", label:"ARRIVED", emoji:"✅", bg:"#d1fae5", color:"#065f46" };
     if (etdMin < now) return { key:"transit", label:"IN TRANSIT", emoji:"🚢", bg:"#fef3c7", color:"#92400e" };
     return { key:"producing", label:"PRODUCING", emoji:"🏭", bg:"#dbeafe", color:"#1e40af" };
   }, []);
@@ -4910,7 +4916,7 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
               {isOpen && (
                 <div style={{ borderTop:"1px solid rgba(255,255,255,.08)", padding:"12px 12px 8px", background:"rgba(0,0,0,.15)" }}>
                   {sortedLines.map((l, li) => {
-                    const arrival = l.etd ? getProdArrival(l.etd) : null;
+                    const arrival = l.arrival || null;
                     const custPOs = getLinkedPOs(l.style);
                     // Same photo lookup as every other phone image: full SKU first, then base,
                     // with the cache-buster (Sep 10 2026).
@@ -5519,9 +5525,9 @@ export default function VersaInventoryApp() {
           // overrides the legacy transit-days calculation.
           //
           // When column G is empty, backend sends `arrival: null` and we
-          // fall back to ETD + transit: pants take 55 days (USPA dress
-          // pants P##X + sportswear bottoms BC/BR/BH/BA), everything else
-          // is 45 days (raised from 37 on Jul 16 2026).
+          // fall back to ETD + transit (getProdArrival): 55 days, 60 for
+          // pants (P##X dress pants + sportswear bottoms BC/BR/BH/BA) and
+          // 60 for anything on a Pinnacle (PC) production order.
           let arrivalDate;
           if (p.port_dated && p.arrival) {
             arrivalDate = parseLedgerDate(p.arrival);
@@ -5531,7 +5537,7 @@ export default function VersaInventoryApp() {
             // skips date-based feasibility for these slots.
             arrivalDate = null;
           } else {
-            arrivalDate = getProdArrival(etdDate, p.style, p.brand);
+            arrivalDate = getProdArrival(etdDate, p.style, p.brand, p.production);
           }
           return {
             production: p.production || "",
