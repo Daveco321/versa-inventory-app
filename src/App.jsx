@@ -1097,6 +1097,9 @@ function isBigAndTall(sku) {
     const vdSuffix = base.substring(4);
     if (vdSuffix.startsWith("WBJ") || vdSuffix.startsWith("BTC") || vdSuffix.startsWith("BTS") || vdSuffix.startsWith("WBK")) return true;
   }
+  // the desktop's positional read too (fit slot 9-10), so a key with no collar letter after
+  // its fit (JCSHAW008BT, ROBLCH004WB) is Big & Tall on both (Oct 28 2026)
+  if (base.length >= 11 && BT_FIT_CODES.has(base.substring(9, 11))) return true;
   return BT_FIT_CODES.has(extractFitCode(sku));
 }
 
@@ -1171,6 +1174,96 @@ function listTotals(items) {
   return { wh, inc, ats };
 }
 
+// ── Filter-category fixes (David, Oct 28 2026) ──────────────────────────────
+// Mirrors the desktop filterCategories() and the API's _py_filter_categories.
+//   • Shaq ties carry their T in the THIRD place (JCTSH…). A T in the customer code
+//     (JTSHST…, JCPenney's Big & Tall shirt & tie sets) is not a tie.
+//   • Von Dutch jewelry (rings, pendants) is Accessories, and every other Von Dutch
+//     style shows under Sportswear and Young Men only: graphic wovens sold in S-XL,
+//     shackets, pinstripe pants and Bermudas.
+//   • A key whose fit code cannot be read (old keys such as WACHA18, BJNASSP27,
+//     1661337, LUCK-22-170-SL, or a size written after a space) files under Long or
+//     Short Sleeve only where the data names the sleeve: the keys below or a fit code
+//     at the end of the key (the desktop also reads an override that names the sleeve;
+//     the phone's filters have no overrides at hand). Old keys are never read by position.
+// Only the FILTERS and the primary category read this. Prepack and banner RULES keep
+// their reads, and so do photos, colours and fit labels.
+const VD_JEWELRY_RE = /^(SS|ST|B)VD(NP|R)\d/;   // SSVDNP001C, SSVDR001, STVDR003, BVDNP007R
+const STYLE_SHAPE_RE = /^[A-Z0-9]{2}[A-Z]{4}[A-Z0-9]{3}[A-Z]{2,4}$/;   // the style-number layout
+const LEGACY_SLEEVE_KEYS = [
+  ["WACHA18", "long"], ["WACHA19", "long"],   // ledger POs "WA-CHAPS-4WAY STRETCH-RF/TF"
+  ["CU-NAUSP27", "long"],                      // ledger PO "CUS-NAU-LS-AW-ECOM39"
+  ["BJNALSP27", "long"],                       // LS in the key (David, Oct 28 2026)
+  ["BJNASSP27", "short"],                      // SS in the key, ledger PO "BJS-NAU-AW-SR-P"
+  ["1661336", "short"], ["1661337", "short"], ["1661338", "short"],   // Costco Nautica short sleeve M/L/XL
+];
+const LEGACY_SHORT_RE = /(?:SS|SR)(?:BD|[SPABDCEYFGJKHLWX]{0,2})$/;   // a collar letter or two may follow
+const LEGACY_LONG_RE = /(?:SL|RF|TF|MF|CF|BT|BB|TT)(?:BD|[SPABDCEYFGJKHLWX]{0,2})$/;
+const FILTER_CATEGORY_KEYS = new Set(["long_sleeve", "short_sleeve", "big_tall", "pants", "sportswear",
+                                      "blazers", "young_men", "accessories"]);
+// The style part of a feed key: a size written after a space is not part of it.
+function _styleKey(sku) {
+  const s = String(sku || "").trim().toUpperCase();
+  return s ? s.split(/\s+/)[0] : "";
+}
+function isVdJewelry(sku) {
+  return VD_JEWELRY_RE.test(_styleKey(sku).split("-")[0]);
+}
+// Every Von Dutch style that is not jewelry (brand key VD, or VD in the style number).
+function isVdApparel(sku, brandAbbr) {
+  const s = _styleKey(sku);
+  if (!s || isVdJewelry(s)) return false;
+  return String(brandAbbr || "").toUpperCase() === "VD" || s.substring(2, 4) === "VD";
+}
+function _isLegacyKey(sku) {
+  return !STYLE_SHAPE_RE.test(_styleKey(sku).split("-")[0]);
+}
+// same fit table as the desktop and the API (the phone's FIT_CODES also carries legacy CF/AF codes)
+function _fitUnreadable(sku) {
+  const fit = extractFitCode(_styleKey(sku));
+  return !(SHIRT_FIT_CODES[fit] || PANTS_FIT_CODES[fit]);
+}
+// "long", "short" or null for a key whose fit code cannot be read.
+function _legacySleeve(sku) {
+  const s = String(sku || "").trim().toUpperCase();
+  for (const [key, sleeve] of LEGACY_SLEEVE_KEYS) {
+    if (s.startsWith(key)) return sleeve;
+  }
+  let key = _styleKey(s);
+  if (key.endsWith("-V")) key = key.slice(0, -2);   // partial-carton variant
+  const last = key.split("-").pop() || "";
+  if (LEGACY_SHORT_RE.test(last)) return "short";
+  if (LEGACY_LONG_RE.test(last)) return "long";
+  return null;
+}
+// The category FILTERS a style shows under (inclusive: a BC Carpenter is pants, sportswear
+// and young men). A style none of the fixes touch shows under exactly the filters it did before.
+function filterCategories(sku, brandAbbr) {
+  const out = new Set();
+  const s = _styleKey(sku);
+  if (!s) return out;
+  const primary = getDetailedCategory(sku, brandAbbr);
+  if (primary === "accessories") { out.add("accessories"); return out; }
+  if (isVdApparel(s, brandAbbr)) { out.add("sportswear"); out.add("young_men"); return out; }
+  if (_isLegacyKey(s) || ((primary === "long_sleeve" || primary === "short_sleeve") && _fitUnreadable(s))) {
+    // never read by position: the sleeve the data names, if any
+    const sleeve = _legacySleeve(sku);
+    if (sleeve) out.add(sleeve + "_sleeve");
+    return out;
+  }
+  const sportswear = isSportswear(s, brandAbbr);
+  if (sportswear) out.add("sportswear");
+  if (isPants(s, brandAbbr)) out.add("pants");
+  if (isBlazer(s)) out.add("blazers");
+  if (isYoungMen(s)) out.add("young_men");
+  if (!sportswear) {
+    if (isShortSleeve(s)) out.add("short_sleeve");
+    else if (isLongSleeveShirt(s) && !isBlazer(s)) out.add("long_sleeve");
+  }
+  if (primary === "big_tall") out.add("big_tall");
+  return out;
+}
+
 function categoryIsActive(filter) {
   return Array.isArray(filter) ? filter.length > 0 : !!filter && filter !== "all";
 }
@@ -1188,7 +1281,9 @@ function categoryFilterLabel(filter) {
 // or a sportswear style still meets a 'long_sleeve' / 'short_sleeve' rule), as the desktop does.
 function matchesCategory(sku, brandAbbr, category, forRule) {
   if (!category || category === "all" || category === "any") return true;
-  if (category === "sportswear")   return isSportswear(sku, brandAbbr);
+  // FILTERS read filterCategories (Oct 28 2026); prepack and banner RULES keep the reads below
+  if (!forRule && FILTER_CATEGORY_KEYS.has(category)) return filterCategories(sku, brandAbbr).has(category);
+  if (category === "sportswear")   return isSportswear(sku, brandAbbr) || isVdApparel(sku, brandAbbr);
   if (category === "pants")        return isPants(sku, brandAbbr);
   if (category === "blazers")      return isBlazer(sku);
   if (category === "vests")        return isVest(sku);
@@ -1262,7 +1357,9 @@ function isLongSleeveShirt(sku, styleOverrides) {
   return LONG_SLEEVE_FIT_CODES.has(extractFitCode(sku));
 }
 
-function getItemCategory(sku, brandAbbr) {
+// filterRules (the primary category, Oct 28 2026): a Shaq tie is a T in the THIRD place.
+// Without it the old read stays, for photos and the button-down ribbon.
+function getItemCategory(sku, brandAbbr, filterRules) {
   if (!sku) return "shirts";
   const base = sku.split("-")[0].toUpperCase();
   // Brand code lives at positions 2-3 of the base SKU.
@@ -1279,12 +1376,22 @@ function getItemCategory(sku, brandAbbr) {
   if (base.length >= 6 && SPORTSWEAR_FABRICS.has(base.substring(4, 6))) return "sportswear";
   const brand = (brandAbbr || "").toUpperCase();
   if (brand === "CHAPS" && base.startsWith("CTH")) return "accessories";
-  if (brand === "SHAQ" && base.length >= 3 && /T/.test(base.slice(0, 3))) return "accessories";
+  // filterRules: in the THIRD place (JCTSH…); JTSHST… are JCPenney shirt & tie sets (David, Oct 28 2026)
+  if (brand === "SHAQ" && base.length >= 3 && (filterRules ? base[2] === "T" : /T/.test(base.slice(0, 3)))) return "accessories";
   return "shirts";
 }
 
 function getDetailedCategory(sku, brandAbbr, styleOverrides) {
-  const base = getItemCategory(sku, brandAbbr);
+  // Oct 28 2026 fixes first (see filterCategories): Von Dutch, jewelry, Shaq ties, old keys
+  const _s = _styleKey(sku);
+  if (isVdJewelry(_s)) return "accessories";
+  if (isVdApparel(_s, brandAbbr)) return "sportswear";
+  if (_isLegacyKey(_s)) {
+    if (getItemCategory(_s, brandAbbr, true) === "accessories") return "accessories";   // Chaps / Shaq ties
+    return _legacySleeve(sku) === "short" ? "short_sleeve" : "long_sleeve";
+  }
+  sku = _s;
+  const base = getItemCategory(sku, brandAbbr, true);
   if (base === "pants") return "pants";
   if (base === "sportswear") return "sportswear";
   if (base === "accessories") return "accessories";
@@ -1293,6 +1400,8 @@ function getDetailedCategory(sku, brandAbbr, styleOverrides) {
   if (isBlazer(sku)) return "blazers";   // includes vests (V## serial)
   if (isYoungMen(sku)) return "young_men";
   if (isBigAndTall(sku)) return "big_tall";
+  // a fit code that cannot be read: the sleeve the data names
+  if (_fitUnreadable(sku)) return _legacySleeve(sku) === "short" ? "short_sleeve" : "long_sleeve";
   return isShortSleeve(sku, styleOverrides) ? "short_sleeve" : "long_sleeve";
 }
 
