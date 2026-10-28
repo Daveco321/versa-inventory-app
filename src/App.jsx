@@ -1407,8 +1407,9 @@ function getDetailedCategory(sku, brandAbbr, styleOverrides) {
 
 // ─── Color Classification (mirrors main catalog) ──────────────
 // "All Shades of Blue" (boss via David, Sep 8 2026) — every blue SHADE word, mirrors
-// the desktop _BLUE_FAMILY exactly. Chambray stays out (a fabric, not a colour).
-const _BLUE_FAMILY = /\bnavy\b|\bblue\b|\bindigo\b|\bserenity\b|\bperiwinkle\b|\bturq[ou]+ise\b|\baqua\b|\bteal\b|\btanzine\b|\bcobalt\b|\bblueberry\b|\bseaspray\b|\bdeep sea\b|\bdenim\b|\bcerulean\b|\bsapphire\b|\bazure\b|\bcyan\b/;
+// the desktop _BLUE_FAMILY exactly. Chambray stays out (a fabric, not a colour), and so
+// does Tanzine: the DKNY 104 knit "Tanzine Solid" is tan (David, Oct 28 2026).
+const _BLUE_FAMILY = /\bnavy\b|\bblue\b|\bindigo\b|\bserenity\b|\bperiwinkle\b|\bturq[ou]+ise\b|\baqua\b|\bteal\b|\bcobalt\b|\bblueberry\b|\bseaspray\b|\bdeep sea\b|\bdenim\b|\bcerulean\b|\bsapphire\b|\bazure\b|\bcyan\b/;
 // Denim doubles as a wash word ("Denim Grey Solid" is a grey shirt): it only
 // counts as blue when no other colour word leads the phrase (mirrors desktop).
 const _NON_BLUE_WORDS = /\b(?:grey|gray|black|white|red|pink|green|brown|tan|khaki|olive|burgundy|wine|purple|plum|orange|yellow|gold|silver|charcoal|ivory|cream|beige|camel|rust|coral|lilac|lavender|mint|sage)\b/;
