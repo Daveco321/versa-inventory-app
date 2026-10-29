@@ -5082,6 +5082,427 @@ function ProductionRecapView({ productionData, openOrdersData, styleOverrides, i
 }
 
 // ═══════════════════════════════════════════
+// PRODUCTION CALENDAR VIEW
+// ═══════════════════════════════════════════
+// Overseas production on a calendar (David, Oct 29 2026), laid out like the
+// open-order phone app's calendar: Day / Week / Month / Year. The switch on top
+// puts every production line on its arrival date or on its ex-factory date, and
+// the dropdown keeps one factory: the first two letters of the production #,
+// read the way the API's _factory_label reads them. Tap a day for the
+// production orders on it, tap an order for its styles. Arrival is the same
+// per-line date the rest of the phone uses: port date + 10 when the ledger has
+// a port date, else ex-factory + 55 days (60 for pants and Pinnacle). A line
+// with no date (FOB "be ready", or no ETD yet) cannot sit on a day, so the
+// screen counts it apart under the calendar.
+const FACTORY_NAMES = { TF:"Top Find", NB:"Yuxiu", PC:"Pinnacle", DP:"David Peng", FR:"Frank", NK:"Najmul" };   // the API's FACTORY_NAMES
+const EMPTY_CAL_VIEW = { field:"arrival", factory:"", mode:"month", anchor:null };   // anchor null = today
+function factoryOf(production) {
+  const ref = String(production || "").trim().toUpperCase();
+  return /^[A-Z]{2}/.test(ref) ? ref.slice(0, 2) : "";
+}
+function factoryName(code) { return code && code !== "-" ? (FACTORY_NAMES[code] || code) : "No factory code"; }
+function _calKey(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+function _calUnits(n) {
+  if (n >= 999500) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 9950) return Math.round(n / 1e3) + "K";
+  if (n >= 1000) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
+  return String(n);
+}
+
+function ProductionCalendarView({ productionData, openOrdersData, styleOverrides, inventory, onStyleClick, value = EMPTY_CAL_VIEW, onChange }) {
+  const { field, mode } = value;
+  const etd = field === "etd";
+  const anchor = value.anchor || new Date();
+  const [selDay, setSelDay] = useState(null);
+  const [open, setOpen] = useState({});
+  const detailRef = useRef(null);
+  const set = patch => onChange(v => ({ ...v, ...patch }));
+  const AC = "#a78bfa";                      // the tab's colour: today, the picked day, the mode pill
+  const UC = etd ? "#fbbf24" : "#22d3ee";    // units: amber by ex-factory, cyan by arrival
+  const todayKey = _calKey(new Date());
+
+  // factories on the ledger, biggest first ("-" = a production # with no factory code)
+  const factories = useMemo(() => {
+    const u = {};
+    productionData.forEach(p => { const f = factoryOf(p.production) || "-"; u[f] = (u[f] || 0) + (p.units || 0); });
+    return Object.keys(u).sort((a, b) => u[b] - u[a]);
+  }, [productionData]);
+  // a factory that left the ledger reads as All factories
+  const factory = factories.includes(value.factory) ? value.factory : "";
+
+  // units per day, and per production order within the day
+  const cal = useMemo(() => {
+    const byDay = {}, perProd = {};
+    let undated = 0, undatedLines = 0;
+    productionData.forEach(p => {
+      if (factory && (factoryOf(p.production) || "-") !== factory) return;
+      const prod = p.production || "(No Production #)";
+      const u = p.units || 0;
+      perProd[prod] = (perProd[prod] || 0) + u;
+      const d = etd ? p.etd : p.arrival;
+      if (!d) { undated += u; undatedLines++; return; }
+      const key = _calKey(d);
+      const day = byDay[key] || (byDay[key] = { units:0, prods:{} });
+      const g = day.prods[prod] || (day.prods[prod] = { production:prod, poName:"", units:0, lines:[], brands:new Set() });
+      day.units += u;
+      g.units += u;
+      g.lines.push(p);
+      if (p.brand) g.brands.add(p.brand);
+      if (!g.poName && p.poName) g.poName = p.poName;
+    });
+    return { byDay, perProd, undated, undatedLines };
+  }, [productionData, factory, etd]);
+
+  // open customer orders by base style (the Production tab's linked-PO rule)
+  const ordersByStyle = useMemo(() => {
+    const m = {};
+    (openOrdersData || []).forEach(o => {
+      if (!((o.openQty || o.open_qty || 0) > 0 || (parseInt(o.pickQty) || 0) > 0)) return;
+      const b = (o.style || o.baseStyle || "").toUpperCase().split("-")[0];
+      (m[b] || (m[b] = [])).push(o);
+    });
+    return m;
+  }, [openOrdersData]);
+
+  const handleStyleClick = useCallback((baseStyle) => {
+    if (!inventory?.length || !onStyleClick) return;
+    const match = inventory.find(i => (i.sku || "").toUpperCase().split("-")[0] === baseStyle.toUpperCase());
+    if (match) onStyleClick(match);
+  }, [inventory, onStyleClick]);
+
+  // the day's list opens under the calendar, so bring it into view
+  useEffect(() => {
+    if (selDay && detailRef.current) detailRef.current.scrollIntoView({ behavior:"smooth", block:"start" });
+  }, [selDay]);
+
+  if (productionData.length === 0) {
+    return (
+      <div style={{ textAlign:"center", padding:80, color:"#64748b" }}>
+        <p style={{ fontSize:56, marginBottom:16 }}>📅</p>
+        <p style={{ fontSize:20, fontWeight:700, color:"#e2e8f0", marginBottom:8 }}>No Production Data</p>
+        <p style={{ fontSize:14, color:"#94a3b8" }}>Production data is loading or unavailable</p>
+      </div>
+    );
+  }
+
+  const y = anchor.getFullYear(), m = anchor.getMonth(), d0 = anchor.getDate();
+  const weekStart = new Date(y, m, d0 - anchor.getDay());
+  const go = dir => {
+    set({ anchor: mode === "month" ? new Date(y, m + dir, 1) : new Date(y, m, d0 + (mode === "week" ? 7 : 1) * dir) });
+    setSelDay(null);
+  };
+  const setMode = md => { set({ mode:md }); setSelDay(null); };
+  const tapDay = key => setSelDay(s => (s === key ? null : key));
+  const sum = keys => {
+    let units = 0;
+    const prods = new Set();
+    keys.forEach(k => { const dd = cal.byDay[k]; if (dd) { units += dd.units; Object.keys(dd.prods).forEach(p => prods.add(p)); } });
+    return { units, prods:prods.size };
+  };
+  const nOrders = n => `${n.toLocaleString()} production order${n === 1 ? "" : "s"}`;
+  const verb = etd ? "leaving the factory" : "landing";
+  const card = { background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14 };
+  const totalsRow = t => (
+    <div style={{ fontSize:11, fontWeight:700, color:"#94a3b8", padding:"2px 4px 8px", display:"flex", justifyContent:"space-between", gap:8, flexWrap:"wrap" }}>
+      <span><strong style={{ color:UC }}>{t.units.toLocaleString()}</strong> units {verb}</span>
+      <span>{nOrders(t.prods)}</span>
+    </div>
+  );
+
+  const renderMonth = () => {
+    const first = new Date(y, m, 1).getDay();
+    const cells = Array.from({ length:42 }, (_, i) => new Date(y, m, 1 - first + i));
+    const daysIn = new Date(y, m + 1, 0).getDate();
+    return (
+      <div style={{ ...card, padding:8 }}>
+        {totalsRow(sum(Array.from({ length:daysIn }, (_, i) => _calKey(new Date(y, m, i + 1)))))}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:2 }}>
+          {["S","M","T","W","T","F","S"].map((w, i) => (
+            <div key={i} style={{ textAlign:"center", fontSize:10, fontWeight:700, color:"#64748b", padding:"4px 0" }}>{w}</div>
+          ))}
+          {cells.map(d => {
+            const key = _calKey(d);
+            const dd = cal.byDay[key];
+            const isToday = key === todayKey, isSel = key === selDay;
+            return (
+              <div key={key} onClick={dd ? () => tapDay(key) : undefined} style={{
+                aspectRatio:"1", borderRadius:8, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:2,
+                border: isSel ? `1.5px solid ${AC}` : "1.5px solid transparent",
+                background: isSel ? "rgba(167,139,250,.18)" : dd ? "rgba(255,255,255,.05)" : "transparent",
+                opacity: d.getMonth() === m ? 1 : .3, cursor: dd ? "pointer" : "default"
+              }}>
+                <span style={isToday
+                  ? { fontSize:11, fontWeight:800, color:"#fff", background:AC, width:22, height:22, borderRadius:"50%", display:"inline-flex", alignItems:"center", justifyContent:"center" }
+                  : { fontSize:12, fontWeight:600, color:"#e2e8f0" }}>{d.getDate()}</span>
+                {dd && <span style={{ fontSize:9, fontWeight:800, color:UC, lineHeight:1 }}>{_calUnits(dd.units)}</span>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const renderWeek = () => {
+    const days = Array.from({ length:7 }, (_, i) => new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
+    return (
+      <div style={{ ...card, padding:10 }}>
+        {totalsRow(sum(days.map(_calKey)))}
+        {days.map((d, i) => {
+          const key = _calKey(d);
+          const dd = cal.byDay[key];
+          const isToday = key === todayKey, isSel = key === selDay;
+          return (
+            <div key={key} onClick={dd ? () => tapDay(key) : undefined} style={{
+              display:"flex", alignItems:"center", gap:12, padding:"10px 8px", borderRadius:10,
+              background: isSel || isToday ? "rgba(167,139,250,.14)" : "transparent",
+              borderBottom: i < 6 ? "1px solid rgba(255,255,255,.06)" : "none", cursor: dd ? "pointer" : "default"
+            }}>
+              <div style={{ textAlign:"center", minWidth:38 }}>
+                <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>{d.toLocaleDateString("en-US", { weekday:"short" })}</div>
+                <div style={{ fontSize:18, fontWeight:800, color: isToday ? AC : "#e2e8f0" }}>{d.getDate()}</div>
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                {dd ? <>
+                  <div style={{ fontSize:15, fontWeight:800, color:UC }}>{dd.units.toLocaleString()} <span style={{ fontSize:11, fontWeight:600, color:"#94a3b8" }}>units</span></div>
+                  <div style={{ fontSize:11, color:"#94a3b8" }}>{nOrders(Object.keys(dd.prods).length)}</div>
+                </> : <div style={{ fontSize:12, color:"#64748b" }}>Nothing {verb}</div>}
+              </div>
+              {dd && <span style={{ color:"#64748b", fontSize:16 }}>›</span>}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // Year: from the current month on, like the open-order calendar's Year view;
+  // earlier dates stay one tap away in the month view.
+  const renderYear = () => {
+    const now = new Date();
+    const startIdx = now.getFullYear() * 12 + now.getMonth();
+    const months = {};
+    let earlier = 0;
+    Object.entries(cal.byDay).forEach(([key, dd]) => {
+      const idx = +key.slice(0, 4) * 12 + (+key.slice(5, 7) - 1);
+      if (idx < startIdx) { earlier += dd.units; return; }
+      const e = months[idx] || (months[idx] = { units:0, prods:new Set() });
+      e.units += dd.units;
+      Object.keys(dd.prods).forEach(p => e.prods.add(p));
+    });
+    const lastIdx = Math.max(startIdx + 11, ...Object.keys(months).map(Number));
+    const rows = [];
+    for (let i = startIdx; i <= lastIdx; i++) rows.push({ idx:i, units:0, prods:new Set(), ...months[i] });
+    const all = new Set();
+    rows.forEach(r => r.prods.forEach(p => all.add(p)));
+    const max = Math.max(1, ...rows.map(r => r.units));
+    return (
+      <div style={{ ...card, padding:12 }}>
+        {totalsRow({ units:rows.reduce((t, r) => t + r.units, 0), prods:all.size })}
+        {rows.map(r => {
+          const yy = Math.floor(r.idx / 12), mm = r.idx % 12;
+          const isCur = r.idx === startIdx;
+          const has = r.units > 0;
+          return (
+            <div key={r.idx} onClick={has ? () => { set({ mode:"month", anchor:new Date(yy, mm, 1) }); setSelDay(null); } : undefined} style={{
+              display:"flex", alignItems:"center", gap:12, padding:"10px 8px", borderRadius:10,
+              background: isCur ? "rgba(167,139,250,.12)" : "transparent",
+              borderBottom:"1px solid rgba(255,255,255,.06)", cursor: has ? "pointer" : "default"
+            }}>
+              <div style={{ minWidth:40, textAlign:"center" }}>
+                <div style={{ fontSize:13, fontWeight:800, color: isCur ? AC : "#e2e8f0" }}>{new Date(yy, mm, 1).toLocaleDateString("en-US", { month:"short" })}</div>
+                <div style={{ fontSize:9, fontWeight:700, color:"#64748b" }}>{yy}</div>
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                {has ? <>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:8 }}>
+                    <span style={{ fontSize:14, fontWeight:800, color:UC }}>{r.units.toLocaleString()} <span style={{ fontSize:10, fontWeight:600, color:"#94a3b8" }}>units</span></span>
+                    <span style={{ fontSize:11, color:"#94a3b8", whiteSpace:"nowrap" }}>{nOrders(r.prods.size)}</span>
+                  </div>
+                  <div style={{ height:4, background:"rgba(255,255,255,.08)", borderRadius:2, marginTop:6, overflow:"hidden" }}>
+                    <div style={{ height:"100%", width:`${Math.max(2, Math.round(r.units / max * 100))}%`, background:`linear-gradient(90deg,${AC},${UC})`, borderRadius:2 }} />
+                  </div>
+                </> : <div style={{ fontSize:12, color:"#64748b" }}>Nothing scheduled</div>}
+              </div>
+              {has && <span style={{ color:"#64748b", fontSize:16 }}>›</span>}
+            </div>
+          );
+        })}
+        <div style={{ fontSize:10, color:"#64748b", marginTop:8, lineHeight:1.5 }}>
+          From this month on, by {etd ? "ex-factory" : "arrival"} date.{earlier > 0 ? ` ${earlier.toLocaleString()} units have earlier dates. The month view shows them.` : ""} Tap a month to open it.
+        </div>
+      </div>
+    );
+  };
+
+  // One day: its production orders, biggest first; tap one for its styles.
+  const renderDay = key => {
+    const dd = cal.byDay[key];
+    const [ky, km, kd] = key.split("-").map(Number);
+    const label = new Date(ky, km - 1, kd).toLocaleDateString("en-US", { weekday:"long", month:"short", day:"numeric", year:"numeric" });
+    if (!dd) {
+      return (
+        <div ref={detailRef} style={{ ...card, scrollMarginTop:90, marginTop:12, padding:"28px 16px", textAlign:"center" }}>
+          <div style={{ fontSize:14, fontWeight:700, color:"#94a3b8" }}>Nothing {verb} this day</div>
+          <div style={{ fontSize:12, color:"#64748b", marginTop:4 }}>{label}</div>
+        </div>
+      );
+    }
+    const list = Object.values(dd.prods).sort((a, b) => b.units - a.units);
+    return (
+      <div ref={detailRef} style={{ scrollMarginTop:90, marginTop:14 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", gap:10, margin:"0 2px 8px" }}>
+          <div style={{ minWidth:0 }}>
+            <div style={{ fontSize:11, fontWeight:800, color:UC, textTransform:"uppercase", letterSpacing:".05em" }}>{etd ? "🏭 Leaving the factory" : "🚢 Landing"}</div>
+            <div style={{ fontSize:15, fontWeight:800, color:"#f1f5f9", marginTop:2 }}>{label}</div>
+          </div>
+          <div style={{ textAlign:"right", flexShrink:0 }}>
+            <div style={{ fontSize:20, fontWeight:800, color:UC }}>{dd.units.toLocaleString()}</div>
+            <div style={{ fontSize:10, fontWeight:700, color:"#64748b" }}>units · {nOrders(list.length)}</div>
+          </div>
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {list.map(g => {
+            const ok = `${key}|${g.production}`;
+            const isOpen = !!open[ok];
+            const styles = new Set(g.lines.map(l => l.style)).size;
+            const whole = cal.perProd[g.production] || g.units;
+            const lines = [...g.lines].sort((a, b) => (b.units || 0) - (a.units || 0));
+            return (
+              <div key={g.production} style={{ ...card, overflow:"hidden", borderLeft:`4px solid ${UC}` }}>
+                <div onClick={() => setOpen(o => ({ ...o, [ok]: !o[ok] }))} style={{ padding:"12px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}>
+                  <div style={{ fontSize:14, transition:"transform 0.2s", transform:`rotate(${isOpen ? 90 : 0}deg)`, flexShrink:0, color:"#94a3b8" }}>▶</div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:"flex", alignItems:"baseline", gap:6, flexWrap:"wrap", marginBottom:4 }}>
+                      <span style={{ fontWeight:800, fontSize:14, color:"#e2e8f0", fontFamily:"monospace" }}>{g.production}</span>
+                      {g.poName && <span style={{ fontWeight:600, fontSize:12, color:"#94a3b8" }}>{g.poName}</span>}
+                    </div>
+                    <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", fontSize:11, color:"#64748b" }}>
+                      <span style={{ fontWeight:700, background:"rgba(167,139,250,.15)", color:"#c4b5fd", padding:"1px 8px", borderRadius:4, fontSize:10 }}>🏭 {factoryName(factoryOf(g.production))}</span>
+                      {[...g.brands].map(b => (
+                        <span key={b} style={{ fontWeight:700, background:"rgba(99,102,241,.15)", color:"#818cf8", padding:"1px 8px", borderRadius:4, fontSize:10 }}>{b}</span>
+                      ))}
+                      <span>📦 <strong style={{ color:"#e2e8f0" }}>{styles}</strong> style{styles === 1 ? "" : "s"}</span>
+                    </div>
+                  </div>
+                  <div style={{ textAlign:"right", flexShrink:0 }}>
+                    <div style={{ fontSize:18, fontWeight:800, color:UC }}>{g.units.toLocaleString()}</div>
+                    <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>units</div>
+                  </div>
+                </div>
+                {isOpen && (
+                  <div style={{ borderTop:"1px solid rgba(255,255,255,.08)", padding:"8px 12px", background:"rgba(0,0,0,.15)" }}>
+                    {lines.map((l, li) => {
+                      const custPOs = ordersByStyle[l.style] || [];
+                      const imgUrl = getImageUrl({ sku: l.style, brand_abbr: l.brand || "" }, styleOverrides);
+                      return (
+                        <div key={`${l.style}-${li}`} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 2px", borderBottom: li < lines.length - 1 ? "1px solid rgba(255,255,255,.06)" : "none" }}>
+                          <img src={imgUrl} alt={l.style} style={{ width:40, height:40, objectFit:"cover", borderRadius:8, border:"1px solid rgba(255,255,255,.1)", flexShrink:0 }}
+                            onError={e => { e.target.style.display = "none"; }} />
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div onClick={() => handleStyleClick(l.style)} style={{ fontWeight:700, fontFamily:"monospace", color:"#818cf8", fontSize:13, cursor:"pointer", textDecoration:"underline", textDecorationStyle:"dotted", textUnderlineOffset:3 }}>{l.style}</div>
+                            <div style={{ fontSize:11, color:"#64748b", display:"flex", gap:8, flexWrap:"wrap", marginTop:2 }}>
+                              {l.brand && <span>{l.brand}</span>}
+                              <span>Ex-factory {fmtDateShort(l.etd)}</span>
+                              <span>Arrival {fmtDateShort(l.arrival)}{l.port_dated ? " ⚓" : ""}</span>
+                              {l.warehouse && <span>📍 {l.warehouse}</span>}
+                              {l.shipmentNo && <span>Shipment {l.shipmentNo}</span>}
+                            </div>
+                            {custPOs.length > 0 && (
+                              <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginTop:4 }}>
+                                {custPOs.slice(0, 4).map((o, oi) => {
+                                  const poNum = o.orderNo || o.po_number || "PO";
+                                  const isPipeline = o.isPipeline || o.is_pipeline;
+                                  const isOnPick = (parseInt(o.pickQty) || 0) > 0;
+                                  return (
+                                    <span key={oi} style={{ fontSize:9, fontWeight:700, background: isOnPick ? "#f3e8ff" : isPipeline ? "#fef3c7" : "#f0fdf4", color: isOnPick ? "#7c3aed" : isPipeline ? "#92400e" : "#16a34a", padding:"2px 6px", borderRadius:4, fontFamily:"monospace", border: isOnPick ? "1px solid #ddd6fe" : "none" }}>
+                                      {poNum}{isPipeline ? " B" : ""}{isOnPick ? " 🎟️" : ""}
+                                    </span>
+                                  );
+                                })}
+                                {custPOs.length > 4 && <span style={{ fontSize:9, color:"#94a3b8", fontWeight:600 }}>+{custPOs.length - 4} more</span>}
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ fontWeight:700, color:"#e2e8f0", fontSize:14, flexShrink:0 }}>{(l.units || 0).toLocaleString()}</div>
+                        </div>
+                      );
+                    })}
+                    {whole > g.units && (
+                      <div style={{ marginTop:6, paddingTop:8, borderTop:"1px solid rgba(255,255,255,.08)", fontSize:11, color:"#94a3b8" }}>
+                        {g.production} has {whole.toLocaleString()} units in all. This day has {g.units.toLocaleString()} of them.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const title = mode === "year" ? `From ${new Date().toLocaleDateString("en-US", { month:"short", year:"numeric" })}`
+    : mode === "month" ? anchor.toLocaleDateString("en-US", { month:"long", year:"numeric" })
+    : mode === "week" ? `Week of ${weekStart.toLocaleDateString("en-US", { month:"short", day:"numeric" })}`
+    : anchor.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric", year:"numeric" });
+  const navBtn = { width:36, height:36, borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.06)", color:"#e2e8f0", fontSize:20, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:0 };
+
+  return (
+    <div style={{ maxWidth:640, margin:"0 auto", paddingBottom:16 }}>
+      {/* Arrival or ex-factory */}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:4, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12, padding:4, marginBottom:8 }}>
+        {[["arrival", "🚢 Arrival", "#22d3ee"], ["etd", "🏭 Ex-Factory", "#fbbf24"]].map(([k, label, c]) => {
+          const on = field === k;
+          return (
+            <button key={k} onClick={() => set({ field:k })} style={{
+              padding:"10px 8px", borderRadius:9, fontSize:13, fontWeight:800, cursor:"pointer", transition:"all .15s",
+              border: on ? `1.5px solid ${c}` : "1.5px solid transparent",
+              background: on ? `${c}22` : "transparent", color: on ? c : "#94a3b8"
+            }}>{label}</button>
+          );
+        })}
+      </div>
+
+      {/* Factory */}
+      <select value={factory} onChange={e => set({ factory:e.target.value })} style={{ width:"100%", padding:"10px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:13, fontWeight:600, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none", cursor:"pointer", colorScheme:"dark", marginBottom:12 }}>
+        <option value="">🏭 All factories</option>
+        {factories.map(f => <option key={f} value={f}>{f === "-" ? "No factory code" : `${factoryName(f)} (${f})`}</option>)}
+      </select>
+
+      {/* Period and Today */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom:10 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+          {mode !== "year" && <button onClick={() => go(-1)} style={navBtn} aria-label="Previous">‹</button>}
+          <span style={{ fontSize:16, fontWeight:800, color:"#f1f5f9", minWidth:150, textAlign:"center" }}>{title}</span>
+          {mode !== "year" && <button onClick={() => go(1)} style={navBtn} aria-label="Next">›</button>}
+        </div>
+        <button onClick={() => { set({ anchor:null }); setSelDay(null); }} style={{ padding:"7px 12px", borderRadius:9, border:"1px solid rgba(167,139,250,.4)", background:"rgba(167,139,250,.1)", color:AC, fontSize:12, fontWeight:800, cursor:"pointer" }}>Today</button>
+      </div>
+
+      {/* Day / Week / Month / Year */}
+      <div style={{ display:"flex", gap:3, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", padding:3, borderRadius:10, marginBottom:12 }}>
+        {[["day", "Day"], ["week", "Week"], ["month", "Month"], ["year", "Year"]].map(([k, label]) => (
+          <button key={k} onClick={() => setMode(k)} style={{ flex:1, padding:"7px 0", borderRadius:8, border:"none", fontSize:12, fontWeight:700, cursor:"pointer", background: mode === k ? AC : "transparent", color: mode === k ? "#fff" : "#94a3b8" }}>{label}</button>
+        ))}
+      </div>
+
+      {mode === "month" && renderMonth()}
+      {mode === "week" && renderWeek()}
+      {mode === "year" && renderYear()}
+      {mode === "day" ? renderDay(_calKey(anchor)) : (mode !== "year" && selDay ? renderDay(selDay) : null)}
+
+      {cal.undated > 0 && (
+        <p style={{ fontSize:11, color:"#64748b", marginTop:12, lineHeight:1.5 }}>
+          {cal.undated.toLocaleString()} units on {cal.undatedLines.toLocaleString()} production line{cal.undatedLines === 1 ? "" : "s"} have no {etd ? "ex-factory" : "arrival"} date yet (FOB "be ready", or no ETD on the ledger), so they are not on the calendar.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════
 // OVERSEAS SUMMARY VIEW
 // ═══════════════════════════════════════════
 // Cross-brand overseas shipment overview. Flow expansion always on — every
@@ -5422,6 +5843,7 @@ export default function VersaInventoryApp() {
     setColorCategoryFilter(null); setFabricCodeFilter(null);
     setDateWindowRaw(w);
   }, []);
+  const [calView, setCalView] = useState(EMPTY_CAL_VIEW);   // Calendar tab: date, factory, Day/Week/Month/Year, shown day
   const [warehouseFilter, setWarehouseFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState("ats-desc");
@@ -5449,7 +5871,7 @@ export default function VersaInventoryApp() {
   const [categoryFilter, setCategoryFilter] = useState("all"); // "all", one category, or the brand page's ticked list
   const [brandCategories, setBrandCategories] = useState([]); // ticked on the brands view ([] = All Products)
   const [showExport, setShowExport] = useState(false);
-  const [activeTab, setActiveTab] = useState("inventory"); // "inventory" | "production" | "analytics"
+  const [activeTab, setActiveTab] = useState("inventory"); // "inventory" | "production" | "overseas" | "analytics" | "calendar"
   const [poIds, setPoIds] = useState([]);           // the POs on the PO screen (buildPoIndex ids)
   const [poMissing, setPoMissing] = useState([]);   // typed or pasted POs that matched nothing
   // Customer open orders load once at start; the PO search says when they are still loading
@@ -5666,7 +6088,9 @@ export default function VersaInventoryApp() {
             fob_note: p.fob_note || "",
             // Landing warehouse from ledger column I. NJ/AE/AW-landing batches are
             // last-resort supply in routing and never appear on customer output.
-            warehouse: String(p.warehouse || "").toUpperCase()
+            warehouse: String(p.warehouse || "").toUpperCase(),
+            // Shipment # from the ledger: one style can come in on two shipments (Calendar tab)
+            shipmentNo: p.shipmentNo || ""
           };
         });
         setProductionData(parsed);
@@ -6245,7 +6669,7 @@ export default function VersaInventoryApp() {
               </g>
             </svg>
             <div>
-              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>{activeTab === "production" ? "Production Recap" : activeTab === "analytics" ? "Color Analytics" : activeTab === "overseas" ? "Overseas Summary" : "Inventory Management"}</h1>
+              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>{activeTab === "production" ? "Production Recap" : activeTab === "analytics" ? "Color Analytics" : activeTab === "overseas" ? "Overseas Summary" : activeTab === "calendar" ? "Production Calendar" : "Inventory Management"}</h1>
               <div style={{ display:"flex",alignItems:"center",gap:8 }}>
                 <p style={{ fontSize:12,color:"#64748b" }}>Real-time inventory system</p>
                 <span style={{ fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:99,background:statusColors[syncStatus.type],color:statusTextColors[syncStatus.type] }}>
@@ -6744,6 +7168,11 @@ export default function VersaInventoryApp() {
         {activeTab === "analytics" && (
           <AnalyticsView inventory={inventory} colorMap={colorMap} styleOverrides={styleOverrides} deductionAssignments={deductionAssignments} />
         )}
+
+        {/* CALENDAR TAB */}
+        {activeTab === "calendar" && (
+          <ProductionCalendarView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} inventory={recapItems.length ? recapItems : allItems} onStyleClick={(item) => setSelectedItem(item)} value={calView} onChange={setCalView} />
+        )}
       </main>
 
       {/* ─── FLOATING BACK BUTTON (inventory view) ─── */}
@@ -6776,6 +7205,7 @@ export default function VersaInventoryApp() {
           { key:"production", label:"Production", icon:"🏭", activeColor:"#0891b2" },
           { key:"overseas", label:"Overseas", icon:"🚢", activeColor:"#f59e0b" },
           { key:"analytics", label:"Analytics", icon:"📊", activeColor:"#10b981" },
+          { key:"calendar", label:"Calendar", icon:"📅", activeColor:"#a78bfa" },
         ].map(tab => {
           const isActive = activeTab === tab.key;
           return (
