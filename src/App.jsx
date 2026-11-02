@@ -56,6 +56,30 @@ SKU_BRAND_CODE_MAP.VS = "VERSA";
 SKU_BRAND_CODE_MAP.CS = "CHAPS";
 SKU_BRAND_CODE_MAP.NT = "NAUTICA";
 
+// The style number decides the brand, on every platform (David, Nov 2 2026): the Style
+// Ledger typed JNY on the DKNY knits RODKPK001SLS/002SLS (Jones run NB26161) and the
+// app showed them as Jones New York with Jones's colours. VP = Versa and LUCK = Lucky;
+// otherwise only a modern style number decides (6 letters, a 3-digit or P/B/V serial,
+// fit and collar), never BL (Black Label or Bloomingdale's) or CK (only ever the CK of
+// LUCK). "" when the number does not settle it. Same rule as the API's
+// _style_number_brand and the desktop's styleNumberBrand.
+const STYLE_NO_BRAND_RE = /^[A-Z]{6}(\d{3}|[PBV]\d\d)[A-Z]{2,3}$/;
+function styleNumberBrand(sku) {
+  const s = String(sku || "").trim().toUpperCase().split("-")[0];
+  if (s.startsWith("VP")) return "VERSA";
+  if (s.startsWith("LUCK")) return "LUCKY";
+  const code = s.substring(2, 4);
+  if (!STYLE_NO_BRAND_RE.test(s) || code === "BL" || code === "CK") return "";
+  return SKU_BRAND_CODE_MAP[code] || "";
+}
+// A known brand that disagrees with the style number gives way to it; keys the app does
+// not know are left as they are (the API's _brand_by_style_number).
+function brandByStyleNumber(sku, brand) {
+  const named = styleNumberBrand(sku);
+  const b = String(brand || "").trim().toUpperCase();
+  return named && named !== b && BRAND_MAPPING[b] ? named : brand;
+}
+
 // Colour-map prefix for a SKU: the SKU's own brand code when it is an alternate code of
 // the same brand (NT), else the brand's default prefix. Port of desktop skuImagePrefix.
 function skuImagePrefix(sku, brandAbbr) {
@@ -1040,10 +1064,10 @@ function rebuildBrands(inventory, filterMode = "all", prodData = [], suppression
     // Resolve ATS tab-name aliases (e.g. "NM" tab → "NICOLE" platform key)
     const BRAND_ALIASES = { NM: "NICOLE" };
     if (BRAND_ALIASES[brand]) brand = BRAND_ALIASES[brand];
-    const skuUp = item.sku.toUpperCase();
-    // VP prefix = Versa Group Purchase — always VERSA (matches main catalog)
-    if (skuUp.startsWith("VP")) brand = "VERSA";
-    else if (skuUp.startsWith("LUCK")) brand = "LUCKY";
+    // The style number decides (VP = Versa, LUCK = Lucky, a modern number's brand code);
+    // else the feed's brand, or any 2-letter code when the feed's brand is unknown.
+    const named = styleNumberBrand(item.sku);
+    if (named) brand = named;
     else if (item.sku.length >= 4) {
       const code = item.sku.substring(2,4).toUpperCase();
       if (SKU_BRAND_CODE_MAP[code] && !BRAND_MAPPING[brand]) brand = SKU_BRAND_CODE_MAP[code];
@@ -3829,18 +3853,9 @@ function PoLine({ k, v, color }) {
   );
 }
 
-// The brand a style number names (rebuildBrands' own rule: VP = Versa, LUCK = Lucky, else the
-// 2-letter brand code), or "" when the code is not a brand.
-function skuOwnBrand(sku) {
-  const s = String(sku || "").toUpperCase();
-  if (s.startsWith("VP")) return "VERSA";
-  if (s.startsWith("LUCK")) return "LUCKY";
-  return s.length >= 4 ? (SKU_BRAND_CODE_MAP[s.substring(2, 4)] || "") : "";
-}
-
 function PoStyleTile({ s, kind, hit, atsLabel, filterMode, colorMap, styleOverrides, onClick }) {
   const item = hit ? hit.item : null;
-  const brandAbbr = item ? (item.brand_abbr || item.brand || "") : (s.brand || SKU_BRAND_CODE_MAP[s.style.substring(2, 4)] || "");
+  const brandAbbr = item ? (item.brand_abbr || item.brand || "") : (styleNumberBrand(s.style) || s.brand || SKU_BRAND_CODE_MAP[s.style.substring(2, 4)] || "");
   const brandFull = item && item.brand_full ? item.brand_full : ((BRAND_MAPPING[brandAbbr] || {}).full_name || brandAbbr);
   const colorInfo = getStyleColorInfo(s.style, brandAbbr, colorMap, styleOverrides);
   const inView = hit && hit.inView;
@@ -4428,9 +4443,8 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
       let brand = item.brand || "UNKNOWN";
       const _BA2 = { NM: "NICOLE" };
       if (_BA2[brand]) brand = _BA2[brand];
-      const skuUp = item.sku.toUpperCase();
-      if (skuUp.startsWith("VP")) brand = "VERSA";
-      else if (skuUp.startsWith("LUCK")) brand = "LUCKY";
+      const named = styleNumberBrand(item.sku);
+      if (named) brand = named;
       else if (item.sku.length >= 4) {
         const code = item.sku.substring(2,4).toUpperCase();
         if (SKU_BRAND_CODE_MAP[code] && !BRAND_MAPPING[brand]) brand = SKU_BRAND_CODE_MAP[code];
@@ -5557,9 +5571,8 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
       let brand = item.brand || "UNKNOWN";
       const BRAND_ALIASES = { NM: "NICOLE" };
       if (BRAND_ALIASES[brand]) brand = BRAND_ALIASES[brand];
-      const skuUp = (item.sku || "").toUpperCase();
-      if (skuUp.startsWith("VP")) brand = "VERSA";
-      else if (skuUp.startsWith("LUCK")) brand = "LUCKY";
+      const named = styleNumberBrand(item.sku);
+      if (named) brand = named;
       else if (item.sku && item.sku.length >= 4) {
         const code = item.sku.substring(2, 4).toUpperCase();
         if (SKU_BRAND_CODE_MAP[code] && !BRAND_MAPPING[brand]) brand = SKU_BRAND_CODE_MAP[code];
@@ -6058,6 +6071,7 @@ export default function VersaInventoryApp() {
         const json = await resp.json();
         const parsed = (json.production || []).map(p => {
           const etdDate = parseLedgerDate(p.etd);
+          const brand = brandByStyleNumber(p.style, p.brand || "");   // column E unless the style number disagrees
           // ── ARRIVAL DATE SOURCE ──────────────────────────────────────
           // When David fills in column G ("Estimated Arrival to Port") on
           // the Style Ledger, the backend computes BOTH the etd and the
@@ -6078,14 +6092,14 @@ export default function VersaInventoryApp() {
             // skips date-based feasibility for these slots.
             arrivalDate = null;
           } else {
-            arrivalDate = getProdArrival(etdDate, p.style, p.brand, p.production);
+            arrivalDate = getProdArrival(etdDate, p.style, brand, p.production);
           }
           return {
             production: p.production || "",
             poName: p.poName || "",
             style: (p.style || "").toUpperCase(),
             units: p.units || 0,
-            brand: p.brand || "",
+            brand,
             etd: p.fob_flag ? null : etdDate,
             arrival: arrivalDate,
             // Surfaced for downstream display ('⚓' badge if you want to add it later)
@@ -6390,7 +6404,7 @@ export default function VersaInventoryApp() {
     const put = (list, inView) => (list || []).forEach(i => {
       if (!i || !i.sku) return;
       const k = i.sku.toUpperCase(), b = k.split("-")[0];
-      const own = skuOwnBrand(k);
+      const own = styleNumberBrand(k);
       const e = { item: i, inView, own: !!own && (i.brand_abbr || i.brand) === own };
       const x = exact.get(k), y = base.get(b);
       if (!x || rank(e) >= rank(x)) exact.set(k, e);
