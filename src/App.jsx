@@ -3829,6 +3829,15 @@ function PoLine({ k, v, color }) {
   );
 }
 
+// The brand a style number names (rebuildBrands' own rule: VP = Versa, LUCK = Lucky, else the
+// 2-letter brand code), or "" when the code is not a brand.
+function skuOwnBrand(sku) {
+  const s = String(sku || "").toUpperCase();
+  if (s.startsWith("VP")) return "VERSA";
+  if (s.startsWith("LUCK")) return "LUCKY";
+  return s.length >= 4 ? (SKU_BRAND_CODE_MAP[s.substring(2, 4)] || "") : "";
+}
+
 function PoStyleTile({ s, kind, hit, atsLabel, filterMode, colorMap, styleOverrides, onClick }) {
   const item = hit ? hit.item : null;
   const brandAbbr = item ? (item.brand_abbr || item.brand || "") : (s.brand || SKU_BRAND_CODE_MAP[s.style.substring(2, 4)] || "");
@@ -6372,13 +6381,20 @@ export default function VersaInventoryApp() {
   const poIndex = useMemo(() => buildPoIndex(openOrdersData, productionData), [openOrdersData, productionData]);
   // Tile numbers come from the current view's styles (the build before any date window, since
   // the PO screen has none), else from the raw feed, which is marked as not in this view.
+  // A style on two feed rows under two brands shows the row filed under its style number's own
+  // brand. The Jones run NB26161 booked on the DKNY knits RODKPK001SLS/002SLS gave them a JNY
+  // row too, and the tiles read "Jones New York" with Jones's 001/002 colours (David, Nov 2 2026).
   const poLookup = useMemo(() => {
     const exact = new Map(), base = new Map();
+    const rank = e => (e.inView ? 2 : 0) + (e.own ? 1 : 0);
     const put = (list, inView) => (list || []).forEach(i => {
       if (!i || !i.sku) return;
       const k = i.sku.toUpperCase(), b = k.split("-")[0];
-      exact.set(k, { item: i, inView });
-      if (!base.has(b) || inView) base.set(b, { item: i, inView });
+      const own = skuOwnBrand(k);
+      const e = { item: i, inView, own: !!own && (i.brand_abbr || i.brand) === own };
+      const x = exact.get(k), y = base.get(b);
+      if (!x || rank(e) >= rank(x)) exact.set(k, e);
+      if (!y || rank(e) > rank(y) || (rank(e) === rank(y) && inView)) base.set(b, e);
     });
     put(inventory, false); put(allItems, true); put(recapItems, true);
     return style => { const k = String(style || "").toUpperCase(); return exact.get(k) || base.get(k.split("-")[0]) || null; };
