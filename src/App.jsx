@@ -1960,6 +1960,70 @@ function DateWindowPanel({ value, onChange }) {
   );
 }
 
+// ─── Overseas factory picker (the desktop's Factories filter) ──────────
+// value = the ticked codes ([] = every factory). counts = styles per factory in the view
+// before the pick; a ticked factory stays listed at 0 so it can be unticked.
+function FactoryPanel({ value, onChange, counts, loading }) {
+  const [open, setOpen] = useState(false);
+  const active = value.length > 0;
+  const n = { ...(counts || {}) };
+  value.forEach(f => { if (!(f in n)) n[f] = 0; });
+  // biggest first like the Calendar's factory list, "No factory code" last
+  const codes = Object.keys(n).filter(f => f !== FACTORY_NONE).sort((a, b) => n[b] - n[a] || a.localeCompare(b));
+  if (FACTORY_NONE in n) codes.push(FACTORY_NONE);
+  const toggle = f => onChange(value.includes(f) ? value.filter(x => x !== f) : [...value, f]);
+  const box = on => (
+    <span aria-hidden="true" style={{ width:18, height:18, borderRadius:5, flexShrink:0, display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:900, lineHeight:1, border:on ? "2px solid #a78bfa" : "2px solid #64748b", background:on ? "#7c3aed" : "transparent", color:"#fff" }}>{on ? "✓" : ""}</span>
+  );
+  const row = on => ({ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"10px 8px", minHeight:42, background: on ? "rgba(167,139,250,.12)" : "transparent", border:"none", borderRadius:10, color:"#e2e8f0", fontSize:13, fontWeight:600, cursor:"pointer", textAlign:"left" });
+  return (
+    <div style={{ background:"rgba(167,139,250,.08)", border:`1px solid ${active ? "rgba(167,139,250,.6)" : "rgba(167,139,250,.25)"}`, borderRadius:14, marginBottom:16 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px" }}>
+        <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+          style={{ flex:1, minWidth:0, display:"flex", alignItems:"center", gap:10, background:"none", border:"none", cursor:"pointer", textAlign:"left", padding:0 }}>
+          <span style={{ fontSize:20 }}>🏭</span>
+          <span style={{ flex:1, minWidth:0 }}>
+            <span style={{ display:"block", fontSize:13, fontWeight:800, color:"#c4b5fd" }}>Factories</span>
+            <span style={{ display:"block", fontSize:12, color: active ? "#ddd6fe" : "#94a3b8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+              {active ? factoriesSummary(value) : "Filter by factory"}
+            </span>
+          </span>
+          <span style={{ color:"#94a3b8", fontSize:11 }}>{open ? "▲" : "▼"}</span>
+        </button>
+        {active && (
+          <button type="button" onClick={() => onChange([])}
+            style={{ background:"rgba(167,139,250,.18)", border:"1px solid rgba(167,139,250,.45)", color:"#ddd6fe", fontSize:11, fontWeight:700, padding:"5px 10px", borderRadius:99, cursor:"pointer", whiteSpace:"nowrap" }}>
+            Clear
+          </button>
+        )}
+      </div>
+      {open && (
+        <div role="group" aria-label="Factories" style={{ padding:"0 6px 12px" }}>
+          <button type="button" role="checkbox" aria-checked={!active} onClick={() => onChange([])} style={{ ...row(!active), fontWeight:700 }}>
+            {box(!active)}<span>All factories</span>
+          </button>
+          <div style={{ height:1, background:"rgba(255,255,255,.08)", margin:"4px 8px" }} />
+          {loading ? (
+            <p style={{ fontSize:12, color:"#94a3b8", margin:"8px" }}>Production is still loading. Open this again in a moment.</p>
+          ) : codes.map(f => {
+            const on = value.includes(f);
+            return (
+              <button key={f} type="button" role="checkbox" aria-checked={on} onClick={() => toggle(f)} style={{ ...row(on), color: f === FACTORY_NONE ? "#cbd5e1" : "#e2e8f0" }}>
+                {box(on)}
+                <span style={{ flex:1, minWidth:0 }}>{factoryLabel(f)}</span>
+                <span style={{ fontSize:11, fontWeight:600, color:"#94a3b8", whiteSpace:"nowrap" }}>{n[f].toLocaleString()} SKU{n[f] === 1 ? "" : "s"}</span>
+              </button>
+            );
+          })}
+          <p style={{ fontSize:11, color:"#94a3b8", margin:"8px 8px 0", lineHeight:1.5 }}>
+            Only the ticked factories' production shows. A style made at two factories counts under both and shows only the ticked factory's units.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Product Card ────────────────────────
 function ProductCard({ item, onClick, onRoutingClick, filterMode, prodData, colorMap, bannerRules, suppressionOverrides, styleOverrides, warehouseFilter, deductionAssignments, transferIndex }) {
   const fabric = getFabricFromSKU(item.sku, styleOverrides);
@@ -2459,7 +2523,9 @@ function expandItemsToFlowRowsForExport(items, inventory, productionData, suppre
       : splitOverseasLots([...getActiveProductionForSku(item.sku, productionData, rawWh, suppressionOverrides)].sort(_byArrival),
           item.incoming || 0, item._overseas_deducted || 0);
     if (split.length === 0) {
-      flowItems.push({ ...item, _flow: true, _flow_production: "", _flow_po: "No Production Data", _flow_units: item.total_ats || 0, _flow_deducted: 0, _flow_etd: null, _flow_arrival: null });
+      // on order with no ledger line: the style's whole incoming and its order deduction, as a
+      // lot row carries (its ATS here made a sold-out style export 0 incoming; desktop v73)
+      flowItems.push({ ...item, _flow: true, _flow_production: "", _flow_po: "No Production Data", _flow_units: item.incoming || 0, _flow_deducted: item._overseas_deducted || 0, _flow_etd: null, _flow_arrival: null });
       return;
     }
     split.forEach(r => {
@@ -2567,7 +2633,7 @@ function buildExportRow(item, { custView, filterMode, productionData, suppressio
 }
 
 // ─── Export Panel ────────────────
-function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filteredItems, productionData, viewMode, suppressionOverrides, styleOverrides, colorMap, prepackDefaults, inventory, flowMode, warehouseFilter }) {
+function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filteredItems, productionData, viewMode, suppressionOverrides, styleOverrides, colorMap, prepackDefaults, inventory, flowMode, warehouseFilter, factoryPicks = [] }) {
   const [manifest, setManifest] = useState(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(null);
@@ -2601,8 +2667,12 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
     return m;
   }, [inventory]);
 
-  // Filename mode tag — includes the warehouse sub-filter when one is active
-  const fileModeLabel = filterMode === "incoming" ? "Overseas"
+  // the ticked factories narrow every export in the Overseas view (brands arrive narrowed)
+  const facPicked = filterMode === "incoming" && factoryPicks.length > 0;
+  // Filename mode tag — includes the warehouse sub-filter when one is active, and the ticked
+  // factories as the desktop names them ("Overseas_Factory_TF_NB")
+  const fileModeLabel = filterMode === "incoming"
+    ? "Overseas" + (facPicked ? "_" + ("Factory " + factoryPicks.map(c => c === FACTORY_NONE ? "No factory code" : c).join(" ")).replace(/[^A-Za-z0-9]+/g, "_") : "")
     : filterMode === "ats" ? (warehouseFilter && warehouseFilter !== "all" ? `Warehouse_${warehouseFilter.toUpperCase()}` : "Warehouse")
     : "All";
   const dateSuffix = new Date().toISOString().slice(0, 10);
@@ -2916,6 +2986,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
             <h2 style={{ color:"#f1f5f9",fontSize:18,fontWeight:800 }}>📊 Excel Exports</h2>
             <p style={{ color:"#64748b",fontSize:12,marginTop:2 }}>
               <span style={{ color:filterColor,fontWeight:600 }}>{filterLabel}</span>
+              {facPicked && <span style={{ color:"#c4b5fd",fontWeight:600 }}> · 🏭 {factoriesSummary(factoryPicks)}</span>}
               <span style={{ color: custView ? "#fbbf24" : "#818cf8",fontWeight:600 }}> · {custView ? "🛍️ Customer View" : "🗂️ Admin"}</span>
               {isInBrand && <span> · {currentBrandName}</span>}
             </p>
@@ -4155,6 +4226,22 @@ function _prodByStyle(prodData) {
   }
   return m;
 }
+// the same lots by exact SKU, the way the desktop reads a row's production (its
+// getProductionForSku is an exact match: a sized row has ledger lines of its own)
+const _prodSkuIndexCache = new WeakMap();
+function _prodBySku(prodData) {
+  let m = _prodSkuIndexCache.get(prodData);
+  if (!m) {
+    m = new Map();
+    (prodData || []).forEach(p => {
+      const k = (p.style || "").toUpperCase();
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(p);
+    });
+    if (prodData) _prodSkuIndexCache.set(prodData, m);
+  }
+  return m;
+}
 // Split a style's incoming and overseas deduction over its lots, in the order given
 // (earliest arrival first). Each lot gets its units share of incoming by cumulative rounding,
 // so shares are never negative and always add up to incoming (an equal split when no lot has
@@ -4179,28 +4266,42 @@ function splitOverseasLots(lots, incoming, deducted) {
 }
 const _byArrival = (a, b) => (a.arrival || a.etd || _FAR_DATE) - (b.arrival || b.etd || _FAR_DATE);
 
-function applyOverseasDateWindow(items, w, prodData, inventory, suppressionOverrides, rawBySku) {
-  if (!dateWindowActive(w)) return items;
+// The Factories picker (factories = ticked codes, [] = every factory) narrows in the same pass,
+// from the row's OWN ledger lines, as the desktop reads them. A sized row has lines of its own,
+// sometimes at another factory than its base style (AMNASU100SLP is made at one factory, its
+// -L-FBA rows at another), while the rest of the phone gives a sized row its whole base style's
+// lots. So with a pick, a row keeps only its own lots that pass, split over its own lots.
+function applyOverseasDateWindow(items, w, prodData, inventory, suppressionOverrides, rawBySku, factories) {
+  const dated = dateWindowActive(w);
+  const fac = factories && factories.length ? new Set(factories) : null;
+  if (!dated && !fac) return items;
   if (!rawBySku) {
     rawBySku = new Map();
     (inventory || []).forEach(r => rawBySku.set(r.sku, r));
   }
   const byStyle = _prodByStyle(prodData);
+  const bySku = fac ? _prodBySku(prodData) : null;
   return items.map(item => {
     const raw = rawBySku.get(item.sku);
     const wh = raw ? (raw.jtw||0)+(raw.tr||0)+(raw.dcw||0)+(raw.qa||0)+(raw.nj||0)+(raw.abfi||0) : 0;
+    const active = p => !_isProductionSuppressed(wh, p, item.sku, suppressionOverrides);
     // same lots as getActiveProductionForSku, from the index
-    const prods = (byStyle.get((item.sku || "").split("-")[0].toUpperCase()) || [])
-      .filter(p => !_isProductionSuppressed(wh, p, item.sku, suppressionOverrides));
-    if (prods.length === 0) return item;                     // no lots on file: cannot be dated, keep
-    const q = prods.filter(p => prodInDateWindow(p, w));
+    const prods = (byStyle.get((item.sku || "").split("-")[0].toUpperCase()) || []).filter(active);
+    // the lots that decide: the row's own with a factory pick (always among prods)
+    const lots = fac ? (bySku.get((item.sku || "").toUpperCase()) || []).filter(active) : prods;
+    // no lots on file: cannot be dated, keep; its factory is "No factory code"
+    if (lots.length === 0) return !fac || fac.has(FACTORY_NONE) ? item : null;
+    const q = lots.filter(p => (!dated || prodInDateWindow(p, w)) && (!fac || fac.has(lotFactory(p))));
     if (q.length === 0) return null;                          // no lot in the window
-    if (q.length === prods.length) return item;               // every lot in the window: unchanged
-    // Split the style over ALL its lots exactly as Flow Mode does (splitOverseasLots), then
-    // keep the in-window lots and their split. The card, the brand totals, Flow Mode rows and
-    // exports then show the same number for the same lot. (The desktop's date filter still
-    // scales by units share, so the two apps can differ for a style with deductions.)
-    const sorted = [...prods].sort(_byArrival);
+    // a picked factory needs a lot with units on it, as on the desktop
+    if (fac && !q.some(p => (p.units || 0) > 0)) return null;
+    if (q.length === prods.length) return item;               // keeps every lot it shows: unchanged
+    // Split the style over ALL its lots (its own, with a factory pick) exactly as Flow Mode
+    // does (splitOverseasLots), then keep the lots that pass and their split. The card, the
+    // brand totals, Flow Mode rows and exports then show the same number for the same lot.
+    // (The desktop's date filter still scales by units share, so the two apps can differ for
+    // a style with deductions.)
+    const sorted = [...lots].sort(_byArrival);
     const split = splitOverseasLots(sorted, item.incoming || 0, item._overseas_deducted || 0);
     const inWin = new Set(q);
     const kept = split.filter(r => inWin.has(r.lot));
@@ -4211,13 +4312,13 @@ function applyOverseasDateWindow(items, w, prodData, inventory, suppressionOverr
       _dateFilteredProds: kept.map(r => r.lot), _dateLotSplit: kept };
   }).filter(Boolean);
 }
-function windowBrands(brands, w, prodData, inventory, suppressionOverrides) {
-  if (!dateWindowActive(w)) return brands;
+function windowBrands(brands, w, prodData, inventory, suppressionOverrides, factories) {
+  if (!dateWindowActive(w) && !(factories && factories.length)) return brands;
   const rawBySku = new Map();
   (inventory || []).forEach(r => rawBySku.set(r.sku, r));
   const out = {};
   Object.entries(brands).forEach(([abbr, b]) => {
-    const items = applyOverseasDateWindow(b.items || [], w, prodData, inventory, suppressionOverrides, rawBySku);
+    const items = applyOverseasDateWindow(b.items || [], w, prodData, inventory, suppressionOverrides, rawBySku, factories);
     if (!items.length) return;
     out[abbr] = {
       ...b, items,
@@ -4257,6 +4358,47 @@ function _isoInDays(n) {
   const d = new Date();
   d.setDate(d.getDate() + n);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// ═══════════════════════════════════════════
+// OVERSEAS FACTORY FILTER (David, Nov 4 2026)
+// ═══════════════════════════════════════════
+// The desktop's Factories picker: in the Inventory tab's Overseas view tick one or more
+// factories and only their production shows, on the brand cards, inside each brand, in Flow
+// Mode and in the exports. Nothing ticked = every factory. A lot's factory is the first two
+// letters of its production # (factoryOf, as on the Calendar tab). A lot with no code ("N/A",
+// blank) and a style on order with no ledger line count as FACTORY_NONE ("No factory code").
+// applyOverseasDateWindow narrows the lots, in the same pass as the dates.
+const FACTORY_NONE = "-";   // the Calendar's key for a production # with no factory code
+function lotFactory(p) { return factoryOf(p && p.production) || FACTORY_NONE; }
+function factoryLabel(code) { return FACTORY_NAMES[code] ? `${FACTORY_NAMES[code]} (${code})` : factoryName(code); }
+function factoriesSummary(codes) {
+  return codes.length <= 3 ? codes.map(factoryLabel).join(" + ") : `${codes.length} factories`;
+}
+// the picks in one order whatever order they were ticked in, "No factory code" last
+function sortFactoryPicks(codes) {
+  return [...new Set(codes)].sort((a, b) => (a === FACTORY_NONE) - (b === FACTORY_NONE) || a.localeCompare(b));
+}
+// The picker's counts: how many of these styles each factory makes, before the pick. A style
+// counts under every factory with a lot of its own (with units) in the date window, and a
+// style with no ledger line of its own under "No factory code". Same count as the desktop's.
+function factoryStyleCounts(items, w, prodData, inventory, suppressionOverrides) {
+  const dated = dateWindowActive(w);
+  const bySku = _prodBySku(prodData);
+  const rawBySku = new Map();
+  (inventory || []).forEach(r => rawBySku.set(r.sku, r));
+  const counts = {};
+  (items || []).forEach(item => {
+    const raw = rawBySku.get(item.sku);
+    const wh = raw ? (raw.jtw||0)+(raw.tr||0)+(raw.dcw||0)+(raw.qa||0)+(raw.nj||0)+(raw.abfi||0) : 0;
+    const lots = (bySku.get((item.sku || "").toUpperCase()) || [])
+      .filter(p => !_isProductionSuppressed(wh, p, item.sku, suppressionOverrides));
+    const codes = new Set();
+    if (!lots.length) codes.add(FACTORY_NONE);
+    lots.forEach(p => { if ((p.units || 0) > 0 && (!dated || prodInDateWindow(p, w))) codes.add(lotFactory(p)); });
+    codes.forEach(c => { counts[c] = (counts[c] || 0) + 1; });
+  });
+  return counts;
 }
 
 function _getSuppressedIncoming(sku, prodData, warehouseQty, suppressionOverrides) {
@@ -5865,6 +6007,13 @@ export default function VersaInventoryApp() {
     setColorCategoryFilter(null); setFabricCodeFilter(null);
     setDateWindowRaw(w);
   }, []);
+  // overseas Factories picker ([] = every factory, Inventory tab only, as on the desktop's
+  // main page); like the dates, a new pick clears the drill filters
+  const [factoryPicks, setFactoryPicksRaw] = useState([]);
+  const setFactoryPicks = useCallback(f => {
+    setColorCategoryFilter(null); setFabricCodeFilter(null);
+    setFactoryPicksRaw(sortFactoryPicks(f));
+  }, []);
   const [calView, setCalView] = useState(EMPTY_CAL_VIEW);   // Calendar tab: date, factory, Day/Week/Month/Year, shown day
   const [warehouseFilter, setWarehouseFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -6340,8 +6489,8 @@ export default function VersaInventoryApp() {
 
   // Rebuild brands when filterMode or suppression-relevant data changes
   // The full rebuild (smart routing included) is slow on a phone, so a date change never
-  // re-runs it: the rebuild is kept, and the delivery-date window (overseas view only) is
-  // applied to it separately, which is quick.
+  // re-runs it: the rebuild is kept, and the delivery-date window and the factory pick
+  // (overseas view only) are applied to it separately, which is quick.
   const [builtBrands, setBuiltBrands] = useState(null);
   useEffect(() => {
     if (inventory.length > 0) {
@@ -6351,15 +6500,31 @@ export default function VersaInventoryApp() {
   useEffect(() => {
     if (!builtBrands) return;
     setBrands(builtBrands.mode === "incoming"
-      ? windowBrands(builtBrands.brands, dateWindow, productionData, inventory, suppressionOverrides)
+      ? windowBrands(builtBrands.brands, dateWindow, productionData, inventory, suppressionOverrides, factoryPicks)
       : builtBrands.brands);
     // productionData / inventory / suppressionOverrides changes arrive through a new builtBrands
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [builtBrands, dateWindow]);
+  }, [builtBrands, dateWindow, factoryPicks]);
   // the Production tab has no date filter, so it reads the build before the window
   const recapItems = useMemo(() =>
     builtBrands ? Object.values(builtBrands.brands).flatMap(b => b.items || []) : [],
   [builtBrands]);
+  // The Inventory tab's Factories picker counts the Overseas build before the pick, narrowed
+  // like the screen it sits on: a brand page counts its brand and category, the brand list
+  // the ticked categories (the desktop counts its main page the same way).
+  const showFactoryPicker = activeTab === "inventory" && filterMode === "incoming" && (view === "brands" || view === "inventory");
+  const factoryCounts = useMemo(() => {
+    if (!showFactoryPicker || !builtBrands || builtBrands.mode !== "incoming") return {};
+    let items;
+    if (view === "inventory" && currentBrand) {
+      items = (builtBrands.brands[currentBrand] || {}).items || [];
+      if (categoryIsActive(categoryFilter)) items = items.filter(i => matchesAnyCategory(i.sku, i.brand_abbr || i.brand, categoryFilter));
+    } else {
+      items = Object.values(builtBrands.brands).flatMap(b => b.items || []);
+      if (brandCategories.length) items = items.filter(i => matchesAnyCategory(i.sku, i.brand_abbr || i.brand, brandCategories));
+    }
+    return factoryStyleCounts(items, dateWindow, productionData, inventory, suppressionOverrides);
+  }, [showFactoryPicker, builtBrands, view, currentBrand, categoryFilter, brandCategories, dateWindow, productionData, inventory, suppressionOverrides, styleOverrides]);
 
   // ─── Navigation with Browser History ────────────────────────
   const goToBrands = useCallback(() => { 
@@ -6597,14 +6762,15 @@ export default function VersaInventoryApp() {
             });
           });
         } else {
+          // on order with no ledger line: whole incoming + order deduction, like a lot row
           flowItems.push({
             ...item,
             _flow: true,
             _flow_key: `${item.sku}__flow_noprod`,
             _flow_production: "",
             _flow_po: "No Production Data",
-            _flow_units: item.total_ats,
-            _flow_deducted: 0,
+            _flow_units: item.incoming || 0,
+            _flow_deducted: item._overseas_deducted || 0,
             _flow_etd: null,
             _flow_arrival: null
           });
@@ -6650,6 +6816,11 @@ export default function VersaInventoryApp() {
     categoryFilteredItems.forEach(i => { const f = getFabricFromSKU(i.sku, styleOverrides); fabs[f.code] = f.description; });
     return Object.entries(fabs).sort((a,b) => a[1].localeCompare(b[1]));
   }, [brandData, categoryFilteredItems, styleOverrides]);
+
+  // the overseas narrowing filters on, for the "nothing here" screens
+  const datesOn = filterMode === "incoming" && dateWindowActive(dateWindow);
+  const facOn = filterMode === "incoming" && factoryPicks.length > 0;
+  const facText = facOn ? factoriesSummary(factoryPicks) : "";
 
   // ─── Sync Status Colors ────────────────
   const statusColors = { loading:"#fef3c7", success:"#dcfce7", cached:"#dbeafe", error:"#fee2e2" };
@@ -6797,10 +6968,11 @@ export default function VersaInventoryApp() {
       <main style={{ maxWidth:1280,margin:"0 auto",padding:"24px 20px 100px",minHeight:"calc(100vh - 68px)" }}>
         
         {activeTab === "inventory" && <>
-        {/* Delivery-date filter: Overseas mode, brand list and brand screens */}
-        {filterMode === "incoming" && (view === "brands" || view === "inventory") && (
+        {/* Delivery-date and factory filters: Overseas mode, brand list and brand screens */}
+        {showFactoryPicker && (<>
           <DateWindowPanel value={dateWindow} onChange={setDateWindow} />
-        )}
+          <FactoryPanel value={factoryPicks} onChange={setFactoryPicks} counts={factoryCounts} loading={!productionData.length} />
+        </>)}
         {/* LOADING */}
         {view === "loading" && <LoadingSpinner text="Loading Inventory..." />}
 
@@ -6875,14 +7047,20 @@ export default function VersaInventoryApp() {
                 <div style={{ textAlign:"center",padding:60,color:"#64748b" }}>
                   <p style={{ fontSize:48,marginBottom:12 }}>🔍</p>
                   <p style={{ fontSize:16 }}>
-                    {filterMode === "incoming" && dateWindowActive(dateWindow)
-                      ? "Nothing overseas arrives in these delivery dates"
+                    {facOn && datesOn ? `Nothing overseas from ${facText} arrives in these delivery dates`
+                      : datesOn ? "Nothing overseas arrives in these delivery dates"
+                      : facOn ? `Nothing overseas from ${facText}${brandCategories.length ? ` in ${brandCategories.length > 1 ? "these categories" : "this category"}` : ""}`
                       : `No brands found for ${brandCategories.length > 1 ? "these categories" : "this category"}`}
                   </p>
                   <div style={{ display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap",marginTop:16 }}>
-                    {filterMode === "incoming" && dateWindowActive(dateWindow) && (
+                    {datesOn && (
                       <button onClick={() => setDateWindow(EMPTY_DATE_WINDOW)} style={{ background:"linear-gradient(135deg,#f59e0b,#d97706)",color:"#fff",border:"none",padding:"10px 24px",borderRadius:10,fontWeight:700,cursor:"pointer",fontSize:14 }}>
                         Clear dates
+                      </button>
+                    )}
+                    {facOn && (
+                      <button onClick={() => setFactoryPicks([])} style={{ background:"linear-gradient(135deg,#a78bfa,#7c3aed)",color:"#fff",border:"none",padding:"10px 24px",borderRadius:10,fontWeight:700,cursor:"pointer",fontSize:14 }}>
+                        Clear factories
                       </button>
                     )}
                     {brandCategories.length > 0 && (
@@ -6917,13 +7095,20 @@ export default function VersaInventoryApp() {
           <div style={{ textAlign:"center",padding:60,color:"#64748b" }}>
             <p style={{ fontSize:48,marginBottom:12 }}>🔍</p>
             <p style={{ fontSize:16,color:"#cbd5e1" }}>
-              {filterMode === "incoming" && dateWindowActive(dateWindow)
-                ? `${(BRAND_MAPPING[currentBrand] || {}).full_name || currentBrand} has nothing arriving in these delivery dates`
-                : `${(BRAND_MAPPING[currentBrand] || {}).full_name || currentBrand} has no styles in this view`}
+              {(() => {
+                const name = (BRAND_MAPPING[currentBrand] || {}).full_name || currentBrand;
+                return facOn && datesOn ? `${name} has nothing from ${facText} arriving in these delivery dates`
+                  : datesOn ? `${name} has nothing arriving in these delivery dates`
+                  : facOn ? `${name} has no production from ${facText}`
+                  : `${name} has no styles in this view`;
+              })()}
             </p>
             <div style={{ display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap",marginTop:16 }}>
-              {filterMode === "incoming" && dateWindowActive(dateWindow) && (
+              {datesOn && (
                 <button onClick={() => setDateWindow(EMPTY_DATE_WINDOW)} className="filter-pill active">Clear dates</button>
+              )}
+              {facOn && (
+                <button onClick={() => setFactoryPicks([])} className="filter-pill active">Clear factories</button>
               )}
               <button onClick={goToBrands} className="filter-pill">← All Brands</button>
             </div>
@@ -7276,7 +7461,7 @@ export default function VersaInventoryApp() {
         />
       )}
       {showExport && (
-        <ExportPanel onClose={() => setShowExport(false)} brands={brands} currentBrand={currentBrand} filterMode={filterMode} API_URL={API_URL} filteredItems={filteredItems} productionData={productionData} viewMode={view} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} colorMap={colorMap} prepackDefaults={prepackDefaults} inventory={inventory} flowMode={flowMode} warehouseFilter={warehouseFilter} />
+        <ExportPanel onClose={() => setShowExport(false)} brands={brands} currentBrand={currentBrand} filterMode={filterMode} API_URL={API_URL} filteredItems={filteredItems} productionData={productionData} viewMode={view} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} colorMap={colorMap} prepackDefaults={prepackDefaults} inventory={inventory} flowMode={flowMode} warehouseFilter={warehouseFilter} factoryPicks={factoryPicks} />
       )}
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
