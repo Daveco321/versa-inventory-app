@@ -607,11 +607,12 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
   // views subtract it via _getSuppressedIncoming(), so routing must exclude it
   // too. Otherwise a demand claim parks on the suppressed batch
   // (warehouseConsumed stays 0) and the warehouse/ATS view shows the order as
-  // un-deducted while the total view deducts it. Using getActiveProductionForSku
+  // un-deducted while the total view deducts it. The same suppression test
   // drops suppressed batches so the only remaining supply is what the rest of
-  // the app agrees exists (warehouse + non-suppressed productions).
-  const productions = getActiveProductionForSku(matchingRows[0].sku, prodData, warehouseTotal, suppressionOverrides)
-    .slice()
+  // the app agrees exists (warehouse + non-suppressed productions). The pool is
+  // every size of the style (getProductionForSku reads one row's own lines).
+  const productions = getProductionForBaseStyle(baseStyle, prodData)
+    .filter(p => !_isProductionSuppressed(warehouseTotal, p, matchingRows[0].sku, suppressionOverrides))
     .sort((a, b) => (a.arrival || a.etd || new Date("2099-01-01")) - (b.arrival || b.etd || new Date("2099-01-01")));
 
   // NJ = LAST RESORT (mirrors desktop _routeSku, David Sep 4 2026): NJ warehouse
@@ -4137,11 +4138,22 @@ function formatDateShort(d) {
   return new Date(d).toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" });
 }
 
+// A row's production: the ledger lines for this exact SKU, as the desktop reads them (its
+// getProductionForSku is an exact match). Where a style is made by size (the -FBA sizes, 1P
+// prepacks) each size has lines of its own, sometimes at another factory than the base style.
+// Matching on the base style gave every size row all its siblings' lines: the Overseas tab
+// counted each line once per size, and size cards and Flow Mode split a row over lines that
+// were not its own (Nov 4 2026). Smart routing pools a base style's rows, so it reads
+// getProductionForBaseStyle.
 function getProductionForSku(sku, prodData) {
   if (!sku || !prodData || prodData.length === 0) return [];
-  // Strip size suffix (e.g. TMNAPY201SLB-15-15.5/32-33 → TMNAPY201SLB), then uppercase — mirrors main catalog exactly
-  const skuUpper = sku.split("-")[0].toUpperCase();
-  return prodData.filter(p => (p.style || "").split("-")[0].toUpperCase() === skuUpper);
+  return (_prodBySku(prodData).get(String(sku).toUpperCase()) || []).slice();
+}
+// every ledger line of a base style, all its sizes: smart routing's supply for the style
+function getProductionForBaseStyle(baseStyle, prodData) {
+  if (!baseStyle || !prodData || prodData.length === 0) return [];
+  const b = String(baseStyle).split("-")[0].toUpperCase();
+  return prodData.filter(p => (p.style || "").split("-")[0].toUpperCase() === b);
 }
 
 function getEarliestDates(sku, prodData, warehouseQty, suppressionOverrides) {
@@ -4210,24 +4222,8 @@ function prodInDateWindow(p, w) {
   if (w.etdTo && e && e > _isoDay(w.etdTo, true)) return false;
   return true;
 }
-// production lots by base style, built once per production load (a per-style scan of the
-// whole ledger for every style is too slow on a phone)
-const _prodIndexCache = new WeakMap();
-function _prodByStyle(prodData) {
-  let m = _prodIndexCache.get(prodData);
-  if (!m) {
-    m = new Map();
-    (prodData || []).forEach(p => {
-      const k = (p.style || "").split("-")[0].toUpperCase();
-      if (!m.has(k)) m.set(k, []);
-      m.get(k).push(p);
-    });
-    if (prodData) _prodIndexCache.set(prodData, m);
-  }
-  return m;
-}
-// the same lots by exact SKU, the way the desktop reads a row's production (its
-// getProductionForSku is an exact match: a sized row has ledger lines of its own)
+// production lots by SKU (getProductionForSku), built once per production load (a scan of
+// the whole ledger for every style is too slow on a phone)
 const _prodSkuIndexCache = new WeakMap();
 function _prodBySku(prodData) {
   let m = _prodSkuIndexCache.get(prodData);
@@ -4266,11 +4262,8 @@ function splitOverseasLots(lots, incoming, deducted) {
 }
 const _byArrival = (a, b) => (a.arrival || a.etd || _FAR_DATE) - (b.arrival || b.etd || _FAR_DATE);
 
-// The Factories picker (factories = ticked codes, [] = every factory) narrows in the same pass,
-// from the row's OWN ledger lines, as the desktop reads them. A sized row has lines of its own,
-// sometimes at another factory than its base style (AMNASU100SLP is made at one factory, its
-// -L-FBA rows at another), while the rest of the phone gives a sized row its whole base style's
-// lots. So with a pick, a row keeps only its own lots that pass, split over its own lots.
+// The Factories picker (factories = ticked codes, [] = every factory) narrows the lots in the
+// same pass: a style keeps only its lots that pass both, and their split.
 function applyOverseasDateWindow(items, w, prodData, inventory, suppressionOverrides, rawBySku, factories) {
   const dated = dateWindowActive(w);
   const fac = factories && factories.length ? new Set(factories) : null;
@@ -4279,29 +4272,25 @@ function applyOverseasDateWindow(items, w, prodData, inventory, suppressionOverr
     rawBySku = new Map();
     (inventory || []).forEach(r => rawBySku.set(r.sku, r));
   }
-  const byStyle = _prodByStyle(prodData);
-  const bySku = fac ? _prodBySku(prodData) : null;
+  const bySku = _prodBySku(prodData);
   return items.map(item => {
     const raw = rawBySku.get(item.sku);
     const wh = raw ? (raw.jtw||0)+(raw.tr||0)+(raw.dcw||0)+(raw.qa||0)+(raw.nj||0)+(raw.abfi||0) : 0;
-    const active = p => !_isProductionSuppressed(wh, p, item.sku, suppressionOverrides);
     // same lots as getActiveProductionForSku, from the index
-    const prods = (byStyle.get((item.sku || "").split("-")[0].toUpperCase()) || []).filter(active);
-    // the lots that decide: the row's own with a factory pick (always among prods)
-    const lots = fac ? (bySku.get((item.sku || "").toUpperCase()) || []).filter(active) : prods;
+    const prods = (bySku.get((item.sku || "").toUpperCase()) || [])
+      .filter(p => !_isProductionSuppressed(wh, p, item.sku, suppressionOverrides));
     // no lots on file: cannot be dated, keep; its factory is "No factory code"
-    if (lots.length === 0) return !fac || fac.has(FACTORY_NONE) ? item : null;
-    const q = lots.filter(p => (!dated || prodInDateWindow(p, w)) && (!fac || fac.has(lotFactory(p))));
+    if (prods.length === 0) return !fac || fac.has(FACTORY_NONE) ? item : null;
+    const q = prods.filter(p => (!dated || prodInDateWindow(p, w)) && (!fac || fac.has(lotFactory(p))));
     if (q.length === 0) return null;                          // no lot in the window
     // a picked factory needs a lot with units on it, as on the desktop
     if (fac && !q.some(p => (p.units || 0) > 0)) return null;
-    if (q.length === prods.length) return item;               // keeps every lot it shows: unchanged
-    // Split the style over ALL its lots (its own, with a factory pick) exactly as Flow Mode
-    // does (splitOverseasLots), then keep the lots that pass and their split. The card, the
-    // brand totals, Flow Mode rows and exports then show the same number for the same lot.
-    // (The desktop's date filter still scales by units share, so the two apps can differ for
-    // a style with deductions.)
-    const sorted = [...lots].sort(_byArrival);
+    if (q.length === prods.length) return item;               // every lot passes: unchanged
+    // Split the style over ALL its lots exactly as Flow Mode does (splitOverseasLots), then
+    // keep the lots that pass and their split. The card, the brand totals, Flow Mode rows and
+    // exports then show the same number for the same lot. (The desktop's date filter still
+    // scales by units share, so the two apps can differ for a style with deductions.)
+    const sorted = [...prods].sort(_byArrival);
     const split = splitOverseasLots(sorted, item.incoming || 0, item._overseas_deducted || 0);
     const inWin = new Set(q);
     const kept = split.filter(r => inWin.has(r.lot));
@@ -5692,14 +5681,10 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
   // Mirrors the desktop getOverseasFlowItems() logic with FIFO deduction.
   const flowItems = useMemo(() => {
     const items = [];
-    const ownLots = _prodBySku(productionData);
     inventory.forEach(item => {
       const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0) + (item.nj||0) + (item.abfi||0);
-      // The row's OWN ledger lines (exact SKU), as the desktop reads them. A sized row has lines
-      // of its own; matching on the base style gave every size row all its siblings' lines, so
-      // each line was listed once per size (more units "produced" than the whole ledger, Nov 4 2026).
-      const prods = (ownLots.get((item.sku || "").toUpperCase()) || [])
-        .filter(p => !_isProductionSuppressed(wh, p, item.sku, suppressionOverrides));
+      // the row's own ledger lines (getProductionForSku), one row per line
+      const prods = getActiveProductionForSku(item.sku, productionData, wh, suppressionOverrides);
       if (prods.length === 0) return; // no active production → skip
 
       const deductions = Math.abs(item.committed||0) + Math.abs(item.allocated||0);
