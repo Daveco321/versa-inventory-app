@@ -4365,9 +4365,10 @@ function _isoInDays(n) {
 // ═══════════════════════════════════════════
 // The desktop's Factories picker: in the Inventory tab's Overseas view tick one or more
 // factories and only their production shows, on the brand cards, inside each brand, in Flow
-// Mode and in the exports. Nothing ticked = every factory. A lot's factory is the first two
-// letters of its production # (factoryOf, as on the Calendar tab). A lot with no code ("N/A",
-// blank) and a style on order with no ledger line count as FACTORY_NONE ("No factory code").
+// Mode and in the exports. The Overseas tab has the same picker over its own rows (same
+// pick). Nothing ticked = every factory. A lot's factory is the first two letters of its
+// production # (factoryOf, as on the Calendar tab). A lot with no code ("N/A", blank) and a
+// style on order with no ledger line count as FACTORY_NONE ("No factory code").
 // applyOverseasDateWindow narrows the lots, in the same pass as the dates.
 const FACTORY_NONE = "-";   // the Calendar's key for a production # with no factory code
 function lotFactory(p) { return factoryOf(p && p.production) || FACTORY_NONE; }
@@ -5674,7 +5675,7 @@ function ProductionCalendarView({ productionData, openOrdersData, styleOverrides
 // production order/delivery appears as its own row. Mirrors the desktop tool:
 // search by SKU/PO/production ref, filter by brand & customer, sort by date.
 // ═══════════════════════════════════════════
-function OverseasSummaryView({ inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, colorMap, brands, onItemClick, dateWindow = EMPTY_DATE_WINDOW, onDateWindowChange }) {
+function OverseasSummaryView({ inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, colorMap, brands, onItemClick, dateWindow = EMPTY_DATE_WINDOW, onDateWindowChange, factories = [], onFactoriesChange }) {
   const [search, setSearch] = useState("");
   const [brandFilter, setBrandFilter] = useState("");
   const [customerFilter, setCustomerFilter] = useState("");
@@ -5691,9 +5692,14 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
   // Mirrors the desktop getOverseasFlowItems() logic with FIFO deduction.
   const flowItems = useMemo(() => {
     const items = [];
+    const ownLots = _prodBySku(productionData);
     inventory.forEach(item => {
       const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0) + (item.nj||0) + (item.abfi||0);
-      const prods = getActiveProductionForSku(item.sku, productionData, wh, suppressionOverrides);
+      // The row's OWN ledger lines (exact SKU), as the desktop reads them. A sized row has lines
+      // of its own; matching on the base style gave every size row all its siblings' lines, so
+      // each line was listed once per size (more units "produced" than the whole ledger, Nov 4 2026).
+      const prods = (ownLots.get((item.sku || "").toUpperCase()) || [])
+        .filter(p => !_isProductionSuppressed(wh, p, item.sku, suppressionOverrides));
       if (prods.length === 0) return; // no active production → skip
 
       const deductions = Math.abs(item.committed||0) + Math.abs(item.allocated||0);
@@ -5779,8 +5785,8 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
     return Array.from(set).sort((a, b) => CUSTOMER_CODES[a].localeCompare(CUSTOMER_CODES[b]));
   }, [flowItems]);
 
-  // Apply filters + sort
-  const visible = useMemo(() => {
+  // Apply filters + sort (the factory pick last, so the picker can count the rows before it)
+  const preFactory = useMemo(() => {
     let items = flowItems;
     if (dateWindowActive(dateWindow)) {
       items = items.filter(i => prodInDateWindow({ arrival: i._flow_arrival, etd: i._flow_etd }, dateWindow));
@@ -5796,13 +5802,32 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
         (i.brand_full || "").toLowerCase().includes(q)
       );
     }
+    return items;
+  }, [flowItems, brandFilter, customerFilter, searchDebounced, dateWindow]);
+  // SKUs per factory among those rows (each row is one production line of one factory)
+  const factoryCounts = useMemo(() => {
+    const per = {};
+    preFactory.forEach(i => {
+      const f = factoryOf(i._flow_production) || FACTORY_NONE;
+      (per[f] || (per[f] = new Set())).add(i.sku);
+    });
+    const out = {};
+    Object.keys(per).forEach(f => { out[f] = per[f].size; });
+    return out;
+  }, [preFactory]);
+  const visible = useMemo(() => {
+    let items = preFactory;
+    if (factories.length) {
+      const fac = new Set(factories);
+      items = items.filter(i => fac.has(factoryOf(i._flow_production) || FACTORY_NONE));
+    }
     const sorted = [...items];
     if (sortBy === "arrival-asc") sorted.sort((a, b) => (a._flow_arrival || new Date("2099")) - (b._flow_arrival || new Date("2099")));
     else if (sortBy === "arrival-desc") sorted.sort((a, b) => (b._flow_arrival || new Date("1970")) - (a._flow_arrival || new Date("1970")));
     else if (sortBy === "etd-asc") sorted.sort((a, b) => (a._flow_etd || new Date("2099")) - (b._flow_etd || new Date("2099")));
     else if (sortBy === "etd-desc") sorted.sort((a, b) => (b._flow_etd || new Date("1970")) - (a._flow_etd || new Date("1970")));
     return sorted;
-  }, [flowItems, brandFilter, customerFilter, searchDebounced, sortBy, dateWindow]);
+  }, [preFactory, factories, sortBy]);
 
   // Stats
   const totalUnits = visible.reduce((s, i) => s + (i._flow_units || 0), 0);
@@ -5869,6 +5894,7 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
       </div>
 
       {onDateWindowChange && <DateWindowPanel value={dateWindow} onChange={onDateWindowChange} />}
+      {onFactoriesChange && <FactoryPanel value={factories} onChange={onFactoriesChange} counts={factoryCounts} />}
 
       {/* Search */}
       <input
@@ -6007,8 +6033,8 @@ export default function VersaInventoryApp() {
     setColorCategoryFilter(null); setFabricCodeFilter(null);
     setDateWindowRaw(w);
   }, []);
-  // overseas Factories picker ([] = every factory, Inventory tab only, as on the desktop's
-  // main page); like the dates, a new pick clears the drill filters
+  // overseas Factories picker ([] = every factory); shared by the Inventory tab's Overseas
+  // view and the Overseas tab like the dates, and a new pick clears the drill filters the same way
   const [factoryPicks, setFactoryPicksRaw] = useState([]);
   const setFactoryPicks = useCallback(f => {
     setColorCategoryFilter(null); setFabricCodeFilter(null);
@@ -7376,6 +7402,8 @@ export default function VersaInventoryApp() {
             onItemClick={(item) => setSelectedItem(item)}
             dateWindow={dateWindow}
             onDateWindowChange={setDateWindow}
+            factories={factoryPicks}
+            onFactoriesChange={setFactoryPicks}
           />
         )}
 
