@@ -5658,6 +5658,736 @@ function ProductionCalendarView({ productionData, openOrdersData, styleOverrides
 }
 
 // ═══════════════════════════════════════════
+// PRODUCTION AUDIT VIEW
+// ═══════════════════════════════════════════
+// What changed on the Style Ledger (David, Nov 9 2026): "Production Audit instead of
+// production, and its main function should be to show the changes made on the style ledger
+// every day ... daily, weekly, monthly changes ... filter by factory ... new units, existing
+// units, which Production PO". The API keeps a copy of the ledger per day and answers
+// /production-audit with each day's changes per production # + style: a new line (and a new
+// production #), units up or down, a line that left the ledger, ex-factory, PO name, shipment #,
+// port date and warehouse changes, and styles that moved between productions.
+// Day / Week / Month work like the Calendar tab: Day and Week read the week around the picked
+// day (the strip shows how much changed each day), Month reads the month (tap a day to open it).
+// Swatch cards come from David's email every Monday night (/production-swatch-cards); they sit
+// on each production PO and under their own segment. The old Production Recap is the third
+// segment (All POs).
+const EMPTY_AUDIT_VIEW = { seg:"changes", mode:"day", anchor:null, factory:"", kind:"", q:"", group:"po" };
+const AUDIT_HISTORY_START = "2026-04-16";
+const _auditCache = new Map();     // "from|to" -> { at, data }: survives tab switches
+let _swatchCache = null;           // { at, data }
+const AUDIT_KINDS = [
+  { k:"new",   label:"New lines",  icon:"🆕", color:"#34d399" },
+  { k:"units", label:"Units",      icon:"🔢", color:"#22d3ee" },
+  { k:"rem",   label:"Removed",    icon:"➖", color:"#f87171" },
+  { k:"etd",   label:"Ex-factory", icon:"📅", color:"#fbbf24" },
+  { k:"ship",  label:"Shipped",    icon:"🚢", color:"#60a5fa" },
+  { k:"other", label:"Other",      icon:"✏️", color:"#cbd5e1" },
+];
+function _auditIsoDate(iso) { const [yy, mm, dd] = String(iso).split("-").map(Number); return new Date(yy, mm - 1, dd); }
+function _auditDay(iso, opts) { return _auditIsoDate(iso).toLocaleDateString("en-US", opts || { month:"short", day:"numeric" }); }
+function _auditSigned(n) { return (n > 0 ? "+" : n < 0 ? "−" : "") + Math.abs(n).toLocaleString(); }
+function auditDelta(e) {
+  if (e.k === "new") return e.u1 || 0;
+  if (e.k === "rem") return -(e.u0 || 0);
+  if (e.u0 != null && e.u1 != null) return e.u1 - e.u0;
+  return 0;
+}
+function auditShipAdded(e) { return e.k === "chg" && Array.isArray(e.sh1) && e.sh1.some(s => !(e.sh0 || []).includes(s)); }
+function auditKinds(e) {
+  if (e.k === "new") return ["new"];
+  if (e.k === "rem") return ["rem"];
+  const ks = [];
+  if (e.u0 != null) ks.push("units");
+  if (e.e0 !== undefined || e.e1 !== undefined) ks.push("etd");
+  const shipped = auditShipAdded(e);
+  if (shipped) ks.push("ship");
+  if (e.po0 !== undefined || e.w0 !== undefined || e.g0 !== undefined || e.g1 !== undefined || e.b0 !== undefined || (e.sh0 !== undefined && !shipped)) ks.push("other");
+  return ks;
+}
+function _auditEtd(list) {
+  if (!list || !list.length) return "none";
+  // a typo'd year on the ledger (2626, 1900) shows as typed, so the mistake is visible
+  return list.map(v => /^(20[2-3]\d)-\d{2}-\d{2}$/.test(v) ? fmtDateShort(parseLedgerDate(v)) : v).join(", ");
+}
+function _auditShiftDays(e0, e1) {
+  if (!e0 || !e1 || e0.length !== 1 || e1.length !== 1) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(e0[0]) || !/^\d{4}-\d{2}-\d{2}$/.test(e1[0])) return null;
+  const days = Math.round((_auditIsoDate(e1[0]) - _auditIsoDate(e0[0])) / 86400000);
+  return Math.abs(days) > 400 ? null : days;   // a typo'd year is not a real move
+}
+function _auditFetchJson(url) {
+  return fetch(url).then(r => r.json().catch(() => ({})).then(j => {
+    if (!r.ok) throw new Error(j.error || `The server answered ${r.status}`);
+    return j;
+  }));
+}
+
+function ProductionAuditView({ productionData, openOrdersData, styleOverrides, inventory, onStyleClick, value = EMPTY_AUDIT_VIEW, onChange }) {
+  const { seg, mode, group } = value;
+  const set = patch => onChange(v => ({ ...v, ...patch }));
+  const AC = "#22d3ee";
+  const todayKey = _calKey(new Date());
+  const anchorKey = value.anchor && value.anchor < todayKey ? (value.anchor < AUDIT_HISTORY_START ? AUDIT_HISTORY_START : value.anchor) : todayKey;
+  const anchor = _auditIsoDate(anchorKey);
+  const y = anchor.getFullYear(), m = anchor.getMonth(), d0 = anchor.getDate();
+  const weekStart = new Date(y, m, d0 - anchor.getDay());
+  const rangeStart = mode === "month" ? new Date(y, m, 1) : weekStart;
+  const rangeEnd = mode === "month" ? new Date(y, m + 1, 0) : new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 6);
+  let from = _calKey(rangeStart), to = _calKey(rangeEnd);
+  if (to > todayKey) to = todayKey;
+  if (from < AUDIT_HISTORY_START) from = AUDIT_HISTORY_START;
+
+  const [tick, setTick] = useState(0);
+  const [st, setSt] = useState(() => {
+    const hit = _auditCache.get(`${from}|${to}`);
+    return hit ? { status:"ok", data:hit.data, at:hit.at } : { status:"loading", data:null };
+  });
+  const [open, setOpen] = useState({});
+  const [limit, setLimit] = useState(40);
+  const [cards, setCards] = useState(() => (_swatchCache ? _swatchCache.data : null));
+  const [cardsErr, setCardsErr] = useState("");
+  const [sheet, setSheet] = useState(null);           // production # whose swatch cards are open
+  const [cardOpen, setCardOpen] = useState({});        // Swatch Cards segment: expanded productions
+  const [cardQ, setCardQ] = useState("");
+
+  // the period's changes (cached per range; a range with today refreshes after 2 minutes)
+  useEffect(() => {
+    if (seg !== "changes") return;
+    if (from > to) { setSt({ status:"ok", data:{ events:[], days:[], now:{}, day_pos:{} } }); return; }
+    const key = `${from}|${to}`;
+    const hit = _auditCache.get(key);
+    const live = to >= todayKey;
+    if (hit) setSt({ status:"ok", data:hit.data, at:hit.at });
+    if (hit && Date.now() - hit.at < (live ? 120000 : 3600000) && (hit.tick || 0) >= tick) return;
+    let cancelled = false;
+    if (!hit) setSt({ status:"loading", data:null });
+    _auditFetchJson(`${API_URL}/production-audit?from=${from}&to=${to}`)
+      .then(j => { if (cancelled) return; const at = Date.now(); _auditCache.set(key, { at, data:j, tick }); setSt({ status:"ok", data:j, at }); })
+      .catch(e => { if (!cancelled && !hit) setSt({ status:"error", data:null, err:e.message || "Could not load the audit" }); });
+    return () => { cancelled = true; };
+  }, [from, to, tick, seg, todayKey]);
+
+  // today's changes keep coming in: look again every 3 minutes while the phone shows them
+  useEffect(() => {
+    if (seg !== "changes" || to < todayKey) return;
+    const iv = setInterval(() => { if (!document.hidden) setTick(t => t + 1); }, 180000);
+    return () => clearInterval(iv);
+  }, [seg, to, todayKey]);
+
+  // swatch cards (every Monday night from David's email)
+  const [cardsTick, setCardsTick] = useState(0);
+  useEffect(() => {
+    if (_swatchCache && Date.now() - _swatchCache.at < 300000) return;
+    let cancelled = false;
+    _auditFetchJson(`${API_URL}/production-swatch-cards`)
+      .then(j => { _swatchCache = { at:Date.now(), data:j }; if (!cancelled) { setCards(j); setCardsErr(""); } })
+      .catch(e => { if (!cancelled) setCardsErr(e.message || "Swatch cards did not load"); });
+    return () => { cancelled = true; };
+  }, [cardsTick]);
+  const cardById = useMemo(() => {
+    const mp = {};
+    ((cards && cards.cards) || []).forEach(c => { mp[c.id] = c; });
+    return mp;
+  }, [cards]);
+  const cardsFor = useCallback(p => ((cards && cards.by_prod && cards.by_prod[p]) || []).map(id => cardById[id]).filter(Boolean), [cards, cardById]);
+
+  const handleStyleClick = useCallback((baseStyle) => {
+    if (!inventory?.length || !onStyleClick) return;
+    const match = inventory.find(i => (i.sku || "").toUpperCase().split("-")[0] === baseStyle.toUpperCase());
+    if (match) onStyleClick(match);
+  }, [inventory, onStyleClick]);
+
+  // PO names from the live ledger, for productions that left it
+  const ledgerPoName = useMemo(() => {
+    const mp = {};
+    (productionData || []).forEach(p => { const k = String(p.production || "").trim().toUpperCase(); if (k && !mp[k] && p.poName) mp[k] = p.poName; });
+    return mp;
+  }, [productionData]);
+
+  const data = st.data;
+  const allEvents = (data && data.events) || [];
+  const q = value.q.trim().toUpperCase();
+  const poNameOf = useCallback((p, e) => (data && data.now && data.now[p] && data.now[p].po) || ledgerPoName[p] || (e && e.po) || "", [data, ledgerPoName]);
+  const matchQ = useCallback(e => !q || e.p.includes(q) || e.s.includes(q) || String(e.po || "").toUpperCase().includes(q)
+    || String(poNameOf(e.p, e)).toUpperCase().includes(q), [q, poNameOf]);
+
+  // factories in the period, biggest first ("-" = no factory code)
+  const scopeEvents = mode === "day" ? allEvents.filter(e => e.d === anchorKey) : allEvents;
+  const factoryCounts = useMemo(() => {
+    const c = {};
+    scopeEvents.forEach(e => { const f = e.f || "-"; c[f] = (c[f] || 0) + 1; });
+    return c;
+  }, [scopeEvents]);
+  const factoryList = Object.keys(factoryCounts).sort((a, b) => factoryCounts[b] - factoryCounts[a]);
+  const factory = value.factory;
+  if (factory && !factoryList.includes(factory)) factoryList.push(factory);
+  const inFactory = e => !factory || (e.f || "-") === factory;
+
+  // per-day counts for the strip / month grid (factory + search applied, not the change type)
+  const perDay = useMemo(() => {
+    const mp = {};
+    allEvents.forEach(e => {
+      if (!inFactory(e) || !matchQ(e)) return;
+      const dd = mp[e.d] || (mp[e.d] = { n:0, net:0 });
+      dd.n++;
+      dd.net += auditDelta(e);
+    });
+    return mp;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allEvents, factory, matchQ]);
+  const dayInfo = useMemo(() => {
+    const mp = {};
+    ((data && data.days) || []).forEach(d => { mp[d.d] = d; });
+    return mp;
+  }, [data]);
+
+  const baseEvents = useMemo(() => scopeEvents.filter(e => inFactory(e) && matchQ(e)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scopeEvents, factory, matchQ]);
+  const tiles = useMemo(() => {
+    const t = {};
+    AUDIT_KINDS.forEach(k => { t[k.k] = { n:0, up:0, down:0 }; });
+    let net = 0;
+    const pos = new Set(), newPos = new Set();
+    baseEvents.forEach(e => {
+      const dl = auditDelta(e);
+      net += dl;
+      pos.add(e.p);
+      if (e.np) newPos.add(e.p);
+      auditKinds(e).forEach(k => {
+        t[k].n++;
+        if (dl > 0) t[k].up += dl; else if (dl < 0) t[k].down -= dl;
+      });
+    });
+    return { t, net, pos:pos.size, newPos:newPos.size, n:baseEvents.length };
+  }, [baseEvents]);
+  const kind = value.kind;
+  const listEvents = useMemo(() => (kind ? baseEvents.filter(e => auditKinds(e).includes(kind)) : baseEvents), [baseEvents, kind]);
+
+  // group by production PO (and by day when asked)
+  const buildGroups = useCallback(evs => {
+    const mp = new Map();
+    evs.forEach(e => {
+      let g = mp.get(e.p);
+      if (!g) mp.set(e.p, g = { p:e.p, f:e.f || "-", events:[], net:0, newPo:false, gone:false, days:new Set(), kinds:{} });
+      g.events.push(e);
+      g.net += auditDelta(e);
+      if (e.np) g.newPo = true;
+      if (e.gone) g.gone = true;
+      g.days.add(e.d);
+      auditKinds(e).forEach(k => { g.kinds[k] = (g.kinds[k] || 0) + 1; });
+    });
+    return [...mp.values()].sort((a, b) => Math.abs(b.net) - Math.abs(a.net) || b.events.length - a.events.length || a.p.localeCompare(b.p));
+  }, []);
+  const groups = useMemo(() => buildGroups(listEvents), [listEvents, buildGroups]);
+  const dayGroups = useMemo(() => {
+    if (mode === "day" || group !== "day") return null;
+    const byD = {};
+    listEvents.forEach(e => { (byD[e.d] || (byD[e.d] = [])).push(e); });
+    return Object.keys(byD).sort().reverse().map(dk => ({ d:dk, groups:buildGroups(byD[dk]), n:byD[dk].length, net:byD[dk].reduce((s, e) => s + auditDelta(e), 0) }));
+  }, [listEvents, mode, group, buildGroups]);
+
+  useEffect(() => { setLimit(40); }, [from, to, anchorKey, factory, kind, q, group]);
+
+  const go = dir => {
+    let next;
+    if (mode === "month") next = new Date(y, m + dir, 1);
+    else if (mode === "week") next = new Date(y, m, d0 + 7 * dir);
+    else next = new Date(y, m, d0 + dir);
+    let nk = _calKey(next);
+    if (nk >= todayKey) nk = null;
+    else if (nk < AUDIT_HISTORY_START) nk = AUDIT_HISTORY_START;
+    set({ anchor:nk });
+  };
+  const canPrev = mode === "month" ? _calKey(new Date(y, m, 0)) >= AUDIT_HISTORY_START
+    : mode === "week" ? _calKey(new Date(y, m, d0 - anchor.getDay() - 1)) >= AUDIT_HISTORY_START
+    : anchorKey > AUDIT_HISTORY_START;
+  const canNext = mode === "month" ? _calKey(new Date(y, m + 1, 1)) <= todayKey
+    : mode === "week" ? _calKey(new Date(y, m, d0 - anchor.getDay() + 7)) <= todayKey
+    : anchorKey < todayKey;
+  const openDay = dk => set({ mode:"day", anchor:dk >= todayKey ? null : dk });
+
+  const card = { background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14 };
+  const navBtn = on => ({ width:36, height:36, borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.06)", color: on ? "#e2e8f0" : "#334155", fontSize:20, fontWeight:700, cursor: on ? "pointer" : "default", display:"flex", alignItems:"center", justifyContent:"center", padding:0 });
+  const chip = (bg, color, extra) => ({ display:"inline-flex", alignItems:"center", gap:4, fontSize:11, fontWeight:700, background:bg, color, padding:"2px 8px", borderRadius:6, whiteSpace:"nowrap", ...extra });
+  const unitsColor = n => (n > 0 ? "#34d399" : n < 0 ? "#f87171" : "#94a3b8");
+
+  // ── one change, as chips ──
+  const renderChange = (e, showDate) => {
+    const parts = [];
+    const dl = auditDelta(e);
+    if (e.k === "new") {
+      parts.push(<span key="n" style={chip("rgba(52,211,153,.15)", "#34d399")}>🆕 New line {_auditSigned(e.u1 || 0)}</span>);
+      if (e.mvf) parts.push(<span key="mvf" style={chip("rgba(167,139,250,.15)", "#c4b5fd")}>↪ from {e.mvf.join(", ")}</span>);
+      if (e.e1 && e.e1.length) parts.push(<span key="e" style={chip("rgba(255,255,255,.06)", "#94a3b8")}>Ex-factory {_auditEtd(e.e1)}</span>);
+    } else if (e.k === "rem") {
+      parts.push(<span key="r" style={chip("rgba(248,113,113,.15)", "#f87171")}>➖ Off the ledger {_auditSigned(-(e.u0 || 0))}</span>);
+      if (e.mv) parts.push(<span key="mv" style={chip("rgba(167,139,250,.15)", "#c4b5fd")}>↪ moved to {e.mv.join(", ")}</span>);
+      if (e.sh0 && e.sh0.length) parts.push(<span key="sh" style={chip("rgba(96,165,250,.12)", "#93c5fd")}>had shipment {e.sh0.join(", ")}</span>);
+    } else {
+      if (e.u0 != null) {
+        parts.push(
+          <span key="u" style={chip("rgba(34,211,238,.12)", "#e2e8f0")}>
+            {(e.u0 || 0).toLocaleString()} → {(e.u1 || 0).toLocaleString()} <strong style={{ color:unitsColor(dl) }}>{_auditSigned(dl)}</strong>
+          </span>
+        );
+        if (e.mv) parts.push(<span key="mv" style={chip("rgba(167,139,250,.15)", "#c4b5fd")}>↪ to {e.mv.join(", ")}</span>);
+        if (e.mvf) parts.push(<span key="mvf" style={chip("rgba(167,139,250,.15)", "#c4b5fd")}>↪ from {e.mvf.join(", ")}</span>);
+      }
+      if (e.e0 !== undefined || e.e1 !== undefined) {
+        const sd = _auditShiftDays(e.e0, e.e1);
+        parts.push(
+          <span key="e" style={chip("rgba(251,191,36,.13)", "#fbbf24")}>
+            📅 {_auditEtd(e.e0)} → {_auditEtd(e.e1)}{sd ? ` (${sd > 0 ? "+" : "−"}${Math.abs(sd)} d)` : ""}
+          </span>
+        );
+      }
+      if (e.sh0 !== undefined || e.sh1 !== undefined) {
+        const added = (e.sh1 || []).filter(s => !(e.sh0 || []).includes(s));
+        parts.push(added.length && !(e.sh0 || []).length
+          ? <span key="s" style={chip("rgba(96,165,250,.15)", "#93c5fd")}>🚢 Shipped · {added.join(", ")}</span>
+          : <span key="s" style={chip("rgba(96,165,250,.12)", "#93c5fd")}>🚢 Shipment {(e.sh0 || []).join(", ") || "none"} → {(e.sh1 || []).join(", ") || "none"}</span>);
+      }
+      if (e.g0 !== undefined || e.g1 !== undefined) {
+        parts.push(<span key="g" style={chip("rgba(255,255,255,.07)", "#cbd5e1")}>⚓ Port {e.g0 ? fmtDateShort(parseLedgerDate(e.g0)) : "none"} → {e.g1 ? fmtDateShort(parseLedgerDate(e.g1)) : "none"}</span>);
+      }
+      if (e.w0 !== undefined) parts.push(<span key="w" style={chip("rgba(255,255,255,.07)", "#cbd5e1")}>📍 {e.w0 || "none"} → {e.w1 || "none"}</span>);
+      if (e.po0 !== undefined) parts.push(<span key="po" style={chip("rgba(255,255,255,.07)", "#cbd5e1", { whiteSpace:"normal" })}>PO name {e.po0 || "none"} → {e.po1 || e.po || "none"}</span>);
+      if (e.b0 !== undefined) parts.push(<span key="b" style={chip("rgba(255,255,255,.07)", "#cbd5e1")}>Brand {e.b0} → {e.b}</span>);
+      if (e.u0 == null && e.u != null) parts.push(<span key="cu" style={{ fontSize:11, color:"#64748b", alignSelf:"center" }}>{(e.u || 0).toLocaleString()} units</span>);
+    }
+    return (
+      <div style={{ display:"flex", gap:5, flexWrap:"wrap", alignItems:"center", marginTop:4 }}>
+        {showDate && <span style={{ fontSize:10, fontWeight:800, color:"#64748b", minWidth:46 }}>{_auditDay(e.d, { weekday:"short", month:"short", day:"numeric" })}</span>}
+        {parts}
+      </div>
+    );
+  };
+
+  // ── one production PO ──
+  const renderPoCard = (g, scope) => {
+    const ok = `${scope}|${g.p}`;
+    const isOpen = !!open[ok];
+    const poName = poNameOf(g.p, g.events[0]);
+    const pc = cardsFor(g.p);
+    const styles = {};
+    g.events.forEach(e => { (styles[e.s] || (styles[e.s] = [])).push(e); });
+    const styleList = Object.entries(styles).map(([s, evs]) => ({ s, evs:evs.sort((a, b) => (a.d < b.d ? 1 : -1)), net:evs.reduce((t, e) => t + auditDelta(e), 0), b:evs[0].b }))
+      .sort((a, b) => Math.abs(b.net) - Math.abs(a.net) || a.s.localeCompare(b.s));
+    const days = [...g.days].sort();
+    // the PO's total before the first change and after the last one in view
+    const dp = (data && data.day_pos) || {};
+    const first = dp[days[0]] && dp[days[0]][g.p];
+    const last = dp[days[days.length - 1]] && dp[days[days.length - 1]][g.p];
+    const now = data && data.now && data.now[g.p];
+    const multiDay = mode !== "day" && !(group === "day");
+    const kindWord = { new:"new", units:"units changed", rem:"off the ledger", etd:"ex-factory", ship:"shipped", other:"other" };
+    const kindBits = AUDIT_KINDS.filter(k => g.kinds[k.k]).map(k => ({ k:k.k, color:k.color, text:`${g.kinds[k.k]} ${kindWord[k.k]}` }));
+    return (
+      <div key={ok} style={{ ...card, overflow:"hidden", borderLeft:`4px solid ${g.newPo ? "#34d399" : g.gone ? "#f87171" : AC}` }}>
+        <div onClick={() => setOpen(o => ({ ...o, [ok]: !o[ok] }))} style={{ padding:"12px 14px", cursor:"pointer", display:"flex", alignItems:"flex-start", gap:10 }}>
+          <div style={{ fontSize:13, transition:"transform 0.2s", transform:`rotate(${isOpen ? 90 : 0}deg)`, flexShrink:0, color:"#94a3b8", marginTop:2 }}>▶</div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+              <span style={{ fontWeight:800, fontSize:15, color:"#f1f5f9", fontFamily:"monospace" }}>{g.p}</span>
+              <span style={chip("rgba(34,211,238,.12)", "#67e8f9", { fontSize:10 })}>🏭 {factoryName(g.f)}</span>
+              {g.newPo && <span style={chip("rgba(52,211,153,.18)", "#34d399", { fontSize:10 })}>NEW PO</span>}
+              {g.gone && <span style={chip("rgba(248,113,113,.15)", "#f87171", { fontSize:10 })}>OFF THE LEDGER</span>}
+            </div>
+            {poName && <div style={{ fontSize:12, fontWeight:600, color:"#94a3b8", marginTop:3, lineHeight:1.3 }}>{poName}</div>}
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", fontSize:11, color:"#94a3b8", marginTop:5 }}>
+              <span>{styleList.length} style{styleList.length === 1 ? "" : "s"}</span>
+              {kindBits.map(b => <span key={b.k} style={{ color:b.color, fontWeight:700 }}>{b.text}</span>)}
+              {multiDay && <span>· {days.length === 1 ? _auditDay(days[0], { weekday:"short", month:"short", day:"numeric" }) : `${days.length} days`}</span>}
+            </div>
+            {(first || (now && now.n > 0)) && (
+              <div style={{ fontSize:11, color:"#64748b", marginTop:4 }}>
+                {first && last ? <>PO total {first.u0.toLocaleString()} → {last.u1.toLocaleString()}</> : null}
+                {now && now.n > 0 && days[days.length - 1] !== todayKey ? <>{first ? " · " : ""}on the ledger now {now.u.toLocaleString()}</> : null}
+              </div>
+            )}
+            {pc.length > 0 && (
+              <button onClick={ev => { ev.stopPropagation(); setSheet(g.p); }} style={{ marginTop:8, padding:"6px 10px", borderRadius:8, border:"1px solid rgba(244,114,182,.35)", background:"rgba(244,114,182,.1)", color:"#f9a8d4", fontSize:12, fontWeight:800, cursor:"pointer" }}>
+                🎨 {pc.length === 1 ? "Swatch card" : `${pc.length} swatch cards`}
+              </button>
+            )}
+          </div>
+          <div style={{ textAlign:"right", flexShrink:0 }}>
+            <div style={{ fontSize:18, fontWeight:800, color:unitsColor(g.net) }}>{g.net ? _auditSigned(g.net) : "0"}</div>
+            <div style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>units</div>
+          </div>
+        </div>
+        {isOpen && (
+          <div style={{ borderTop:"1px solid rgba(255,255,255,.08)", padding:"6px 12px 8px", background:"rgba(0,0,0,.15)" }}>
+            {styleList.map((sl, si) => {
+              const imgUrl = getImageUrl({ sku: sl.s, brand_abbr: sl.b || "" }, styleOverrides);
+              return (
+                <div key={sl.s} style={{ display:"flex", gap:10, padding:"9px 2px", borderBottom: si < styleList.length - 1 ? "1px solid rgba(255,255,255,.06)" : "none" }}>
+                  <img src={imgUrl} alt={sl.s} style={{ width:42, height:42, objectFit:"cover", borderRadius:8, border:"1px solid rgba(255,255,255,.1)", flexShrink:0 }}
+                    onError={ev => { ev.target.style.visibility = "hidden"; }} />
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", gap:8, alignItems:"baseline" }}>
+                      <span onClick={() => handleStyleClick(sl.s)} style={{ fontWeight:700, fontFamily:"monospace", color:"#818cf8", fontSize:13, cursor:"pointer", textDecoration:"underline", textDecorationStyle:"dotted", textUnderlineOffset:3, wordBreak:"break-all" }}>{sl.s}</span>
+                      {sl.net !== 0 && <span style={{ fontSize:13, fontWeight:800, color:unitsColor(sl.net), flexShrink:0 }}>{_auditSigned(sl.net)}</span>}
+                    </div>
+                    {sl.b && <div style={{ fontSize:10, color:"#64748b" }}>{sl.b}</div>}
+                    {sl.evs.map((e, ei) => <div key={ei}>{renderChange(e, mode !== "day" && (sl.evs.length > 1 || multiDay))}</div>)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── the strip (Day, Week) / the month grid ──
+  const renderStrip = () => {
+    const days = Array.from({ length:7 }, (_, i) => new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
+    return (
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:4, marginBottom:12 }}>
+        {days.map(d => {
+          const dk = _calKey(d);
+          const future = dk > todayKey, before = dk < AUDIT_HISTORY_START;
+          const pd = perDay[dk];
+          const sel = mode === "day" && dk === anchorKey;
+          const missing = !future && !before && dayInfo[dk] && (dayInfo[dk].missing || dayInfo[dk].skipped);
+          return (
+            <button key={dk} disabled={future || before} onClick={() => openDay(dk)} style={{
+              padding:"7px 0 6px", borderRadius:10, cursor: future || before ? "default" : "pointer",
+              border: sel ? `1.5px solid ${AC}` : "1.5px solid rgba(255,255,255,.06)",
+              background: sel ? "rgba(34,211,238,.16)" : pd ? "rgba(255,255,255,.06)" : "transparent",
+              opacity: future || before ? .3 : 1, display:"flex", flexDirection:"column", alignItems:"center", gap:2
+            }}>
+              <span style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>{d.toLocaleDateString("en-US", { weekday:"short" })}</span>
+              <span style={{ fontSize:15, fontWeight:800, color: dk === todayKey ? AC : "#e2e8f0" }}>{d.getDate()}</span>
+              <span style={{ fontSize:9, fontWeight:800, color: pd ? AC : "#475569", minHeight:11 }}>{future || before || st.status !== "ok" ? "" : missing ? "·" : pd ? _calUnits(pd.n) : "0"}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+  const renderMonth = () => {
+    const firstDow = new Date(y, m, 1).getDay();
+    const cells = Array.from({ length:42 }, (_, i) => new Date(y, m, 1 - firstDow + i));
+    const max = Math.max(1, ...Object.values(perDay).map(p => p.n));
+    return (
+      <div style={{ ...card, padding:8, marginBottom:12 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:2 }}>
+          {["S","M","T","W","T","F","S"].map((w, i) => <div key={i} style={{ textAlign:"center", fontSize:10, fontWeight:700, color:"#64748b", padding:"4px 0" }}>{w}</div>)}
+          {cells.map(d => {
+            const dk = _calKey(d);
+            const inMonth = d.getMonth() === m;
+            const future = dk > todayKey, before = dk < AUDIT_HISTORY_START;
+            const pd = inMonth ? perDay[dk] : null;
+            const heat = pd ? .08 + .32 * (pd.n / max) : 0;
+            return (
+              <div key={dk} onClick={inMonth && !future && !before ? () => openDay(dk) : undefined} style={{
+                aspectRatio:"1", borderRadius:8, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:2,
+                background: pd ? `rgba(34,211,238,${heat.toFixed(2)})` : "transparent",
+                opacity: !inMonth ? .25 : future || before ? .35 : 1, cursor: inMonth && !future && !before ? "pointer" : "default"
+              }}>
+                <span style={dk === todayKey
+                  ? { fontSize:11, fontWeight:800, color:"#0f172a", background:AC, width:22, height:22, borderRadius:"50%", display:"inline-flex", alignItems:"center", justifyContent:"center" }
+                  : { fontSize:12, fontWeight:600, color:"#e2e8f0" }}>{d.getDate()}</span>
+                {pd && <span style={{ fontSize:9, fontWeight:800, color:"#e0f2fe", lineHeight:1 }}>{_calUnits(pd.n)}</span>}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ fontSize:10, color:"#64748b", padding:"6px 4px 0" }}>Number = changes that day. Tap a day to open it.</div>
+      </div>
+    );
+  };
+
+  // ── the swatch cards sheet for one production ──
+  const renderSheet = () => {
+    if (!sheet) return null;
+    const list = cardsFor(sheet);
+    return (
+      <div onClick={() => setSheet(null)} style={{ position:"fixed", inset:0, zIndex:1200, background:"rgba(2,6,23,.72)", display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+        <div onClick={ev => ev.stopPropagation()} style={{ width:"100%", maxWidth:640, maxHeight:"82vh", overflowY:"auto", background:"#0f172a", borderTopLeftRadius:18, borderTopRightRadius:18, border:"1px solid rgba(255,255,255,.1)", padding:"14px 14px calc(18px + env(safe-area-inset-bottom, 0px))" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+            <div>
+              <div style={{ fontSize:11, fontWeight:800, color:"#f9a8d4", textTransform:"uppercase", letterSpacing:".05em" }}>🎨 Swatch cards</div>
+              <div style={{ fontSize:17, fontWeight:800, color:"#f1f5f9", fontFamily:"monospace" }}>{sheet}</div>
+              {poNameOf(sheet) && <div style={{ fontSize:12, color:"#94a3b8" }}>{poNameOf(sheet)}</div>}
+            </div>
+            <button onClick={() => setSheet(null)} style={{ width:36, height:36, borderRadius:10, border:"1px solid rgba(255,255,255,.15)", background:"rgba(255,255,255,.06)", color:"#e2e8f0", fontSize:18, cursor:"pointer" }} aria-label="Close">✕</button>
+          </div>
+          {list.map((c, i) => renderCardTile(c, i === 0 && list.length > 1))}
+        </div>
+      </div>
+    );
+  };
+  const renderCardTile = (c, latest) => (
+    <a key={c.id} href={c.url} target="_blank" rel="noopener noreferrer" style={{ display:"flex", gap:12, alignItems:"center", padding:10, marginBottom:8, borderRadius:12, background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.08)", textDecoration:"none" }}>
+      <div style={{ width:84, height:108, flexShrink:0, borderRadius:8, overflow:"hidden", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center" }}>
+        {c.thumb ? <img src={c.thumb} alt={c.name} style={{ width:"100%", height:"100%", objectFit:"cover", objectPosition:"top" }} /> : <span style={{ fontSize:30 }}>📄</span>}
+      </div>
+      <div style={{ flex:1, minWidth:0 }}>
+        {latest && <span style={chip("rgba(52,211,153,.15)", "#34d399", { fontSize:10, marginBottom:4 })}>LATEST</span>}
+        <div style={{ fontSize:13, fontWeight:700, color:"#e2e8f0", wordBreak:"break-word", lineHeight:1.3 }}>{c.name}</div>
+        <div style={{ fontSize:11, color:"#94a3b8", marginTop:4 }}>
+          {c.date ? `Sent ${new Date(c.date).toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" })}` : ""}
+          {c.pages ? ` · ${c.pages} page${c.pages === 1 ? "" : "s"}` : ""}
+        </div>
+        {c.from && <div style={{ fontSize:11, color:"#64748b", marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>From {c.from}</div>}
+        {(c.prods || []).length > 1 && <div style={{ fontSize:11, color:"#64748b", marginTop:2 }}>Also on {(c.prods || []).join(", ")}</div>}
+        <div style={{ fontSize:12, fontWeight:800, color:"#f9a8d4", marginTop:6 }}>Open card ›</div>
+      </div>
+    </a>
+  );
+
+  // ── Swatch Cards segment ──
+  const renderCardsSeg = () => {
+    if (!cards && !cardsErr) return <LoadingSpinner text="Loading swatch cards..." />;
+    if (cardsErr && !cards) {
+      return (
+        <div style={{ ...card, padding:"28px 16px", textAlign:"center" }}>
+          <div style={{ fontSize:14, fontWeight:700, color:"#fca5a5" }}>{cardsErr}</div>
+          <button onClick={() => { _swatchCache = null; setCardsErr(""); setCards(null); setCardsTick(t => t + 1); }} style={{ marginTop:12, padding:"8px 14px", borderRadius:9, border:"1px solid rgba(255,255,255,.2)", background:"transparent", color:"#e2e8f0", fontWeight:700, cursor:"pointer" }}>Try again</button>
+        </div>
+      );
+    }
+    const cq = cardQ.trim().toUpperCase();
+    const byProd = (cards && cards.by_prod) || {};
+    let prods = Object.keys(byProd).map(p => {
+      const list = cardsFor(p);
+      return { p, f:factoryOf(p) || "-", list, latest:(list[0] && list[0].date) || "", name:poNameOf(p) };
+    }).filter(r => r.list.length);
+    const fc = {};
+    prods.forEach(r => { fc[r.f] = (fc[r.f] || 0) + 1; });
+    const cf = value.factory;
+    prods = prods.filter(r => (!cf || r.f === cf) && (!cq || r.p.includes(cq) || String(r.name).toUpperCase().includes(cq) || r.list.some(c => String(c.name || "").toUpperCase().includes(cq))));
+    prods.sort((a, b) => (a.latest < b.latest ? 1 : a.latest > b.latest ? -1 : a.p.localeCompare(b.p)));
+    const last = cards && cards.last_run;
+    return (
+      <div>
+        <input value={cardQ} onChange={ev => setCardQ(ev.target.value)} placeholder="🔍 Search PO #, PO name or card name" style={{ width:"100%", boxSizing:"border-box", padding:"11px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:14, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none", marginBottom:8 }} />
+        <select value={cf} onChange={ev => set({ factory:ev.target.value })} style={{ width:"100%", padding:"10px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:13, fontWeight:600, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none", cursor:"pointer", colorScheme:"dark", marginBottom:12 }}>
+          <option value="">🏭 All factories</option>
+          {Object.keys(fc).sort((a, b) => fc[b] - fc[a]).map(f => <option key={f} value={f}>{f === "-" ? "No factory code" : `${factoryName(f)} (${f})`} · {fc[f]} PO{fc[f] === 1 ? "" : "s"}</option>)}
+        </select>
+        {prods.length === 0 ? (
+          <div style={{ ...card, padding:"28px 16px", textAlign:"center" }}>
+            <div style={{ fontSize:30, marginBottom:6 }}>🎨</div>
+            <div style={{ fontSize:14, fontWeight:700, color:"#94a3b8" }}>{Object.keys(byProd).length ? "No swatch cards match" : "No swatch cards yet"}</div>
+          </div>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            {prods.map(r => {
+              const isOpen = !!cardOpen[r.p];
+              const top = r.list[0];
+              return (
+                <div key={r.p} style={{ ...card, overflow:"hidden" }}>
+                  <div onClick={() => setCardOpen(o => ({ ...o, [r.p]: !o[r.p] }))} style={{ display:"flex", gap:12, alignItems:"center", padding:10, cursor:"pointer" }}>
+                    <div style={{ width:54, height:70, flexShrink:0, borderRadius:6, overflow:"hidden", background:"#fff", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                      {top.thumb ? <img src={top.thumb} alt="" style={{ width:"100%", height:"100%", objectFit:"cover", objectPosition:"top" }} /> : <span style={{ fontSize:22 }}>📄</span>}
+                    </div>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+                        <span style={{ fontWeight:800, fontSize:15, color:"#f1f5f9", fontFamily:"monospace" }}>{r.p}</span>
+                        <span style={chip("rgba(34,211,238,.12)", "#67e8f9", { fontSize:10 })}>🏭 {factoryName(r.f)}</span>
+                      </div>
+                      {r.name && <div style={{ fontSize:12, color:"#94a3b8", marginTop:2, lineHeight:1.3 }}>{r.name}</div>}
+                      <div style={{ fontSize:11, color:"#64748b", marginTop:3 }}>
+                        {r.list.length} card{r.list.length === 1 ? "" : "s"}{r.latest ? ` · latest ${new Date(r.latest).toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" })}` : ""}
+                      </div>
+                    </div>
+                    <span style={{ color:"#64748b", fontSize:16, transform:`rotate(${isOpen ? 90 : 0}deg)`, transition:"transform .2s" }}>›</span>
+                  </div>
+                  {isOpen && <div style={{ padding:"0 10px 4px" }}>{r.list.map((c, i) => renderCardTile(c, i === 0 && r.list.length > 1))}</div>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <p style={{ fontSize:11, color:"#64748b", marginTop:12, lineHeight:1.5 }}>
+          Swatch cards are picked up from David's email every Monday around 9 PM New York time and filed under the production POs named on them.
+          {last && last.finished_at ? ` Last check: ${new Date(last.finished_at).toLocaleString("en-US", { month:"short", day:"numeric", hour:"numeric", minute:"2-digit" })}.` : ""}
+        </p>
+      </div>
+    );
+  };
+
+  // ── Changes segment ──
+  const renderChanges = () => {
+    const title = mode === "month" ? anchor.toLocaleDateString("en-US", { month:"long", year:"numeric" })
+      : mode === "week" ? `Week of ${weekStart.toLocaleDateString("en-US", { month:"short", day:"numeric" })}`
+      : anchor.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric", year:"numeric" });
+    const isLive = to >= todayKey && (mode !== "day" || anchorKey === todayKey);
+    const tileFor = kd => {
+      const t = tiles.t[kd.k];
+      const on = kind === kd.k;
+      const unitsLine = kd.k === "new" ? (t.up ? `+${t.up.toLocaleString()} u` : "")
+        : kd.k === "rem" ? (t.down ? `−${t.down.toLocaleString()} u` : "")
+        : kd.k === "units" ? [t.up ? `+${_calUnits(t.up)}` : "", t.down ? `−${_calUnits(t.down)}` : ""].filter(Boolean).join(" / ")
+        : "";
+      return (
+        <button key={kd.k} onClick={() => set({ kind: on ? "" : kd.k })} disabled={!t.n && !on} style={{
+          textAlign:"left", padding:"9px 10px", borderRadius:12, cursor: t.n || on ? "pointer" : "default",
+          border: on ? `1.5px solid ${kd.color}` : "1.5px solid rgba(255,255,255,.07)",
+          background: on ? `${kd.color}22` : "rgba(255,255,255,.04)", opacity: t.n || on ? 1 : .45
+        }}>
+          <div style={{ fontSize:10, fontWeight:700, color:"#94a3b8", whiteSpace:"nowrap" }}>{kd.icon} {kd.label}</div>
+          <div style={{ fontSize:19, fontWeight:800, color: t.n ? kd.color : "#475569", lineHeight:1.2 }}>{t.n.toLocaleString()}</div>
+          <div style={{ fontSize:10, fontWeight:700, color:"#64748b", minHeight:13 }}>{unitsLine}</div>
+        </button>
+      );
+    };
+    const srcTracker = ((data && data.days) || []).some(d => (d.src || [])[1] === "tracker" && d.n > 0);
+    const hasAny = allEvents.length > 0;
+    const shown = (dayGroups ? dayGroups.reduce((s, dg) => s + dg.groups.length, 0) : groups.length);
+    let budget = limit;
+    return (
+      <div>
+        {/* Period, arrows, Today */}
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom:10 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:6, minWidth:0 }}>
+            <button onClick={() => canPrev && go(-1)} style={navBtn(canPrev)} aria-label="Previous">‹</button>
+            <span style={{ fontSize:15, fontWeight:800, color:"#f1f5f9", minWidth:140, textAlign:"center" }}>{title}</span>
+            <button onClick={() => canNext && go(1)} style={navBtn(canNext)} aria-label="Next">›</button>
+          </div>
+          <button onClick={() => set({ anchor:null })} style={{ padding:"7px 12px", borderRadius:9, border:"1px solid rgba(34,211,238,.4)", background:"rgba(34,211,238,.1)", color:AC, fontSize:12, fontWeight:800, cursor:"pointer" }}>Today</button>
+        </div>
+
+        {/* Day / Week / Month */}
+        <div style={{ display:"flex", gap:3, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", padding:3, borderRadius:10, marginBottom:10 }}>
+          {[["day", "Day"], ["week", "Week"], ["month", "Month"]].map(([k, label]) => (
+            <button key={k} onClick={() => set({ mode:k })} style={{ flex:1, padding:"7px 0", borderRadius:8, border:"none", fontSize:12, fontWeight:700, cursor:"pointer", background: mode === k ? "#0891b2" : "transparent", color: mode === k ? "#fff" : "#94a3b8" }}>{label}</button>
+          ))}
+        </div>
+
+        {mode === "month" ? renderMonth() : renderStrip()}
+
+        {/* Factory + search */}
+        <select value={factory} onChange={ev => set({ factory:ev.target.value })} style={{ width:"100%", padding:"10px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:13, fontWeight:600, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none", cursor:"pointer", colorScheme:"dark", marginBottom:8 }}>
+          <option value="">🏭 All factories{hasAny ? ` · ${scopeEvents.length.toLocaleString()} changes` : ""}</option>
+          {factoryList.map(f => <option key={f} value={f}>{f === "-" ? "No factory code" : `${factoryName(f)} (${f})`} · {(factoryCounts[f] || 0).toLocaleString()} change{factoryCounts[f] === 1 ? "" : "s"}</option>)}
+        </select>
+        <div style={{ position:"relative", marginBottom:12 }}>
+          <input value={value.q} onChange={ev => set({ q:ev.target.value })} placeholder="🔍 Search PO #, style or PO name" style={{ width:"100%", boxSizing:"border-box", padding:"11px 36px 11px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:14, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none" }} />
+          {value.q && <button onClick={() => set({ q:"" })} style={{ position:"absolute", right:6, top:"50%", transform:"translateY(-50%)", width:28, height:28, borderRadius:8, border:"none", background:"rgba(255,255,255,.1)", color:"#e2e8f0", cursor:"pointer" }} aria-label="Clear search">✕</button>}
+        </div>
+
+        {st.status === "loading" && <LoadingSpinner text="Reading the Style Ledger history..." />}
+        {st.status === "error" && (
+          <div style={{ ...card, padding:"28px 16px", textAlign:"center" }}>
+            <div style={{ fontSize:14, fontWeight:700, color:"#fca5a5" }}>{st.err}</div>
+            <button onClick={() => setTick(t => t + 1)} style={{ marginTop:12, padding:"8px 14px", borderRadius:9, border:"1px solid rgba(255,255,255,.2)", background:"transparent", color:"#e2e8f0", fontWeight:700, cursor:"pointer" }}>Try again</button>
+          </div>
+        )}
+
+        {st.status === "ok" && (
+          <>
+            {/* Totals + tiles */}
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:8, flexWrap:"wrap", margin:"0 2px 8px" }}>
+              <span style={{ fontSize:12, fontWeight:700, color:"#94a3b8" }}>
+                <strong style={{ color:unitsColor(tiles.net), fontSize:15 }}>{_auditSigned(tiles.net)}</strong> units net · {tiles.pos.toLocaleString()} PO{tiles.pos === 1 ? "" : "s"}
+                {tiles.newPos ? ` · ${tiles.newPos} new` : ""}
+              </span>
+              {isLive && (
+                <button onClick={() => setTick(t => t + 1)} style={{ fontSize:11, fontWeight:700, color:"#34d399", background:"transparent", border:"none", cursor:"pointer", padding:0 }}>
+                  ● Live{st.at ? ` · ${new Date(st.at).toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit" })}` : ""} ↻
+                </button>
+              )}
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:6, marginBottom:12 }}>
+              {AUDIT_KINDS.map(tileFor)}
+            </div>
+
+            {mode !== "day" && listEvents.length > 0 && (
+              <div style={{ display:"flex", gap:3, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", padding:3, borderRadius:10, marginBottom:10 }}>
+                {[["po", "By production PO"], ["day", "By day"]].map(([k, label]) => (
+                  <button key={k} onClick={() => set({ group:k })} style={{ flex:1, padding:"6px 0", borderRadius:8, border:"none", fontSize:12, fontWeight:700, cursor:"pointer", background: group === k ? "rgba(34,211,238,.2)" : "transparent", color: group === k ? AC : "#94a3b8" }}>{label}</button>
+                ))}
+              </div>
+            )}
+
+            {kind && (
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, fontSize:12, color:"#94a3b8" }}>
+                <span>Showing {AUDIT_KINDS.find(k => k.k === kind).label.toLowerCase()} only</span>
+                <button onClick={() => set({ kind:"" })} style={{ padding:"3px 10px", borderRadius:7, border:"1px solid rgba(255,255,255,.18)", background:"transparent", color:"#e2e8f0", fontSize:11, fontWeight:700, cursor:"pointer" }}>Show all</button>
+              </div>
+            )}
+
+            {listEvents.length === 0 ? (
+              <div style={{ ...card, padding:"30px 16px", textAlign:"center" }}>
+                <div style={{ fontSize:30, marginBottom:6 }}>✅</div>
+                <div style={{ fontSize:14, fontWeight:700, color:"#94a3b8" }}>
+                  {hasAny ? "Nothing matches these filters" : mode === "day" ? "No changes on the Style Ledger this day" : `No changes on the Style Ledger this ${mode}`}
+                </div>
+                <div style={{ fontSize:12, color:"#64748b", marginTop:4, lineHeight:1.5 }}>
+                  {mode === "day" && dayInfo[anchorKey] && dayInfo[anchorKey].skipped
+                    ? `This day is left out of the history: ${dayInfo[anchorKey].skipped}. The next day is compared with the day before it.`
+                    : mode === "day" && dayInfo[anchorKey] && dayInfo[anchorKey].missing ? "There is no copy of the ledger for this day." : ""}
+                </div>
+              </div>
+            ) : dayGroups ? (
+              dayGroups.map(dg => {
+                if (budget <= 0) return null;
+                const gs = dg.groups.slice(0, budget);
+                budget -= gs.length;
+                return (
+                  <div key={dg.d} style={{ marginBottom:14 }}>
+                    <div onClick={() => openDay(dg.d)} style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", margin:"0 2px 6px", cursor:"pointer" }}>
+                      <span style={{ fontSize:13, fontWeight:800, color:"#f1f5f9" }}>{_auditDay(dg.d, { weekday:"long", month:"short", day:"numeric" })} ›</span>
+                      <span style={{ fontSize:11, fontWeight:700, color:"#94a3b8" }}>{dg.n} change{dg.n === 1 ? "" : "s"} · <span style={{ color:unitsColor(dg.net) }}>{_auditSigned(dg.net)}</span></span>
+                    </div>
+                    <div style={{ display:"flex", flexDirection:"column", gap:8 }}>{gs.map(g => renderPoCard(g, dg.d))}</div>
+                  </div>
+                );
+              })
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {groups.slice(0, limit).map(g => renderPoCard(g, `${from}|${to}|${mode === "day" ? anchorKey : ""}`))}
+              </div>
+            )}
+            {shown > limit && (
+              <button onClick={() => setLimit(l => l + 40)} style={{ width:"100%", marginTop:10, padding:"11px 0", borderRadius:10, border:"1px solid rgba(34,211,238,.35)", background:"rgba(34,211,238,.08)", color:AC, fontSize:13, fontWeight:800, cursor:"pointer" }}>
+                Show more ({(shown - limit).toLocaleString()} more PO{shown - limit === 1 ? "" : "s"})
+              </button>
+            )}
+
+            <p style={{ fontSize:11, color:"#64748b", marginTop:12, lineHeight:1.5 }}>
+              Each change compares the Style Ledger at the end of a day with the day before (today: with the ledger now, checked every 10 minutes). Lines are per production PO and style. History starts {_auditDay(AUDIT_HISTORY_START, { month:"short", day:"numeric", year:"numeric" })}.
+              {srcTracker ? ` Before ${data && data.own_since ? _auditDay(data.own_since, { month:"short", day:"numeric", year:"numeric" }) : "Nov 9, 2026"} the history compares units, ex-factory dates and brands; PO name, shipment #, port date and warehouse changes show from then on.` : ""}
+            </p>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ maxWidth:640, margin:"0 auto", paddingBottom:16 }}>
+      {/* Changes / Swatch Cards / All POs */}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:4, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12, padding:4, marginBottom:12 }}>
+        {[["changes", "📋 Changes", AC], ["cards", "🎨 Swatch Cards", "#f472b6"], ["ledger", "📦 All POs", "#a5b4fc"]].map(([k, label, c]) => {
+          const on = seg === k;
+          return (
+            <button key={k} onClick={() => set({ seg:k })} style={{
+              padding:"10px 4px", borderRadius:9, fontSize:12, fontWeight:800, cursor:"pointer", transition:"all .15s", whiteSpace:"nowrap",
+              border: on ? `1.5px solid ${c}` : "1.5px solid transparent", background: on ? `${c}22` : "transparent", color: on ? c : "#94a3b8"
+            }}>{label}</button>
+          );
+        })}
+      </div>
+      {seg === "changes" && renderChanges()}
+      {seg === "cards" && renderCardsSeg()}
+      {seg === "ledger" && (
+        <ProductionRecapView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} inventory={inventory} onStyleClick={onStyleClick} />
+      )}
+      {renderSheet()}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════
 // OVERSEAS SUMMARY VIEW
 // ═══════════════════════════════════════════
 // Cross-brand overseas shipment overview. Flow expansion always on — every
@@ -6026,6 +6756,7 @@ export default function VersaInventoryApp() {
     setFactoryPicksRaw(sortFactoryPicks(f));
   }, []);
   const [calView, setCalView] = useState(EMPTY_CAL_VIEW);   // Calendar tab: date, factory, Day/Week/Month/Year, shown day
+  const [auditView, setAuditView] = useState(EMPTY_AUDIT_VIEW);   // Production Audit tab: segment, Day/Week/Month, day, factory, filters
   const [warehouseFilter, setWarehouseFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState("ats-desc");
@@ -6881,7 +7612,7 @@ export default function VersaInventoryApp() {
               </g>
             </svg>
             <div>
-              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>{activeTab === "production" ? "Production Recap" : activeTab === "analytics" ? "Color Analytics" : activeTab === "overseas" ? "Overseas Summary" : activeTab === "calendar" ? "Production Calendar" : "Inventory Management"}</h1>
+              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>{activeTab === "production" ? "Production Audit" : activeTab === "analytics" ? "Color Analytics" : activeTab === "overseas" ? "Overseas Summary" : activeTab === "calendar" ? "Production Calendar" : "Inventory Management"}</h1>
               <div style={{ display:"flex",alignItems:"center",gap:8 }}>
                 <p style={{ fontSize:12,color:"#64748b" }}>Real-time inventory system</p>
                 <span style={{ fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:99,background:statusColors[syncStatus.type],color:statusTextColors[syncStatus.type] }}>
@@ -7371,7 +8102,7 @@ export default function VersaInventoryApp() {
 
         {/* PRODUCTION TAB */}
         {activeTab === "production" && (
-          <ProductionRecapView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} inventory={recapItems.length ? recapItems : allItems} onStyleClick={(item) => setSelectedItem(item)} />
+          <ProductionAuditView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} inventory={recapItems.length ? recapItems : allItems} onStyleClick={(item) => setSelectedItem(item)} value={auditView} onChange={setAuditView} />
         )}
 
         {/* OVERSEAS SUMMARY TAB */}
@@ -7430,7 +8161,7 @@ export default function VersaInventoryApp() {
       }}>
         {[
           { key:"inventory", label:"Inventory", icon:"📦", activeColor:"#818cf8" },
-          { key:"production", label:"Production", icon:"🏭", activeColor:"#0891b2" },
+          { key:"production", label:"Production Audit", icon:"🏭", activeColor:"#0891b2" },
           { key:"overseas", label:"Overseas", icon:"🚢", activeColor:"#f59e0b" },
           { key:"analytics", label:"Analytics", icon:"📊", activeColor:"#10b981" },
           { key:"calendar", label:"Calendar", icon:"📅", activeColor:"#a78bfa" },
@@ -7444,7 +8175,7 @@ export default function VersaInventoryApp() {
             }}>
               {isActive && <div style={{ position:"absolute", top:0, left:"20%", right:"20%", height:3, borderRadius:"0 0 3px 3px", background:tab.activeColor }} />}
               <span style={{ fontSize:22, filter: isActive ? "none" : "grayscale(0.7)", transition:"filter .2s" }}>{tab.icon}</span>
-              <span style={{ fontSize:11, fontWeight: isActive ? 800 : 600, color: isActive ? tab.activeColor : "#64748b", transition:"color .2s", letterSpacing:".02em" }}>{tab.label}</span>
+              <span style={{ fontSize: tab.label.length > 12 ? 10 : 11, fontWeight: isActive ? 800 : 600, color: isActive ? tab.activeColor : "#64748b", transition:"color .2s", letterSpacing: tab.label.length > 12 ? 0 : ".02em", lineHeight:1.15, textAlign:"center", maxWidth:78, minHeight:23, display:"flex", alignItems:"flex-start", justifyContent:"center" }}>{tab.label}</span>
             </button>
           );
         })}
