@@ -5660,27 +5660,21 @@ function ProductionCalendarView({ productionData, openOrdersData, styleOverrides
 // ═══════════════════════════════════════════
 // PRODUCTION AUDIT VIEW
 // ═══════════════════════════════════════════
-// What changed on the Style Ledger (David, Nov 9 2026): "Production Audit instead of
-// production, and its main function should be to show the changes made on the style ledger
-// every day ... daily, weekly, monthly changes ... filter by factory ... new units, existing
-// units, which Production PO". The API keeps a copy of the ledger per day and answers
-// /production-audit with each day's changes per production # + style: a new line (and a new
-// production #), units up or down, a line that left the ledger, ex-factory, PO name, shipment #,
-// port date and warehouse changes, and styles that moved between productions.
-// Day / Week / Month work like the Calendar tab: Day and Week read the week around the picked
-// day (the strip shows how much changed each day), Month reads the month (tap a day to open it).
-// Swatch cards come from David's email every Monday night (/production-swatch-cards); they sit
-// on each production PO and under their own segment. The old Production Recap is the third
-// segment (All POs).
-const EMPTY_AUDIT_VIEW = { seg:"changes", mode:"day", anchor:null, factory:"", kind:"", q:"", group:"po", rangeFrom:null, rangeTo:null, cal:null, rv:"every", pick:null };
-const AUDIT_HISTORY_START = "2026-04-16";
-const _auditCache = new Map();     // "from|to" -> { at, data }: survives tab switches
-// Range (David, Nov 9 2026: "if i click on a date a month ago, it shows me the changes made from that
-// day until today"): /production-audit/since compares the ledger at the start of the first day with the
-// ledger now (or at the end of the last day), line by line, and counts the changes in between.
+// What changed on the Style Ledger between two days (David, Nov 9 2026): "Production Audit instead of
+// production ... show the changes made on the style ledger ... filter by factory ... new units, existing
+// units, which Production PO", then "select one date and another date and it would show me all changes
+// during that time frame" and "just the range, remove the other features please its confusing".
+// The API keeps a copy of the ledger per day and answers /production-audit?from=&to= with every change in
+// the range, one per production # + style per day: a new line (and a new production #), units up or down,
+// a line that left the ledger, ex-factory, PO name, shipment #, port date and warehouse changes, and
+// styles that moved between productions. The range is the last 7 days until a first and last day are
+// picked on the calendar (or typed in From / To, or taken from the quick picks). Swatch cards come from
+// David's email every Monday night (/production-swatch-cards); they sit on each production PO and under
+// their own segment. The old Production Recap is the third segment (All POs).
+const EMPTY_AUDIT_VIEW = { seg:"changes", factory:"", kind:"", q:"", group:"po", rangeFrom:null, rangeTo:null, cal:null, pick:null };
 const AUDIT_RANGE_START = "2026-04-17";   // the first day with a ledger copy before it
-const _auditRangeCache = new Map();       // "from|to" -> { at, data, tick }
-let _swatchCache = null;           // { at, data }
+const _auditCache = new Map();           // "from|to" -> { at, data, tick }: survives tab switches
+let _swatchCache = null;                 // { at, data }
 const AUDIT_KINDS = [
   { k:"new",   label:"New lines",  icon:"🆕", color:"#34d399" },
   { k:"units", label:"Units",      icon:"🔢", color:"#22d3ee" },
@@ -5688,7 +5682,6 @@ const AUDIT_KINDS = [
   { k:"etd",   label:"Ex-factory", icon:"📅", color:"#fbbf24" },
   { k:"ship",  label:"Shipped",    icon:"🚢", color:"#60a5fa" },
   { k:"other", label:"Other",      icon:"✏️", color:"#cbd5e1" },
-  { k:"back",  label:"Ended where it started", icon:"↩️", color:"#a5b4fc" },   // Range only
 ];
 function _auditIsoDate(iso) { const [yy, mm, dd] = String(iso).split("-").map(Number); return new Date(yy, mm - 1, dd); }
 function _auditDay(iso, opts) { return _auditIsoDate(iso).toLocaleDateString("en-US", opts || { month:"short", day:"numeric" }); }
@@ -5701,7 +5694,6 @@ function auditDelta(e) {
 }
 function auditShipAdded(e) { return e.k === "chg" && Array.isArray(e.sh1) && e.sh1.some(s => !(e.sh0 || []).includes(s)); }
 function auditKinds(e) {
-  if (e.k === "same") return ["back"];
   if (e.k === "new") return ["new"];
   if (e.k === "rem") return ["rem"];
   const ks = [];
@@ -5731,32 +5723,17 @@ function _auditFetchJson(url) {
 }
 
 function ProductionAuditView({ productionData, openOrdersData, styleOverrides, inventory, onStyleClick, value = EMPTY_AUDIT_VIEW, onChange }) {
-  const { seg, mode, group } = value;
+  const { seg, group } = value;
   const set = patch => onChange(v => ({ ...v, ...patch }));
   const AC = "#22d3ee";
   const todayKey = _calKey(new Date());
-  const anchorKey = value.anchor && value.anchor < todayKey ? (value.anchor < AUDIT_HISTORY_START ? AUDIT_HISTORY_START : value.anchor) : todayKey;
-  const anchor = _auditIsoDate(anchorKey);
-  const y = anchor.getFullYear(), m = anchor.getMonth(), d0 = anchor.getDate();
-  const weekStart = new Date(y, m, d0 - anchor.getDay());
-  const rangeStart = mode === "month" ? new Date(y, m, 1) : weekStart;
-  const rangeEnd = mode === "month" ? new Date(y, m + 1, 0) : new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 6);
-  let from = _calKey(rangeStart), to = _calKey(rangeEnd);
-  if (to > todayKey) to = todayKey;
-  if (from < AUDIT_HISTORY_START) from = AUDIT_HISTORY_START;
-  // Range: from a picked day (30 days back until one is picked) until today or a picked end day
-  const isRange = mode === "range";
-  const rt = value.rangeTo && value.rangeTo < todayKey ? value.rangeTo : todayKey;
   const _today = new Date();
-  let rf = value.rangeFrom || _calKey(new Date(_today.getFullYear(), _today.getMonth(), _today.getDate() - 29));
-  if (rf < AUDIT_RANGE_START) rf = AUDIT_RANGE_START;
-  if (rf > rt) rf = rt;
-  // Two Range views (David, Nov 9 2026: "select one date and another date and it would show me all
-  // changes during that time frame"): Every change = each change on the day it was made, like Week and
-  // Month (the default); Start vs end = the ledger on the first day against the last, line by line.
-  const rangeNet = isRange && value.rv === "net";
-  const rangeEvery = isRange && !rangeNet;
-  if (rangeEvery) { from = rf; to = rt; }
+  const daysBack = n => _calKey(new Date(_today.getFullYear(), _today.getMonth(), _today.getDate() - n));
+  // the range: the last 7 days until a first and last day are picked
+  const to = value.rangeTo && value.rangeTo < todayKey ? value.rangeTo : todayKey;
+  let from = value.rangeFrom || daysBack(6);
+  if (from < AUDIT_RANGE_START) from = AUDIT_RANGE_START;
+  if (from > to) from = to;
 
   const [tick, setTick] = useState(0);
   const [st, setSt] = useState(() => {
@@ -5771,10 +5748,9 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
   const [cardOpen, setCardOpen] = useState({});        // Swatch Cards segment: expanded productions
   const [cardQ, setCardQ] = useState("");
 
-  // the period's changes (cached per range; a range with today refreshes after 2 minutes)
+  // the range's changes (cached per range; a range that ends today refreshes after 2 minutes)
   useEffect(() => {
-    if (seg !== "changes" || rangeNet) return;
-    if (from > to) { setSt({ status:"ok", data:{ events:[], days:[], now:{}, day_pos:{} } }); return; }
+    if (seg !== "changes") return;
     const key = `${from}|${to}`;
     const hit = _auditCache.get(key);
     const live = to >= todayKey;
@@ -5784,46 +5760,16 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
     if (!hit) setSt({ status:"loading", data:null });
     _auditFetchJson(`${API_URL}/production-audit?from=${from}&to=${to}`)
       .then(j => { if (cancelled) return; const at = Date.now(); _auditCache.set(key, { at, data:j, tick }); setSt({ status:"ok", data:j, at }); })
-      .catch(e => { if (!cancelled && !hit) setSt({ status:"error", data:null, err:e.message || "Could not load the audit" }); });
+      .catch(e => { if (!cancelled && !hit) setSt({ status:"error", data:null, err:e.message || "Could not load the changes" }); });
     return () => { cancelled = true; };
-  }, [from, to, tick, seg, todayKey, rangeNet]);
-
-  // Range: the ledger at the start of rf against the ledger now (or at the end of rt)
-  const [rst, setRst] = useState(() => {
-    const hit = _auditRangeCache.get(`${rf}|${rt}`);
-    return hit ? { status:"ok", data:hit.data, at:hit.at } : { status:"loading", data:null };
-  });
-  useEffect(() => {
-    if (seg !== "changes" || !rangeNet) return;
-    const key = `${rf}|${rt}`;
-    const hit = _auditRangeCache.get(key);
-    const live = rt >= todayKey;
-    if (hit) setRst({ status:"ok", data:hit.data, at:hit.at });
-    if (hit && Date.now() - hit.at < (live ? 120000 : 3600000) && (hit.tick || 0) >= tick) return;
-    let cancelled = false;
-    if (!hit) setRst({ status:"loading", data:null });
-    _auditFetchJson(`${API_URL}/production-audit/since?from=${rf}&to=${rt}`)
-      .then(j => { if (cancelled) return; const at = Date.now(); _auditRangeCache.set(key, { at, data:j, tick }); setRst({ status:"ok", data:j, at }); })
-      .catch(e => { if (!cancelled && !hit) setRst({ status:"error", data:null, err:e.message || "Could not load the changes" }); });
-    return () => { cancelled = true; };
-  }, [rf, rt, tick, seg, rangeNet, todayKey]);
-  // every dated step of one production in the range, loaded when its card opens
-  const [steps, setSteps] = useState({});
-  const loadSteps = pr => {
-    const key = `${rf}|${rt}|${pr}`;
-    if (steps[key] && steps[key].status !== "error") return;
-    setSteps(sx => ({ ...sx, [key]: { status:"loading" } }));
-    _auditFetchJson(`${API_URL}/production-audit/since?from=${rf}&to=${rt}&po=${encodeURIComponent(pr)}`)
-      .then(j => setSteps(sx => ({ ...sx, [key]: { status:"ok", by:Object.fromEntries((j.lines || []).map(l => [l.s, l.steps || []])) } })))
-      .catch(e => setSteps(sx => ({ ...sx, [key]: { status:"error", err:e.message } })));
-  };
+  }, [from, to, tick, seg, todayKey]);
 
   // today's changes keep coming in: look again every 3 minutes while the phone shows them
   useEffect(() => {
-    if (seg !== "changes" || (isRange ? rt < todayKey : to < todayKey)) return;
+    if (seg !== "changes" || to < todayKey) return;
     const iv = setInterval(() => { if (!document.hidden) setTick(t => t + 1); }, 180000);
     return () => clearInterval(iv);
-  }, [seg, to, todayKey, isRange, rt]);
+  }, [seg, to, todayKey]);
 
   // swatch cards (every Monday night from David's email)
   const [cardsTick, setCardsTick] = useState(0);
@@ -5855,16 +5801,16 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
     return mp;
   }, [productionData]);
 
-  const vst = rangeNet ? rst : st;
+  const vst = st;
   const data = vst.data;
-  const allEvents = (data && (rangeNet ? data.lines : data.events)) || [];
+  const allEvents = (data && data.events) || [];
   const q = value.q.trim().toUpperCase();
   const poNameOf = useCallback((p, e) => (data && data.now && data.now[p] && data.now[p].po) || ledgerPoName[p] || (e && e.po) || "", [data, ledgerPoName]);
   const matchQ = useCallback(e => !q || e.p.includes(q) || e.s.includes(q) || String(e.po || "").toUpperCase().includes(q)
     || String(poNameOf(e.p, e)).toUpperCase().includes(q), [q, poNameOf]);
 
-  // factories in the period, biggest first ("-" = no factory code)
-  const scopeEvents = mode === "day" ? allEvents.filter(e => e.d === anchorKey) : allEvents;
+  // factories in the range, biggest first ("-" = no factory code)
+  const scopeEvents = allEvents;
   const factoryCounts = useMemo(() => {
     const c = {};
     scopeEvents.forEach(e => { const f = e.f || "-"; c[f] = (c[f] || 0) + 1; });
@@ -5875,7 +5821,7 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
   if (factory && !factoryList.includes(factory)) factoryList.push(factory);
   const inFactory = e => !factory || (e.f || "-") === factory;
 
-  // per-day counts for the strip / month grid (factory + search applied, not the change type)
+  // per-day counts for the calendar (factory + search applied, not the change type)
   const perDay = useMemo(() => {
     const mp = {};
     allEvents.forEach(e => {
@@ -5887,12 +5833,6 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
     return mp;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allEvents, factory, matchQ]);
-  const dayInfo = useMemo(() => {
-    const mp = {};
-    ((data && data.days) || []).forEach(d => { mp[d.d] = d; });
-    return mp;
-  }, [data]);
-
   const baseEvents = useMemo(() => scopeEvents.filter(e => inFactory(e) && matchQ(e)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [scopeEvents, factory, matchQ]);
@@ -5933,31 +5873,13 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
   }, []);
   const groups = useMemo(() => buildGroups(listEvents), [listEvents, buildGroups]);
   const dayGroups = useMemo(() => {
-    if (mode === "day" || rangeNet || group !== "day") return null;
+    if (group !== "day") return null;
     const byD = {};
     listEvents.forEach(e => { (byD[e.d] || (byD[e.d] = [])).push(e); });
     return Object.keys(byD).sort().reverse().map(dk => ({ d:dk, groups:buildGroups(byD[dk]), n:byD[dk].length, net:byD[dk].reduce((s, e) => s + auditDelta(e), 0) }));
-  }, [listEvents, mode, group, buildGroups, rangeNet]);
+  }, [listEvents, group, buildGroups]);
 
-  useEffect(() => { setLimit(40); }, [from, to, anchorKey, factory, kind, q, group, rf, rt, rangeNet]);
-
-  const go = dir => {
-    let next;
-    if (mode === "month") next = new Date(y, m + dir, 1);
-    else if (mode === "week") next = new Date(y, m, d0 + 7 * dir);
-    else next = new Date(y, m, d0 + dir);
-    let nk = _calKey(next);
-    if (nk >= todayKey) nk = null;
-    else if (nk < AUDIT_HISTORY_START) nk = AUDIT_HISTORY_START;
-    set({ anchor:nk });
-  };
-  const canPrev = mode === "month" ? _calKey(new Date(y, m, 0)) >= AUDIT_HISTORY_START
-    : mode === "week" ? _calKey(new Date(y, m, d0 - anchor.getDay() - 1)) >= AUDIT_HISTORY_START
-    : anchorKey > AUDIT_HISTORY_START;
-  const canNext = mode === "month" ? _calKey(new Date(y, m + 1, 1)) <= todayKey
-    : mode === "week" ? _calKey(new Date(y, m, d0 - anchor.getDay() + 7)) <= todayKey
-    : anchorKey < todayKey;
-  const openDay = dk => set({ mode:"day", anchor:dk >= todayKey ? null : dk });
+  useEffect(() => { setLimit(40); }, [from, to, factory, kind, q, group]);
 
   const card = { background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14 };
   const navBtn = on => ({ width:36, height:36, borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.06)", color: on ? "#e2e8f0" : "#334155", fontSize:20, fontWeight:700, cursor: on ? "pointer" : "default", display:"flex", alignItems:"center", justifyContent:"center", padding:0 });
@@ -5972,9 +5894,6 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
       parts.push(<span key="n" style={chip("rgba(52,211,153,.15)", "#34d399")}>🆕 New line {_auditSigned(e.u1 || 0)}</span>);
       if (e.mvf) parts.push(<span key="mvf" style={chip("rgba(167,139,250,.15)", "#c4b5fd")}>↪ from {e.mvf.join(", ")}</span>);
       if (e.e1 && e.e1.length) parts.push(<span key="e" style={chip("rgba(255,255,255,.06)", "#94a3b8")}>Ex-factory {_auditEtd(e.e1)}</span>);
-    } else if (e.k === "same") {
-      parts.push(<span key="sm" style={chip("rgba(165,180,252,.15)", "#a5b4fc")}>{e.ab ? "↩️ Added, then off the ledger again" : "↩️ Changed and came back"}</span>);
-      if (e.u != null && !e.ab) parts.push(<span key="cu" style={{ fontSize:11, color:"#64748b", alignSelf:"center" }}>{(e.u || 0).toLocaleString()} units now</span>);
     } else if (e.k === "rem") {
       parts.push(<span key="r" style={chip("rgba(248,113,113,.15)", "#f87171")}>➖ Off the ledger {_auditSigned(-(e.u0 || 0))}</span>);
       if (e.mv) parts.push(<span key="mv" style={chip("rgba(167,139,250,.15)", "#c4b5fd")}>↪ moved to {e.mv.join(", ")}</span>);
@@ -6035,14 +5954,12 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
     const first = dp[days[0]] && dp[days[0]][g.p];
     const last = dp[days[days.length - 1]] && dp[days[days.length - 1]][g.p];
     const now = data && data.now && data.now[g.p];
-    const multiDay = mode !== "day" && !rangeNet && !(group === "day");
-    const rp = rangeNet && data && data.pos ? data.pos[g.p] : null;         // Start vs end: the PO's total then and now
-    const sst = rangeNet ? steps[`${rf}|${rt}|${g.p}`] : null;
-    const kindWord = { new:"new", units:"units changed", rem:"off the ledger", etd:"ex-factory", ship:"shipped", other:"other", back:"ended where they started" };
+    const multiDay = group !== "day";
+    const kindWord = { new:"new", units:"units changed", rem:"off the ledger", etd:"ex-factory", ship:"shipped", other:"other" };
     const kindBits = AUDIT_KINDS.filter(k => g.kinds[k.k]).map(k => ({ k:k.k, color:k.color, text:`${g.kinds[k.k]} ${kindWord[k.k]}` }));
     return (
       <div key={ok} style={{ ...card, overflow:"hidden", borderLeft:`4px solid ${g.newPo ? "#34d399" : g.gone ? "#f87171" : AC}` }}>
-        <div onClick={() => { setOpen(o => ({ ...o, [ok]: !o[ok] })); if (rangeNet && !isOpen) loadSteps(g.p); }} style={{ padding:"12px 14px", cursor:"pointer", display:"flex", alignItems:"flex-start", gap:10 }}>
+        <div onClick={() => setOpen(o => ({ ...o, [ok]: !o[ok] }))} style={{ padding:"12px 14px", cursor:"pointer", display:"flex", alignItems:"flex-start", gap:10 }}>
           <div style={{ fontSize:13, transition:"transform 0.2s", transform:`rotate(${isOpen ? 90 : 0}deg)`, flexShrink:0, color:"#94a3b8", marginTop:2 }}>▶</div>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
@@ -6057,14 +5974,9 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
               {kindBits.map(b => <span key={b.k} style={{ color:b.color, fontWeight:700 }}>{b.text}</span>)}
               {multiDay && <span>· {days.length === 1 ? _auditDay(days[0], { weekday:"short", month:"short", day:"numeric" }) : `${days.length} days`}</span>}
             </div>
-            {rp && (
+            {(first || (now && now.n > 0)) && (
               <div style={{ fontSize:11, color:"#64748b", marginTop:4 }}>
-                PO total {rp.u0.toLocaleString()} → {rp.u1.toLocaleString()} ({_auditDay(rf)} to {rt === todayKey ? "today" : _auditDay(rt)})
-              </div>
-            )}
-            {!rangeNet && (first || (now && now.n > 0)) && (
-              <div style={{ fontSize:11, color:"#64748b", marginTop:4 }}>
-                {first && last ? <>PO total {first.u0.toLocaleString()} → {last.u1.toLocaleString()}{mode === "day" || group === "day" ? " that day"
+                {first && last ? <>PO total {first.u0.toLocaleString()} → {last.u1.toLocaleString()}{group === "day" ? " that day"
                   : days.length > 1 ? ` (${_auditDay(days[0])} to ${_auditDay(days[days.length - 1])})` : ` (${_auditDay(days[0])})`}</> : null}
                 {now && now.n > 0 && days[days.length - 1] !== todayKey ? <>{first ? " · " : ""}on the ledger today {now.u.toLocaleString()}</> : null}
               </div>
@@ -6094,25 +6006,7 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
                       {sl.net !== 0 && <span style={{ fontSize:13, fontWeight:800, color:unitsColor(sl.net), flexShrink:0 }}>{_auditSigned(sl.net)}</span>}
                     </div>
                     {sl.b && <div style={{ fontSize:10, color:"#64748b" }}>{sl.b}</div>}
-                    {sl.evs.map((e, ei) => <div key={ei}>{renderChange(e, !rangeNet && mode !== "day" && (sl.evs.length > 1 || multiDay))}</div>)}
-                    {rangeNet && sl.evs[0] && sl.evs[0].n > 0 && (() => {
-                      const e0 = sl.evs[0];
-                      const stl = sst && sst.status === "ok" ? (sst.by[sl.s] || []) : null;
-                      return (
-                        <>
-                          <div style={{ marginTop:6, fontSize:11, color:"#94a3b8" }}>
-                            {e0.n === 1 ? `Changed once, on ${_auditDay(e0.d1, { weekday:"short", month:"short", day:"numeric" })}` : `Changed ${e0.n} times, ${_auditDay(e0.d1)} to ${_auditDay(e0.d2)}`}
-                            {sst && sst.status === "loading" ? " · loading the steps..." : ""}
-                            {sst && sst.status === "error" ? <> · the steps did not load, <span onClick={ev => { ev.stopPropagation(); loadSteps(g.p); }} style={{ color:AC, fontWeight:800, cursor:"pointer", textDecoration:"underline", textUnderlineOffset:3 }}>try again</span></> : ""}
-                          </div>
-                          {stl && e0.n > 1 && stl.length > 0 && (
-                            <div style={{ marginTop:2, paddingLeft:8, borderLeft:"2px solid rgba(255,255,255,.1)" }}>
-                              {[...stl].reverse().map((stp, i) => <div key={i}>{renderChange(stp, true)}</div>)}
-                            </div>
-                          )}
-                        </>
-                      );
-                    })()}
+                    {sl.evs.map((e, ei) => <div key={ei}>{renderChange(e, sl.evs.length > 1 || multiDay)}</div>)}
                   </div>
                 </div>
               );
@@ -6123,76 +6017,14 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
     );
   };
 
-  // ── the strip (Day, Week) / the month grid ──
-  const renderStrip = () => {
-    const days = Array.from({ length:7 }, (_, i) => new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
-    return (
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:4, marginBottom:12 }}>
-        {days.map(d => {
-          const dk = _calKey(d);
-          const future = dk > todayKey, before = dk < AUDIT_HISTORY_START;
-          const pd = perDay[dk];
-          const sel = mode === "day" && dk === anchorKey;
-          const missing = !future && !before && dayInfo[dk] && (dayInfo[dk].missing || dayInfo[dk].skipped);
-          return (
-            <button key={dk} disabled={future || before} onClick={() => openDay(dk)} style={{
-              padding:"7px 0 6px", borderRadius:10, cursor: future || before ? "default" : "pointer",
-              border: sel ? `1.5px solid ${AC}` : "1.5px solid rgba(255,255,255,.06)",
-              background: sel ? "rgba(34,211,238,.16)" : pd ? "rgba(255,255,255,.06)" : "transparent",
-              opacity: future || before ? .3 : 1, display:"flex", flexDirection:"column", alignItems:"center", gap:2
-            }}>
-              <span style={{ fontSize:9, fontWeight:700, color:"#64748b", textTransform:"uppercase" }}>{d.toLocaleDateString("en-US", { weekday:"short" })}</span>
-              <span style={{ fontSize:15, fontWeight:800, color: dk === todayKey ? AC : "#e2e8f0" }}>{d.getDate()}</span>
-              <span style={{ fontSize:9, fontWeight:800, color: pd ? AC : "#475569", minHeight:11 }}>{future || before || st.status !== "ok" ? "" : missing ? "·" : pd ? _calUnits(pd.n) : "0"}</span>
-            </button>
-          );
-        })}
-      </div>
-    );
-  };
-  const renderMonth = () => {
-    const firstDow = new Date(y, m, 1).getDay();
-    const cells = Array.from({ length:42 }, (_, i) => new Date(y, m, 1 - firstDow + i));
-    const max = Math.max(1, ...Object.values(perDay).map(p => p.n));
-    return (
-      <div style={{ ...card, padding:8, marginBottom:12 }}>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:2 }}>
-          {["S","M","T","W","T","F","S"].map((w, i) => <div key={i} style={{ textAlign:"center", fontSize:10, fontWeight:700, color:"#64748b", padding:"4px 0" }}>{w}</div>)}
-          {cells.map(d => {
-            const dk = _calKey(d);
-            const inMonth = d.getMonth() === m;
-            const future = dk > todayKey, before = dk < AUDIT_HISTORY_START;
-            const pd = inMonth ? perDay[dk] : null;
-            const heat = pd ? .08 + .32 * (pd.n / max) : 0;
-            return (
-              <div key={dk} onClick={inMonth && !future && !before ? () => openDay(dk) : undefined} style={{
-                aspectRatio:"1", borderRadius:8, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:2,
-                background: pd ? `rgba(34,211,238,${heat.toFixed(2)})` : "transparent",
-                opacity: !inMonth ? .25 : future || before ? .35 : 1, cursor: inMonth && !future && !before ? "pointer" : "default"
-              }}>
-                <span style={dk === todayKey
-                  ? { fontSize:11, fontWeight:800, color:"#0f172a", background:AC, width:22, height:22, borderRadius:"50%", display:"inline-flex", alignItems:"center", justifyContent:"center" }
-                  : { fontSize:12, fontWeight:600, color:"#e2e8f0" }}>{d.getDate()}</span>
-                {pd && <span style={{ fontSize:9, fontWeight:800, color:"#e0f2fe", lineHeight:1 }}>{_calUnits(pd.n)}</span>}
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ fontSize:10, color:"#64748b", padding:"6px 4px 0" }}>Number = changes that day. Tap a day to open it.</div>
-      </div>
-    );
-  };
-
-  // ── Range: tap the day to start from; From / To and quick picks under it ──
-  const renderRange = () => {
-    const shown = value.cal || `${rf.slice(0, 7)}-01`;
+  // ── the range: quick picks, a calendar (tap the first day, then the last day), From / To ──
+  const renderCalendar = () => {
+    const shown = value.cal || `${from.slice(0, 7)}-01`;
     const cm = _auditIsoDate(`${shown.slice(0, 7)}-01`);
     const cy = cm.getFullYear(), cmo = cm.getMonth();
     const firstDow = new Date(cy, cmo, 1).getDay();
-    const cells = Array.from({ length:42 }, (_, i) => new Date(cy, cmo, 1 - firstDow + i));
-    const dayN = {};
-    if (rangeNet) ((rst.data && rst.data.days) || []).forEach(d => { dayN[d.d] = d.n; });
-    else Object.entries(perDay).forEach(([dk, v]) => { dayN[dk] = v.n; });
+    let cells = Array.from({ length:42 }, (_, i) => new Date(cy, cmo, 1 - firstDow + i));
+    if (cells[35].getMonth() !== cmo) cells = cells.slice(0, 35);        // no empty sixth week
     const picking = value.pick === "end";
     const canCalPrev = _calKey(new Date(cy, cmo, 0)) >= AUDIT_RANGE_START;
     const canCalNext = _calKey(new Date(cy, cmo + 1, 1)) <= todayKey;
@@ -6200,63 +6032,69 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
     // First tap: the range runs from that day until today. Second tap: the last day (either order).
     const pick = dk => {
       if (!picking) { set({ rangeFrom:dk, rangeTo:null, pick:"end" }); return; }
-      const a = dk < rf ? dk : rf, b = dk < rf ? rf : dk;
+      const a = dk < from ? dk : from, b = dk < from ? from : dk;
       set({ rangeFrom:a, rangeTo:b >= todayKey ? null : b, pick:null });
     };
-    const back = n => _calKey(new Date(_today.getFullYear(), _today.getMonth(), _today.getDate() - n));
-    const quick = [["7 days", back(6)], ["30 days", back(29)], ["90 days", back(89)], ["All history", AUDIT_RANGE_START]];
-    const dateInput = { width:"100%", boxSizing:"border-box", padding:"9px 10px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:14, fontWeight:700, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none", colorScheme:"dark" };
+    const quick = [["Today", todayKey], ["7 days", daysBack(6)], ["30 days", daysBack(29)], ["90 days", daysBack(89)], ["All", AUDIT_RANGE_START]];
+    const dateRow = (label, val, min, max, onPick) => (
+      <label style={{ display:"flex", alignItems:"center", gap:10, padding:"4px 2px" }}>
+        <span style={{ width:42, flexShrink:0, fontSize:11, fontWeight:800, color:"#94a3b8", textTransform:"uppercase", letterSpacing:".04em" }}>{label}</span>
+        <input type="date" value={val} min={min} max={max} onChange={ev => onPick(ev.target.value)} style={{
+          flex:1, minWidth:0, width:"100%", maxWidth:"100%", boxSizing:"border-box", display:"block", minHeight:44,
+          WebkitAppearance:"none", MozAppearance:"none", appearance:"none", textAlign:"left",
+          padding:"9px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:16, fontWeight:700,
+          background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none", colorScheme:"dark"
+        }} />
+      </label>
+    );
     return (
-      <div style={{ ...card, padding:8, marginBottom:12 }}>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"2px 2px 6px" }}>
-          <button onClick={() => canCalPrev && goCal(-1)} style={{ ...navBtn(canCalPrev), width:32, height:32, fontSize:18 }} aria-label="Previous month">‹</button>
-          <span style={{ fontSize:14, fontWeight:800, color:"#e2e8f0" }}>{cm.toLocaleDateString("en-US", { month:"long", year:"numeric" })}</span>
-          <button onClick={() => canCalNext && goCal(1)} style={{ ...navBtn(canCalNext), width:32, height:32, fontSize:18 }} aria-label="Next month">›</button>
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:2 }}>
-          {["S","M","T","W","T","F","S"].map((w, i) => <div key={i} style={{ textAlign:"center", fontSize:10, fontWeight:700, color:"#64748b", padding:"4px 0" }}>{w}</div>)}
-          {cells.map(d => {
-            const dk = _calKey(d);
-            const inMonth = d.getMonth() === cmo;
-            const ok = inMonth && dk >= AUDIT_RANGE_START && dk <= todayKey;
-            const inRange = dk >= rf && dk <= rt;
-            const isStart = dk === rf, isEnd = dk === rt;
-            const n = inRange && vst.status === "ok" ? dayN[dk] : null;
-            return (
-              <div key={dk} onClick={ok ? () => pick(dk) : undefined} style={{
-                aspectRatio:"1", borderRadius:8, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:1,
-                border: isStart || isEnd ? `1.5px solid ${AC}` : "1.5px solid transparent",
-                background: isStart ? "rgba(34,211,238,.35)" : inRange ? "rgba(34,211,238,.13)" : "transparent",
-                opacity: !inMonth ? .2 : ok ? 1 : .3, cursor: ok ? "pointer" : "default"
-              }}>
-                <span style={{ fontSize:12, fontWeight: isStart || dk === todayKey ? 800 : 600, color: dk === todayKey ? AC : "#e2e8f0" }}>{d.getDate()}</span>
-                {n ? <span style={{ fontSize:9, fontWeight:800, color:"#bae6fd", lineHeight:1 }}>{_calUnits(n)}</span> : null}
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ fontSize:11, fontWeight: picking ? 800 : 600, color: picking ? AC : "#64748b", padding:"6px 4px 8px", lineHeight:1.4 }}>
-          {picking ? `Now tap the last day. Until you do, the range runs to ${rt === todayKey ? "today" : _auditDay(rt)}.` : "Tap the first day, then the last day. Numbers = changes that day."}
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, padding:"0 2px" }}>
-          <label style={{ fontSize:10, fontWeight:800, color:"#94a3b8", textTransform:"uppercase", letterSpacing:".04em" }}>From
-            <input type="date" value={rf} min={AUDIT_RANGE_START} max={rt} onChange={ev => ev.target.value && set({ rangeFrom:ev.target.value, cal:null, pick:null })} style={{ ...dateInput, marginTop:4 }} />
-          </label>
-          <label style={{ fontSize:10, fontWeight:800, color:"#94a3b8", textTransform:"uppercase", letterSpacing:".04em" }}>To
-            <input type="date" value={rt} min={rf} max={todayKey} onChange={ev => set({ rangeTo:ev.target.value && ev.target.value < todayKey ? ev.target.value : null, pick:null })} style={{ ...dateInput, marginTop:4 }} />
-          </label>
-        </div>
-        <div style={{ display:"flex", gap:6, flexWrap:"wrap", padding:"10px 2px 2px" }}>
+      <div style={{ ...card, padding:10, marginBottom:12 }}>
+        {/* quick picks */}
+        <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:10 }}>
           {quick.map(([label, fk]) => {
-            const on = rf === fk && rt === todayKey;
+            const on = from === fk && to === todayKey;
             return (
               <button key={label} onClick={() => set({ rangeFrom:fk, rangeTo:null, cal:null, pick:null })} style={{
-                padding:"6px 11px", borderRadius:99, fontSize:12, fontWeight:800, cursor:"pointer",
+                flex:"1 1 auto", padding:"7px 8px", borderRadius:99, fontSize:12, fontWeight:800, cursor:"pointer", whiteSpace:"nowrap",
                 border: on ? `1.5px solid ${AC}` : "1.5px solid rgba(255,255,255,.12)", background: on ? "rgba(34,211,238,.18)" : "transparent", color: on ? AC : "#cbd5e1"
               }}>{label}</button>
             );
           })}
         </div>
+        {/* the month */}
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 0 6px" }}>
+          <button onClick={() => canCalPrev && goCal(-1)} style={{ ...navBtn(canCalPrev), width:34, height:34, fontSize:18 }} aria-label="Previous month">‹</button>
+          <span style={{ fontSize:14, fontWeight:800, color:"#e2e8f0" }}>{cm.toLocaleDateString("en-US", { month:"long", year:"numeric" })}</span>
+          <button onClick={() => canCalNext && goCal(1)} style={{ ...navBtn(canCalNext), width:34, height:34, fontSize:18 }} aria-label="Next month">›</button>
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(7, minmax(0, 1fr))", gap:2 }}>
+          {["S","M","T","W","T","F","S"].map((w, i) => <div key={i} style={{ textAlign:"center", fontSize:10, fontWeight:700, color:"#64748b", padding:"4px 0" }}>{w}</div>)}
+          {cells.map(d => {
+            const dk = _calKey(d);
+            const inMonth = d.getMonth() === cmo;
+            const ok = inMonth && dk >= AUDIT_RANGE_START && dk <= todayKey;
+            const inRange = dk >= from && dk <= to;
+            const isEdge = dk === from || dk === to;
+            const n = inRange && vst.status === "ok" && perDay[dk] ? perDay[dk].n : null;
+            return (
+              <div key={dk} onClick={ok ? () => pick(dk) : undefined} style={{
+                aspectRatio:"1", borderRadius:8, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:1,
+                border: isEdge && inMonth ? `1.5px solid ${AC}` : "1.5px solid transparent",
+                background: isEdge && inMonth ? "rgba(34,211,238,.32)" : inRange && inMonth ? "rgba(34,211,238,.13)" : "transparent",
+                opacity: !inMonth ? .2 : ok ? 1 : .3, cursor: ok ? "pointer" : "default"
+              }}>
+                <span style={{ fontSize:12, fontWeight: isEdge || dk === todayKey ? 800 : 600, color: dk === todayKey ? AC : "#e2e8f0" }}>{d.getDate()}</span>
+                {n ? <span style={{ fontSize:9, fontWeight:800, color:"#bae6fd", lineHeight:1 }}>{_calUnits(n)}</span> : null}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ fontSize:11, fontWeight: picking ? 800 : 600, color: picking ? AC : "#64748b", padding:"8px 2px 6px", lineHeight:1.4 }}>
+          {picking ? `Now tap the last day. Until you do, the range runs to ${to === todayKey ? "today" : _auditDay(to)}.` : "Tap the first day, then the last day. Numbers = changes that day."}
+        </div>
+        {/* exact dates, one per row so they always fit */}
+        {dateRow("From", from, AUDIT_RANGE_START, to, v => v && set({ rangeFrom:v, cal:null, pick:null }))}
+        {dateRow("To", to, from, todayKey, v => set({ rangeTo:v && v < todayKey ? v : null, pick:null }))}
       </div>
     );
   };
@@ -6375,13 +6213,14 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
     );
   };
 
-  // ── Changes segment ──
+  // ── Changes segment: the range only ──
   const renderChanges = () => {
-    const title = isRange ? `${_auditDay(rf, { month:"short", day:"numeric", year:"numeric" })} to ${rt === todayKey ? "today" : _auditDay(rt, { month:"short", day:"numeric", year:"numeric" })}`
-      : mode === "month" ? anchor.toLocaleDateString("en-US", { month:"long", year:"numeric" })
-      : mode === "week" ? `Week of ${weekStart.toLocaleDateString("en-US", { month:"short", day:"numeric" })}`
-      : anchor.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric", year:"numeric" });
-    const isLive = isRange ? rt >= todayKey : to >= todayKey && (mode !== "day" || anchorKey === todayKey);
+    const oneDay = from === to;
+    const year = { month:"short", day:"numeric", year:"numeric" };
+    const title = oneDay
+      ? `${_auditDay(from, { weekday:"short", ...year })}${from === todayKey ? " (today)" : ""}`
+      : `${_auditDay(from, year)} to ${to === todayKey ? "today" : _auditDay(to, year)}`;
+    const isLive = to >= todayKey;
     const tileFor = kd => {
       const t = tiles.t[kd.k];
       const on = kind === kd.k;
@@ -6391,84 +6230,34 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
         : "";
       return (
         <button key={kd.k} onClick={() => set({ kind: on ? "" : kd.k })} disabled={!t.n && !on} style={{
-          textAlign:"left", padding:"9px 10px", borderRadius:12, cursor: t.n || on ? "pointer" : "default",
+          textAlign:"left", padding:"9px 10px", borderRadius:12, cursor: t.n || on ? "pointer" : "default", minWidth:0,
           border: on ? `1.5px solid ${kd.color}` : "1.5px solid rgba(255,255,255,.07)",
           background: on ? `${kd.color}22` : "rgba(255,255,255,.04)", opacity: t.n || on ? 1 : .45
         }}>
-          <div style={{ fontSize:10, fontWeight:700, color:"#94a3b8", whiteSpace:"nowrap" }}>{kd.icon} {kd.label}</div>
+          <div style={{ fontSize:10, fontWeight:700, color:"#94a3b8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{kd.icon} {kd.label}</div>
           <div style={{ fontSize:19, fontWeight:800, color: t.n ? kd.color : "#475569", lineHeight:1.2 }}>{t.n.toLocaleString()}</div>
-          <div style={{ fontSize:10, fontWeight:700, color:"#64748b", minHeight:13 }}>{unitsLine}</div>
+          <div style={{ fontSize:10, fontWeight:700, color:"#64748b", minHeight:13, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{unitsLine}</div>
         </button>
       );
     };
     const srcTracker = ((data && data.days) || []).some(d => (d.src || [])[1] === "tracker" && d.n > 0);
     const hasAny = allEvents.length > 0;
-    // What the numbers cover, said plainly (David, Nov 9 2026: "if i select a date, its showing me
-    // the changes from that day to today?? Can it say that somewhere"). A day is only that day.
+    const skipped = oneDay && data && data.days && data.days[0] && data.days[0].skipped;
     const dayName = iso => _auditDay(iso, { weekday:"short", month:"short", day:"numeric" });
-    const prevDayKey = _calKey(new Date(y, m, d0 - 1));
-    const baseKey = dayInfo[anchorKey] && dayInfo[anchorKey].base;
-    const soFar = to >= todayKey;
-    const monthName = anchor.toLocaleDateString("en-US", { month:"long" });
-    const weekName = weekStart.toLocaleDateString("en-US", { month:"short", day:"numeric" });
-    let gapNote = "";
-    if (mode === "day" && baseKey && baseKey < prevDayKey) {
-      const gap = [];
-      for (let g = _auditIsoDate(baseKey); _calKey(g) < prevDayKey; ) {
-        g = new Date(g.getFullYear(), g.getMonth(), g.getDate() + 1);
-        gap.push(_calKey(g));
-      }
-      gapNote = gap.length === 1
-        ? ` ${dayName(gap[0])} has no usable copy of the ledger, so its changes are counted here too.`
-        : ` The ${gap.length} days before it have no usable copy of the ledger, so their changes are counted here too.`;
-    }
     const strong = t => <strong style={{ color:"#e2e8f0" }}>{t}</strong>;
-    const explain = mode === "day"
-      ? (anchorKey === todayKey
-        ? <>Only what changed {strong("today so far")}. The ledger right now is compared with the ledger at the end of {baseKey ? dayName(baseKey) : "yesterday"}. It refreshes every 10 minutes.</>
-        : <>Only what changed {strong(`on ${dayName(anchorKey)}`)}. The ledger at the end of that day is compared with the end of {dayName(baseKey || prevDayKey)}. It is not the change from that day until today.{gapNote}
-          {" "}<button onClick={() => set({ mode:"range", rangeFrom:anchorKey, rangeTo:null, cal:null, pick:null })} style={{ display:"inline", padding:0, border:"none", background:"transparent", color:AC, fontSize:12, fontWeight:800, cursor:"pointer", textDecoration:"underline", textUnderlineOffset:3 }}>See everything from {dayName(anchorKey)} until today ›</button></>)
-      : rangeEvery
-        ? <>Every change made {strong(`from the start of ${dayName(rf)}`)} {strong(rt === todayKey ? "until now" : `until the end of ${dayName(rt)}`)}, each shown on the day it was made. Switch to Start vs end to compare the ledger on the first day with the last.</>
-      : isRange
-        ? <>Everything that changed {strong(`from the start of ${dayName(rf)}`)} {strong(rt === todayKey ? "until now" : `until the end of ${dayName(rt)}`)}. Each line shows how it was then and how it is {rt === todayKey ? "now" : "at the end"}, and how many times it changed in between. Open a PO to see every dated step. Lines that changed in between but ended where they started are listed too.</>
-      : mode === "week"
-        ? <>Every change made {strong(`in the week of ${weekName}${soFar ? " so far" : ""}`)} (Sunday to Saturday), each shown on the day it was made. Tap a day above to see that day alone.</>
-        : <>Every change made {strong(`in ${monthName}${soFar ? " so far" : ""}`)}, each shown on the day it was made. Tap a day on the calendar to see that day alone.</>;
-    const periodLabel = isRange ? `${_auditDay(rf)} to ${rt === todayKey ? "today" : _auditDay(rt)}`
-      : mode === "day" ? (anchorKey === todayKey ? "Today so far" : dayName(anchorKey))
-      : mode === "week" ? (soFar ? "This week so far" : `Week of ${weekName}`)
-      : (soFar ? `${monthName} so far` : monthName);
-    const shown = (dayGroups ? dayGroups.reduce((s, dg) => s + dg.groups.length, 0) : groups.length);
+    const explain = oneDay
+      ? (from === todayKey
+        ? <>Every change made on the Style Ledger {strong("today so far")}, against the ledger at the end of yesterday. It refreshes every 10 minutes.</>
+        : <>Every change made on the Style Ledger {strong(`on ${dayName(from)}`)}.</>)
+      : <>Every change made on the Style Ledger {strong(`from the start of ${dayName(from)}`)} {strong(to === todayKey ? "until now" : `until the end of ${dayName(to)}`)}, each shown on the day it was made.</>;
+    const periodLabel = oneDay ? (from === todayKey ? "Today so far" : dayName(from)) : `${_auditDay(from)} to ${to === todayKey ? "today" : _auditDay(to)}`;
+    const shown = (dayGroups ? dayGroups.reduce((sm, dg) => sm + dg.groups.length, 0) : groups.length);
     let budget = limit;
     return (
       <div>
-        {/* Period, arrows, Today */}
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom:10 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:6, minWidth:0 }}>
-            {!isRange && <button onClick={() => canPrev && go(-1)} style={navBtn(canPrev)} aria-label="Previous">‹</button>}
-            <span style={{ fontSize:15, fontWeight:800, color:"#f1f5f9", minWidth:140, textAlign:"center" }}>{title}</span>
-            {!isRange && <button onClick={() => canNext && go(1)} style={navBtn(canNext)} aria-label="Next">›</button>}
-          </div>
-          <button onClick={() => set(isRange ? { rangeTo:null, cal:null, pick:null } : { anchor:null })} style={{ padding:"7px 12px", borderRadius:9, border:"1px solid rgba(34,211,238,.4)", background:"rgba(34,211,238,.1)", color:AC, fontSize:12, fontWeight:800, cursor:"pointer" }}>Today</button>
-        </div>
+        <div style={{ fontSize:16, fontWeight:800, color:"#f1f5f9", margin:"0 2px 10px" }}>{title}</div>
 
-        {/* Day / Week / Month */}
-        <div style={{ display:"flex", gap:3, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", padding:3, borderRadius:10, marginBottom:10 }}>
-          {[["day", "Day"], ["week", "Week"], ["month", "Month"], ["range", "Range"]].map(([k, label]) => (
-            <button key={k} onClick={() => set({ mode:k, pick:null })} style={{ flex:1, padding:"7px 0", borderRadius:8, border:"none", fontSize:12, fontWeight:700, cursor:"pointer", background: mode === k ? "#0891b2" : "transparent", color: mode === k ? "#fff" : "#94a3b8" }}>{label}</button>
-          ))}
-        </div>
-
-        {isRange && (
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:3, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", padding:3, borderRadius:10, marginBottom:10 }}>
-            {[["every", "Every change"], ["net", "Start vs end"]].map(([k, label]) => {
-              const on = (value.rv === "net" ? "net" : "every") === k;
-              return <button key={k} onClick={() => set({ rv:k })} style={{ padding:"7px 0", borderRadius:8, border:"none", fontSize:12, fontWeight:800, cursor:"pointer", background: on ? "rgba(34,211,238,.2)" : "transparent", color: on ? AC : "#94a3b8" }}>{label}</button>;
-            })}
-          </div>
-        )}
-        {isRange ? renderRange() : mode === "month" ? renderMonth() : renderStrip()}
+        {renderCalendar()}
 
         {/* What this covers */}
         <div style={{ display:"flex", gap:8, alignItems:"flex-start", fontSize:12, color:"#94a3b8", lineHeight:1.45, margin:"-2px 0 12px", padding:"9px 11px", borderRadius:10, background:"rgba(34,211,238,.07)", border:"1px solid rgba(34,211,238,.18)" }}>
@@ -6477,12 +6266,12 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
         </div>
 
         {/* Factory + search */}
-        <select value={factory} onChange={ev => set({ factory:ev.target.value })} style={{ width:"100%", padding:"10px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:13, fontWeight:600, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none", cursor:"pointer", colorScheme:"dark", marginBottom:8 }}>
-          <option value="">🏭 All factories{hasAny ? ` · ${scopeEvents.length.toLocaleString()} ${rangeNet ? "lines" : "changes"}` : ""}</option>
-          {factoryList.map(f => <option key={f} value={f}>{f === "-" ? "No factory code" : `${factoryName(f)} (${f})`} · {(factoryCounts[f] || 0).toLocaleString()} {rangeNet ? `line${factoryCounts[f] === 1 ? "" : "s"}` : `change${factoryCounts[f] === 1 ? "" : "s"}`}</option>)}
+        <select value={factory} onChange={ev => set({ factory:ev.target.value })} style={{ width:"100%", boxSizing:"border-box", padding:"10px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:13, fontWeight:600, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none", cursor:"pointer", colorScheme:"dark", marginBottom:8 }}>
+          <option value="">🏭 All factories{hasAny ? ` · ${scopeEvents.length.toLocaleString()} changes` : ""}</option>
+          {factoryList.map(f => <option key={f} value={f}>{f === "-" ? "No factory code" : `${factoryName(f)} (${f})`} · {(factoryCounts[f] || 0).toLocaleString()} change{factoryCounts[f] === 1 ? "" : "s"}</option>)}
         </select>
         <div style={{ position:"relative", marginBottom:12 }}>
-          <input value={value.q} onChange={ev => set({ q:ev.target.value })} placeholder="🔍 Search PO #, style or PO name" style={{ width:"100%", boxSizing:"border-box", padding:"11px 36px 11px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:14, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none" }} />
+          <input value={value.q} onChange={ev => set({ q:ev.target.value })} placeholder="🔍 Search PO #, style or PO name" style={{ width:"100%", boxSizing:"border-box", padding:"11px 36px 11px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:16, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none" }} />
           {value.q && <button onClick={() => set({ q:"" })} style={{ position:"absolute", right:6, top:"50%", transform:"translateY(-50%)", width:28, height:28, borderRadius:8, border:"none", background:"rgba(255,255,255,.1)", color:"#e2e8f0", cursor:"pointer" }} aria-label="Clear search">✕</button>}
         </div>
 
@@ -6508,21 +6297,11 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
                 </button>
               )}
             </div>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:6, marginBottom:12 }}>
-              {AUDIT_KINDS.filter(k => k.k !== "back").map(tileFor)}
-              {rangeNet && tiles.t.back.n > 0 && (() => {
-                const on = kind === "back";
-                return (
-                  <button onClick={() => set({ kind: on ? "" : "back" })} style={{
-                    gridColumn:"1 / -1", textAlign:"left", padding:"8px 10px", borderRadius:12, cursor:"pointer",
-                    border: on ? "1.5px solid #a5b4fc" : "1.5px solid rgba(255,255,255,.07)", background: on ? "rgba(165,180,252,.15)" : "rgba(255,255,255,.04)",
-                    fontSize:12, fontWeight:700, color:"#cbd5e1"
-                  }}>↩️ <strong style={{ color:"#a5b4fc", fontSize:14 }}>{tiles.t.back.n.toLocaleString()}</strong> lines changed in between but ended where they started</button>
-                );
-              })()}
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3, minmax(0, 1fr))", gap:6, marginBottom:12 }}>
+              {AUDIT_KINDS.map(tileFor)}
             </div>
 
-            {mode !== "day" && !rangeNet && listEvents.length > 0 && (
+            {!oneDay && listEvents.length > 0 && (
               <div style={{ display:"flex", gap:3, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", padding:3, borderRadius:10, marginBottom:10 }}>
                 {[["po", "By production PO"], ["day", "By day"]].map(([k, label]) => (
                   <button key={k} onClick={() => set({ group:k })} style={{ flex:1, padding:"6px 0", borderRadius:8, border:"none", fontSize:12, fontWeight:700, cursor:"pointer", background: group === k ? "rgba(34,211,238,.2)" : "transparent", color: group === k ? AC : "#94a3b8" }}>{label}</button>
@@ -6541,23 +6320,19 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
               <div style={{ ...card, padding:"30px 16px", textAlign:"center" }}>
                 <div style={{ fontSize:30, marginBottom:6 }}>✅</div>
                 <div style={{ fontSize:14, fontWeight:700, color:"#94a3b8" }}>
-                  {hasAny ? "Nothing matches these filters" : isRange ? "Nothing changed on the Style Ledger in this range" : mode === "day" ? "No changes on the Style Ledger this day" : `No changes on the Style Ledger this ${mode}`}
+                  {hasAny ? "Nothing matches these filters" : oneDay ? "Nothing changed on the Style Ledger this day" : "Nothing changed on the Style Ledger in this range"}
                 </div>
-                <div style={{ fontSize:12, color:"#64748b", marginTop:4, lineHeight:1.5 }}>
-                  {mode === "day" && dayInfo[anchorKey] && dayInfo[anchorKey].skipped
-                    ? `This day is left out of the history: ${dayInfo[anchorKey].skipped}. The next day is compared with the day before it.`
-                    : mode === "day" && dayInfo[anchorKey] && dayInfo[anchorKey].missing ? "There is no copy of the ledger for this day." : ""}
-                </div>
+                {skipped && <div style={{ fontSize:12, color:"#64748b", marginTop:4, lineHeight:1.5 }}>{`This day is left out of the history: ${skipped}.`}</div>}
               </div>
-            ) : dayGroups ? (
+            ) : (dayGroups && !oneDay) ? (
               dayGroups.map(dg => {
                 if (budget <= 0) return null;
                 const gs = dg.groups.slice(0, budget);
                 budget -= gs.length;
                 return (
                   <div key={dg.d} style={{ marginBottom:14 }}>
-                    <div onClick={() => openDay(dg.d)} style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", margin:"0 2px 6px", cursor:"pointer" }}>
-                      <span style={{ fontSize:13, fontWeight:800, color:"#f1f5f9" }}>{_auditDay(dg.d, { weekday:"long", month:"short", day:"numeric" })} ›</span>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", margin:"0 2px 6px" }}>
+                      <span style={{ fontSize:13, fontWeight:800, color:"#f1f5f9" }}>{_auditDay(dg.d, { weekday:"long", month:"short", day:"numeric" })}</span>
                       <span style={{ fontSize:11, fontWeight:700, color:"#94a3b8" }}>{dg.n} change{dg.n === 1 ? "" : "s"} · <span style={{ color:unitsColor(dg.net) }}>{_auditSigned(dg.net)}</span></span>
                     </div>
                     <div style={{ display:"flex", flexDirection:"column", gap:8 }}>{gs.map(g => renderPoCard(g, dg.d))}</div>
@@ -6566,7 +6341,7 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
               })
             ) : (
               <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                {groups.slice(0, limit).map(g => renderPoCard(g, `${from}|${to}|${mode === "day" ? anchorKey : ""}`))}
+                {groups.slice(0, limit).map(g => renderPoCard(g, `${from}|${to}`))}
               </div>
             )}
             {shown > limit && (
@@ -6576,9 +6351,8 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
             )}
 
             <p style={{ fontSize:11, color:"#64748b", marginTop:12, lineHeight:1.5 }}>
-              Each change compares the Style Ledger at the end of a day with the day before (today: with the ledger now, checked every 10 minutes). Lines are per production PO and style. History starts {_auditDay(AUDIT_HISTORY_START, { month:"short", day:"numeric", year:"numeric" })}.
+              Each change compares the Style Ledger at the end of a day with the day before (today: with the ledger now, checked every 10 minutes). Lines are per production PO and style. History starts {_auditDay(AUDIT_RANGE_START, { month:"short", day:"numeric", year:"numeric" })}.
               {srcTracker ? ` Before ${data && data.own_since ? _auditDay(data.own_since, { month:"short", day:"numeric", year:"numeric" }) : "Nov 9, 2026"} the history compares units, ex-factory dates and brands; PO name, shipment #, port date and warehouse changes show from then on.` : ""}
-              {rangeNet && data && data.base_src === "tracker" ? ` This range starts before ${data.own_since ? _auditDay(data.own_since, { month:"short", day:"numeric", year:"numeric" }) : "Nov 9, 2026"}, so "then and now" compares units and ex-factory dates. PO name, shipment #, port date and warehouse changes show in the dated steps from then on.` : ""}
             </p>
           </>
         )}
