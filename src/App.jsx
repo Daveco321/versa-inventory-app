@@ -6003,8 +6003,9 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
             </div>
             {(first || (now && now.n > 0)) && (
               <div style={{ fontSize:11, color:"#64748b", marginTop:4 }}>
-                {first && last ? <>PO total {first.u0.toLocaleString()} → {last.u1.toLocaleString()}</> : null}
-                {now && now.n > 0 && days[days.length - 1] !== todayKey ? <>{first ? " · " : ""}on the ledger now {now.u.toLocaleString()}</> : null}
+                {first && last ? <>PO total {first.u0.toLocaleString()} → {last.u1.toLocaleString()}{mode === "day" || group === "day" ? " that day"
+                  : days.length > 1 ? ` (${_auditDay(days[0])} to ${_auditDay(days[days.length - 1])})` : ` (${_auditDay(days[0])})`}</> : null}
+                {now && now.n > 0 && days[days.length - 1] !== todayKey ? <>{first ? " · " : ""}on the ledger today {now.u.toLocaleString()}</> : null}
               </div>
             )}
             {pc.length > 0 && (
@@ -6241,6 +6242,36 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
     };
     const srcTracker = ((data && data.days) || []).some(d => (d.src || [])[1] === "tracker" && d.n > 0);
     const hasAny = allEvents.length > 0;
+    // What the numbers cover, said plainly (David, Nov 9 2026: "if i select a date, its showing me
+    // the changes from that day to today?? Can it say that somewhere"). A day is only that day.
+    const dayName = iso => _auditDay(iso, { weekday:"short", month:"short", day:"numeric" });
+    const prevDayKey = _calKey(new Date(y, m, d0 - 1));
+    const baseKey = dayInfo[anchorKey] && dayInfo[anchorKey].base;
+    const soFar = to >= todayKey;
+    const monthName = anchor.toLocaleDateString("en-US", { month:"long" });
+    const weekName = weekStart.toLocaleDateString("en-US", { month:"short", day:"numeric" });
+    let gapNote = "";
+    if (mode === "day" && baseKey && baseKey < prevDayKey) {
+      const gap = [];
+      for (let g = _auditIsoDate(baseKey); _calKey(g) < prevDayKey; ) {
+        g = new Date(g.getFullYear(), g.getMonth(), g.getDate() + 1);
+        gap.push(_calKey(g));
+      }
+      gapNote = gap.length === 1
+        ? ` ${dayName(gap[0])} has no usable copy of the ledger, so its changes are counted here too.`
+        : ` The ${gap.length} days before it have no usable copy of the ledger, so their changes are counted here too.`;
+    }
+    const strong = t => <strong style={{ color:"#e2e8f0" }}>{t}</strong>;
+    const explain = mode === "day"
+      ? (anchorKey === todayKey
+        ? <>Only what changed {strong("today so far")}. The ledger right now is compared with the ledger at the end of {baseKey ? dayName(baseKey) : "yesterday"}. It refreshes every 10 minutes.</>
+        : <>Only what changed {strong(`on ${dayName(anchorKey)}`)}. The ledger at the end of that day is compared with the end of {dayName(baseKey || prevDayKey)}. It is not the change from that day until today.{gapNote}</>)
+      : mode === "week"
+        ? <>Every change made {strong(`in the week of ${weekName}${soFar ? " so far" : ""}`)} (Sunday to Saturday), each shown on the day it was made. Tap a day above to see that day alone.</>
+        : <>Every change made {strong(`in ${monthName}${soFar ? " so far" : ""}`)}, each shown on the day it was made. Tap a day on the calendar to see that day alone.</>;
+    const periodLabel = mode === "day" ? (anchorKey === todayKey ? "Today so far" : dayName(anchorKey))
+      : mode === "week" ? (soFar ? "This week so far" : `Week of ${weekName}`)
+      : (soFar ? `${monthName} so far` : monthName);
     const shown = (dayGroups ? dayGroups.reduce((s, dg) => s + dg.groups.length, 0) : groups.length);
     let budget = limit;
     return (
@@ -6263,6 +6294,12 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
         </div>
 
         {mode === "month" ? renderMonth() : renderStrip()}
+
+        {/* What this covers */}
+        <div style={{ display:"flex", gap:8, alignItems:"flex-start", fontSize:12, color:"#94a3b8", lineHeight:1.45, margin:"-2px 0 12px", padding:"9px 11px", borderRadius:10, background:"rgba(34,211,238,.07)", border:"1px solid rgba(34,211,238,.18)" }}>
+          <span style={{ fontSize:13, lineHeight:1.3 }}>ℹ️</span>
+          <span>{explain}</span>
+        </div>
 
         {/* Factory + search */}
         <select value={factory} onChange={ev => set({ factory:ev.target.value })} style={{ width:"100%", padding:"10px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:13, fontWeight:600, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none", cursor:"pointer", colorScheme:"dark", marginBottom:8 }}>
@@ -6287,7 +6324,7 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
             {/* Totals + tiles */}
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:8, flexWrap:"wrap", margin:"0 2px 8px" }}>
               <span style={{ fontSize:12, fontWeight:700, color:"#94a3b8" }}>
-                <strong style={{ color:unitsColor(tiles.net), fontSize:15 }}>{_auditSigned(tiles.net)}</strong> units net · {tiles.pos.toLocaleString()} PO{tiles.pos === 1 ? "" : "s"}
+                {periodLabel}: <strong style={{ color:unitsColor(tiles.net), fontSize:15 }}>{_auditSigned(tiles.net)}</strong> units net · {tiles.pos.toLocaleString()} PO{tiles.pos === 1 ? "" : "s"}
                 {tiles.newPos ? ` · ${tiles.newPos} new` : ""}
               </span>
               {isLive && (
