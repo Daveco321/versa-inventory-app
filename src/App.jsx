@@ -6006,6 +6006,27 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
                       {sl.net !== 0 && <span style={{ fontSize:13, fontWeight:800, color:unitsColor(sl.net), flexShrink:0 }}>{_auditSigned(sl.net)}</span>}
                     </div>
                     {sl.b && <div style={{ fontSize:10, color:"#64748b" }}>{sl.b}</div>}
+                    {group !== "day" && data && data.edges && data.edges[`${g.p}::${sl.s}`] && (() => {
+                      // How the line stood at the start of the range and how it stands now (David, Nov 9 2026:
+                      // "show the original quantity from the beginning of my range ... and the original ex
+                      // factory (or the most current if it wasnt changed)").
+                      const [u0, e0, u1, e1] = data.edges[`${g.p}::${sl.s}`];
+                      const etdText = e => (e && e.length ? _auditEtd(e) : "not set");
+                      const sameEtd = JSON.stringify(e0 || []) === JSON.stringify(e1 || []);
+                      const unchanged = u0 != null && u1 != null && u0 === u1 && sameEtd;
+                      const lbl = { fontWeight:800, color:"#64748b", textTransform:"uppercase", fontSize:10, whiteSpace:"nowrap", alignSelf:"center" };
+                      const val = { color:"#e2e8f0", fontWeight:800 };
+                      return (
+                        <div style={{ marginTop:6, padding:"6px 8px", borderRadius:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.07)", display:"grid", gridTemplateColumns:"auto minmax(0, 1fr)", columnGap:10, rowGap:3, fontSize:11, color:"#94a3b8", lineHeight:1.35 }}>
+                          <span style={lbl}>Start {_auditDay(from)}</span>
+                          <span>{u0 == null ? "not on the ledger yet" : <><span style={val}>{u0.toLocaleString()}</span> units · ex-factory <span style={val}>{etdText(e0)}</span></>}</span>
+                          <span style={lbl}>{to === todayKey ? "Now" : `End ${_auditDay(to)}`}</span>
+                          <span>{unchanged ? "same as the start"
+                            : u1 == null ? <span style={{ color:"#f87171", fontWeight:700 }}>off the ledger</span>
+                            : <><span style={{ ...val, color: u0 != null && u1 !== u0 ? unitsColor(u1 - u0) : "#e2e8f0" }}>{u1.toLocaleString()}</span> units · ex-factory <span style={{ ...val, color: u0 != null && !sameEtd ? "#fbbf24" : "#e2e8f0" }}>{etdText(e1)}</span>{u0 != null && sameEtd ? " (unchanged)" : ""}</>}</span>
+                        </div>
+                      );
+                    })()}
                     {sl.evs.map((e, ei) => <div key={ei}>{renderChange(e, sl.evs.length > 1 || multiDay)}</div>)}
                   </div>
                 </div>
