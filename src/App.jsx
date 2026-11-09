@@ -6750,6 +6750,462 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// INVENTORY AGING TAB (David, Nov 9 2026): "on the main inventory platform we have an aging
+// inventory report tool under analytics, can you please add that as a 6th button on the bottom
+// of the mobile app ... all i need to see is to be able to filter by brand, and then be able to
+// click on the different ranges and then scroll down to see the SKUs and the info on them ...
+// show the image, brand, on hand, units age within the time frame select (or multiple time frames
+// if none selected), oldest lot date, free now (ATS), and sold last 12m".
+// A phone port of the desktop's Inventory Aging (index.html _ag*) with its default method, "By
+// lot": every JTW / TR / DCW lot from /api/inventory-aging is aged by its own receive date
+// (365-day years), and the list has one row per base style (sizes roll up, as on the desktop).
+// Free now (ATS) = the base style's warehouse units available to sell now, smart routed (whAts
+// in the same payload). Sold last 12m = /api/inventory-aging/sold: units invoiced net of
+// returns over the 12 full months before today, per sales key (an aging base finds its key the
+// desktop's way, _agSalesKey). Admins only, like the desktop's money columns.
+// ─────────────────────────────────────────────────────────────────────────────
+const AGING_BUCKETS = [
+  { label:"Under 1 month", short:"Under 1 mo", min:0 },
+  { label:"1 to 3 months", short:"1-3 mo", min:30 },
+  { label:"3 to 6 months", short:"3-6 mo", min:90 },
+  { label:"6 to 12 months", short:"6-12 mo", min:180 },
+  { label:"1 to 2 years", short:"1-2 yrs", min:365 },
+  { label:"2 to 3 years", short:"2-3 yrs", min:730 },
+  { label:"3 years or more", short:"3+ yrs", min:1095 },
+];
+// newer = greys and greens, older = ambers and reds (the desktop's colours, a little lighter
+// where text sits on the dark background)
+const AGING_COLORS = ["#94a3b8", "#86efac", "#22c55e", "#fbbf24", "#f97316", "#ef4444", "#b91c1c"];
+const AGING_TEXT = ["#cbd5e1", "#86efac", "#4ade80", "#fbbf24", "#fb923c", "#f87171", "#fca5a5"];
+const AGING_BRAND_ALIAS = { NM:"NICOLE", KLP:"KL" };   // ATS brand names that are not brand keys
+const AGING_PHOTO_STYLE_RE = /^[A-Z0-9]{2}[A-Z]{4}[A-Z0-9]{3}[A-Z]{2,4}/;
+const AGING_SALES_MODERN_RE = /^[A-Z]{6}\d{3}[A-Z]{2,3}$/;
+const AGING_SALES_SIZE_SEG_RE = /^(\d{1,2}(\.\d)?|\d{2}\/\d{2}|XS|S|M|L|XL|XXL|XXXL|[2-4]XL|LT|XLT|[2-3]XLT)$/;
+const AGING_FLAG_NOTE = {
+  restored: "Date restored from before the 3/18/2026 JTW count",
+  count_date: "Dated by the 3/18/2026 physical count, so probably older",
+  bad_date_fixed: "The file had an impossible date, so another lot's date is used",
+  bad_date: "The file had an impossible date, so this lot is undated",
+  reset: "Dated by a transfer, recount or return, so probably older",
+};
+const AGING_SORTS = [
+  { k:"units", label:"Most units" },
+  { k:"oldest", label:"Oldest lot first" },
+  { k:"free", label:"Most free now (ATS)" },
+  { k:"sold", label:"Most sold last 12m", sold:true },
+  { k:"unsold", label:"Least sold last 12m", sold:true },
+];
+const EMPTY_AGING_VIEW = { brand:"", bucket:-1, sort:"units", open:"" };
+const AGING_FRESH_MS = 10 * 60 * 1000;
+let _agingCache = null;       // { at, idx }: the aging payload as lookups
+let _agingSoldCache = null;   // { at, data } or { at, ttl, denied, err }
+
+const _agingHas = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+function _agingDayNum(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
+  return m ? Math.round(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000) : null;
+}
+function _agingFmtDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
+  return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric", timeZone:"UTC" }) : "";
+}
+function _agingFmtMonth(ym) {
+  const m = /^(\d{4})-(\d{2})/.exec(String(ym || ""));
+  return m ? new Date(Date.UTC(+m[1], +m[2] - 1, 1)).toLocaleDateString("en-US", { month:"short", year:"numeric", timeZone:"UTC" }) : "";
+}
+function _agingAge(days) {
+  if (days == null) return "";
+  if (days < 60) return `${days} day${days === 1 ? "" : "s"} old`;
+  const months = Math.floor(days / 30.4375);
+  if (months < 12) return `${months} months old`;
+  const y = Math.floor(months / 12), mo = months % 12;
+  return `${y} year${y === 1 ? "" : "s"}${mo ? ` ${mo} month${mo === 1 ? "" : "s"}` : ""} old`;
+}
+function _agingBrandName(raw) {
+  // the desktop's _agBrandName: ATS brand → platform brand name
+  const b = String(raw || "").toUpperCase().trim();
+  if (!b) return "Other / unknown";
+  const key = AGING_BRAND_ALIAS[b] || b;
+  if (BRAND_MAPPING[key]) return BRAND_MAPPING[key].full_name;
+  const code = SKU_BRAND_CODE_MAP[b];
+  if (code && BRAND_MAPPING[code]) return BRAND_MAPPING[code].full_name;
+  for (const k of Object.keys(BRAND_MAPPING)) {
+    const n = BRAND_MAPPING[k].full_name.toUpperCase();
+    if (n === b || n.replace(/[.'\-]/g, "") === b) return BRAND_MAPPING[k].full_name;
+  }
+  return b;
+}
+function _agingBrandKey(raw, sku) {
+  // the platform brand key, for the photo route (desktop _agBrandKey)
+  const b = String(raw || "").toUpperCase().trim();
+  const key = AGING_BRAND_ALIAS[b] || b;
+  if (BRAND_MAPPING[key]) return key;
+  return SKU_BRAND_CODE_MAP[String(sku || "").toUpperCase().substring(2, 4)] || key;
+}
+function _agingSalesKey(style) {
+  // the key the invoices file a style under (desktop _agSalesKey)
+  const tok = String(style == null ? "" : style).trim().toUpperCase().split(" ")[0];
+  const first = tok.split("-")[0];
+  if (AGING_SALES_MODERN_RE.test(first)) return first;
+  const parts = tok.split("-");
+  while (parts.length > 1 && AGING_SALES_SIZE_SEG_RE.test(parts[parts.length - 1])) parts.pop();
+  return parts.join("-");
+}
+function _agingSoldOf(sold, base) {
+  // { sold, last } for an aging base: the sales key first, then the base as written (desktop _agSalesOf)
+  if (!sold || !sold.sold) return null;
+  let k = _agingSalesKey(base);
+  if (!_agingHas(sold.sold, k) && _agingHas(sold.sold, base)) k = base;
+  return { sold: Number(sold.sold[k]) || 0, last: (sold.last && sold.last[k]) || "" };
+}
+async function _agingGet(url, alive) {
+  // GET with the server's 202 "still building" answered by asking again every 3 s (3 minutes at most)
+  const t0 = Date.now();
+  for (;;) {
+    const r = await fetch(url, { cache:"no-store" });
+    if (r.status === 202) {
+      if (Date.now() - t0 > 180000) throw new Error("The server is still building this. Try again in a few minutes.");
+      await new Promise(res => setTimeout(res, 3000));
+      if (alive && !alive()) { const e = new Error("cancelled"); e.cancelled = true; throw e; }
+      continue;
+    }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(j.error || `The server answered ${r.status}`); e.status = r.status; throw e; }
+    return j;
+  }
+}
+function _agingIndex(d) {
+  // the payload's compact arrays as lookups, once per load (desktop _agBuildIndex)
+  const col = (cols, name) => { const i = (cols || []).indexOf(name); return r => (i >= 0 && r ? r[i] : undefined); };
+  const S = {}, L = {}, B = {};
+  for (const c of ["sku", "base", "brand"]) S[c] = col(d.skuCols, c);
+  for (const c of ["sku", "wh", "units", "date", "flags"]) L[c] = col(d.lotCols, c);
+  for (const c of ["base", "whAts"]) B[c] = col(d.baseCols, c);
+  let today = _agingDayNum(d.today);
+  if (today == null) { const t = new Date(); today = Math.round(Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) / 86400000); }
+  const okDefs = Array.isArray(d.buckets) && d.buckets.length === 7 && d.buckets.every(x => x && typeof x.min === "number");
+  const mins = (okDefs ? d.buckets : AGING_BUCKETS).map(x => x.min);
+  const bucketOf = days => { let i = 0; for (let j = 0; j < mins.length; j++) if (days >= mins[j]) i = j; return i; };
+  const skus = {};
+  const addSku = (sku, base, raw) => (skus[sku] = { sku, base: base || sku, brand: _agingBrandName(raw), brandKey: _agingBrandKey(raw, sku) });
+  for (const r of d.skus || []) {
+    const sku = String(S.sku(r) || "").trim();
+    if (sku && !skus[sku]) addSku(sku, String(S.base(r) || "").trim(), S.brand(r));
+  }
+  const lots = [];
+  for (const r of d.lots || []) {
+    const sku = String(L.sku(r) || "").trim();
+    const units = Number(L.units(r)) || 0;
+    if (!sku || units <= 0) continue;
+    const s = skus[sku] || addSku(sku, sku, "");
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(L.date(r) || ""));
+    const date = m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+    const dn = _agingDayNum(date);
+    const days = dn == null ? null : today - dn;
+    const fl = L.flags(r);
+    // no container or lot text: the TR / DCW rows can carry another lot's (Oct 15 2026 aging audit)
+    lots.push({ s, units, date, days, b: days == null ? -1 : bucketOf(days), wh: String(L.wh(r) || ""),
+                flags: Array.isArray(fl) ? fl.map(String) : [] });
+  }
+  const free = {};
+  for (const r of d.bases || []) {
+    const k = String(B.base(r) || "").trim();
+    const w = B.whAts(r);
+    if (k) free[k] = w == null || w === "" ? null : (Number(w) || 0);
+  }
+  const ex = d.excluded || {};
+  return { today, lots, free, asOf: d.asOf, isAdmin: !!d.isAdmin, undatedLabel: ex.nj != null || ex.abfi != null ? "QA, NJ and ABFI" : "QA" };
+}
+function _agingCompute(X, brand, bucket) {
+  // by-lot aggregation for one brand (or all) and one age range (or all), desktop _agComputeLots
+  const z = () => [0, 0, 0, 0, 0, 0, 0];
+  const A = { tot: z(), dated: 0, wsum: 0, undated: 0, brands: {}, styles: z(), nStyles: 0, rows: [] };
+  const rows = {};
+  for (const L of X.lots) {
+    const s = L.s, u = L.units;
+    if (L.b >= 0) A.brands[s.brand] = (A.brands[s.brand] || 0) + u;
+    if (brand && s.brand !== brand) continue;
+    const r = rows[s.base] || (rows[s.base] = { base: s.base, brand: s.brand, brandKey: s.brandKey, units: z(), on: 0, wsum: 0,
+                                                oldest: null, undated: 0, sel: 0, lots: [], skuSet: {}, nSku: 0 });
+    r.lots.push(L);
+    if (!r.skuSet[s.sku]) { r.skuSet[s.sku] = 1; r.nSku++; }
+    if (L.b < 0) { A.undated += u; r.undated += u; continue; }
+    A.tot[L.b] += u; A.dated += u; A.wsum += L.days * u;
+    r.units[L.b] += u; r.on += u; r.wsum += L.days * u;
+    if (!r.oldest || L.date < r.oldest) r.oldest = L.date;
+    if (bucket < 0 || L.b === bucket) r.sel += u;
+  }
+  const all = Object.values(rows);
+  for (const r of all) {
+    for (let i = 0; i < 7; i++) if (r.units[i] > 0) A.styles[i]++;
+    if (r.on > 0) A.nStyles++;
+  }
+  A.rows = all.filter(r => bucket < 0 || r.sel > 0);
+  for (const r of A.rows) {
+    const on = _agingDayNum(r.oldest);
+    r.oldDays = on == null ? null : X.today - on;
+    r.free = _agingHas(X.free, r.base) ? X.free[r.base] : null;
+  }
+  return A;
+}
+
+function InventoryAgingView({ styleOverrides, value = EMPTY_AGING_VIEW, onChange }) {
+  const set = patch => onChange(v => ({ ...v, ...patch }));
+  const { brand, bucket, sort, open } = value;
+  const AC = "#fb7185";
+  const card = { background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14 };
+  const [tick, setTick] = useState(0);
+  const [limit, setLimit] = useState(30);
+  const [st, setSt] = useState(() => (_agingCache ? { status:"ok", at:_agingCache.at } : { status:"loading" }));
+  const [sold, setSold] = useState(_agingSoldCache);
+
+  // the lots (kept for 10 minutes; the API rebuilds them when the hourly inventory file changes)
+  useEffect(() => {
+    let alive = true;
+    if (_agingCache && Date.now() - _agingCache.at < AGING_FRESH_MS && !tick) { setSt({ status:"ok", at:_agingCache.at }); return; }
+    if (!_agingCache) setSt({ status:"loading" });
+    _agingGet(`${API_URL}/api/inventory-aging`, () => alive)
+      .then(d => {
+        if (!d || !d.ready) throw new Error((d && d.error) || "The aging data came back incomplete.");
+        _agingCache = { at:Date.now(), idx:_agingIndex(d) };
+        if (alive) setSt({ status:"ok", at:_agingCache.at });
+      })
+      .catch(e => {
+        if (!alive || e.cancelled || _agingCache) return;
+        setSt({ status:"error", err: e.status === 401 ? "Your sign-in expired. Close and reopen the app to sign in again." : (e.message || "The aging data did not load.") });
+      });
+    return () => { alive = false; };
+  }, [tick]);
+
+  // units sold in the last 12 months (admins; anyone else gets a 403 and the column stays off)
+  useEffect(() => {
+    let alive = true;
+    const c = _agingSoldCache;
+    if (c && Date.now() - c.at < (c.ttl || AGING_FRESH_MS) && !tick) { setSold(c); return; }
+    _agingGet(`${API_URL}/api/inventory-aging/sold`, () => alive)
+      .then(d => { _agingSoldCache = { at:Date.now(), data:d }; if (alive) setSold(_agingSoldCache); })
+      .catch(e => {
+        if (e.cancelled) return;
+        const denied = e.status === 401 || e.status === 403;
+        if (denied || !(_agingSoldCache && _agingSoldCache.data)) _agingSoldCache = { at:Date.now(), ttl: denied ? AGING_FRESH_MS : 60000, denied, err:e.message };
+        if (alive) setSold(_agingSoldCache);
+      });
+    return () => { alive = false; };
+  }, [tick]);
+
+  useEffect(() => { setLimit(30); }, [brand, bucket, sort]);
+
+  const X = st.status === "ok" && _agingCache ? _agingCache.idx : null;
+  const A = useMemo(() => (X ? _agingCompute(X, brand, bucket) : null), [X, brand, bucket]);
+  const soldData = sold && sold.data ? sold.data : null;
+  const soldOn = !!soldData;
+  const sortKey = AGING_SORTS.some(o => o.k === sort && (!o.sold || soldOn)) ? sort : "units";
+  const rows = useMemo(() => {
+    if (!A) return [];
+    const out = A.rows.map(r => ({ r, s: soldData ? _agingSoldOf(soldData, r.base) : null }));
+    const get = {
+      units: x => (bucket >= 0 ? x.r.sel : x.r.on),
+      oldest: x => (x.r.oldDays == null ? -1 : x.r.oldDays),
+      free: x => (x.r.free == null ? -Infinity : x.r.free),
+      sold: x => (x.s ? x.s.sold : -Infinity),
+      unsold: x => (x.s ? -x.s.sold : -Infinity),
+    }[sortKey];
+    out.sort((a, b) => (get(b) - get(a)) || (b.r.on - a.r.on) || a.r.base.localeCompare(b.r.base));
+    return out;
+  }, [A, soldData, sortKey, bucket]);
+  const brandList = useMemo(() => {
+    if (!A) return [];
+    const list = Object.entries(A.brands).filter(([, u]) => u > 0).sort((a, b) => b[1] - a[1]);
+    if (brand && !list.some(([b]) => b === brand)) list.push([brand, 0]);
+    return list;
+  }, [A, brand]);
+
+  if (st.status === "loading") return <LoadingSpinner text="Reading the warehouse lots..." />;
+  if (st.status === "error" || !A) {
+    return (
+      <div style={{ ...card, padding:"28px 16px", textAlign:"center", maxWidth:720, margin:"0 auto" }}>
+        <div style={{ fontSize:14, fontWeight:700, color:"#fca5a5" }}>{st.err || "The aging data did not load."}</div>
+        <button onClick={() => setTick(t => t + 1)} style={{ marginTop:12, padding:"8px 14px", borderRadius:9, border:"1px solid rgba(255,255,255,.2)", background:"transparent", color:"#e2e8f0", fontWeight:700, cursor:"pointer" }}>Try again</button>
+      </div>
+    );
+  }
+
+  const n = v => Math.round(Number(v) || 0).toLocaleString("en-US");
+  const pctTxt = (part, whole) => { if (!whole || !part) return "0%"; const p = 100 * part / whole; return p < 1 ? "<1%" : `${Math.round(p)}%`; };
+  const allBrands = brandList.reduce((sm, [, u]) => sm + u, 0);
+  const asOfTxt = (() => { const t = new Date(X.asOf || ""); return isNaN(t.getTime()) ? "" : t.toLocaleString("en-US", { month:"short", day:"numeric", hour:"numeric", minute:"2-digit" }); })();
+  const avgAge = A.dated ? Math.round(A.wsum / A.dated) : null;
+
+  const tile = (i) => {
+    const all = i < 0;
+    const u = all ? A.dated : A.tot[i];
+    const on = bucket === i;
+    const color = all ? AC : AGING_COLORS[i];
+    const usable = all || u > 0 || on;
+    const nst = all ? A.nStyles : A.styles[i];
+    return (
+      <button key={i} onClick={() => set({ bucket: all || on ? -1 : i, open:"" })} disabled={!usable} style={{
+        textAlign:"left", padding:"8px 10px 8px 13px", borderRadius:12, minWidth:0, position:"relative", overflow:"hidden",
+        cursor: usable ? "pointer" : "default", opacity: usable ? 1 : .45,
+        border: on ? `1.5px solid ${color}` : "1.5px solid rgba(255,255,255,.07)",
+        background: on ? `${color}29` : "rgba(255,255,255,.04)"
+      }}>
+        <span style={{ position:"absolute", left:0, top:0, bottom:0, width:4, background:color }} />
+        <div style={{ fontSize:11, fontWeight:700, color: on ? "#f1f5f9" : "#94a3b8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{all ? "All ages" : AGING_BUCKETS[i].label}</div>
+        <div style={{ fontSize:18, fontWeight:800, color: u ? (all ? "#f1f5f9" : AGING_TEXT[i]) : "#475569", lineHeight:1.25 }}>{n(u)}</div>
+        <div style={{ fontSize:10, fontWeight:700, color:"#64748b", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+          {all ? `${n(nst)} styles${avgAge != null ? ` · avg ${n(avgAge)} days` : ""}` : `${pctTxt(u, A.dated)} · ${n(nst)} style${nst === 1 ? "" : "s"}`}
+        </div>
+        {!all && <div style={{ height:3, borderRadius:2, background:"rgba(255,255,255,.07)", marginTop:5 }}><div style={{ width:`${A.dated ? Math.min(100, 100 * u / A.dated) : 0}%`, minWidth: u ? 2 : 0, height:"100%", borderRadius:2, background:color }} /></div>}
+      </button>
+    );
+  };
+
+  const stat = (label, val, sub, extra) => (
+    <div style={{ background:"rgba(0,0,0,.2)", borderRadius:9, padding:"6px 9px", minWidth:0, ...extra }}>
+      <div style={{ fontSize:10, fontWeight:700, color:"#64748b", textTransform:"uppercase", letterSpacing:".03em", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{label}</div>
+      <div style={{ fontSize:14.5, fontWeight:800, color:"#e2e8f0", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{val}</div>
+      {sub ? <div style={{ fontSize:10, color:"#64748b", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{sub}</div> : null}
+    </div>
+  );
+
+  const renderLots = r => {
+    const lots = r.lots.slice().sort((a, b) => String(a.date || "9999").localeCompare(String(b.date || "9999")) || b.units - a.units);
+    return (
+      <div style={{ borderTop:"1px solid rgba(255,255,255,.08)", background:"rgba(0,0,0,.18)", padding:"6px 12px 10px" }}>
+        <div style={{ fontSize:10, fontWeight:800, color:"#64748b", textTransform:"uppercase", letterSpacing:".04em", margin:"4px 0 2px" }}>Lots, oldest first</div>
+        {lots.map((L, li) => {
+          const dim = bucket >= 0 && L.b !== bucket;
+          return (
+            <div key={li} style={{ display:"flex", gap:8, padding:"7px 0", borderTop: li ? "1px solid rgba(255,255,255,.05)" : "none", opacity: dim ? .45 : 1 }}>
+              <span style={{ width:8, height:8, borderRadius:2, marginTop:5, flexShrink:0, background: L.b >= 0 ? AGING_COLORS[L.b] : "#475569" }} />
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", gap:8 }}>
+                  <span style={{ fontSize:12.5, fontWeight:700, color:"#e2e8f0" }}>{L.wh} · {L.date ? _agingFmtDate(L.date) : "No date"}</span>
+                  <span style={{ fontSize:13, fontWeight:800, color:"#e2e8f0", flexShrink:0 }}>{n(L.units)}</span>
+                </div>
+                <div style={{ fontSize:11, color:"#94a3b8", wordBreak:"break-all" }}>
+                  {[L.days != null ? _agingAge(L.days) : "", r.nSku > 1 ? L.s.sku : ""].filter(Boolean).join(" · ")}
+                </div>
+                {L.flags.map(fl => <div key={fl} style={{ fontSize:10.5, color:"#fbbf24" }}>⚠ {AGING_FLAG_NOTE[fl] || fl}</div>)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderRow = ({ r, s }) => {
+    const isOpen = open === r.base;
+    const ov = getStyleOverride(r.base, styleOverrides);
+    const photo = AGING_PHOTO_STYLE_RE.test(r.base) || (ov && ov.image) ? getImageUrl({ sku:r.base, brand_abbr:r.brandKey }, styleOverrides) : "";
+    const mix = r.units.map((u, i) => [u, i]).filter(([u]) => u > 0).reverse();
+    return (
+      <div key={r.base} style={{ ...card, marginBottom:8, overflow:"hidden" }}>
+        <div onClick={() => set({ open: isOpen ? "" : r.base })} style={{ padding:12, cursor:"pointer" }}>
+          <div style={{ display:"flex", gap:12 }}>
+            <div style={{ width:66, height:82, flexShrink:0, borderRadius:10, background:"#f8fafc", overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              {photo
+                ? <img src={photo} alt={r.base} loading="lazy" style={{ width:"100%", height:"100%", objectFit:"contain" }} onError={ev => { ev.target.style.visibility = "hidden"; }} />
+                : <span style={{ fontSize:24, opacity:.35 }}>👕</span>}
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", gap:8, alignItems:"baseline" }}>
+                <span style={{ fontFamily:"monospace", fontWeight:800, fontSize:13.5, color:"#f1f5f9", wordBreak:"break-all" }}>{r.base}</span>
+                <span style={{ fontSize:10, color:"#64748b", flexShrink:0 }}>{isOpen ? "▲" : "▼"}</span>
+              </div>
+              <div style={{ fontSize:11.5, fontWeight:600, color:"#94a3b8", marginBottom:6 }}>{r.brand}{r.nSku > 1 ? ` · ${r.nSku} SKUs` : ""}</div>
+              {bucket >= 0 ? (
+                <div style={{ marginBottom:6 }}>
+                  <div style={{ fontSize:10.5, fontWeight:700, color:"#94a3b8" }}>{AGING_BUCKETS[bucket].label}</div>
+                  <div style={{ fontSize:19, fontWeight:800, color:AGING_TEXT[bucket], lineHeight:1.2 }}>{n(r.sel)} <span style={{ fontSize:11, fontWeight:700, color:"#94a3b8" }}>units</span></div>
+                </div>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", gap:2, marginBottom:6 }}>
+                  {mix.map(([u, i]) => (
+                    <div key={i} style={{ display:"flex", alignItems:"center", gap:6, fontSize:12 }}>
+                      <span style={{ width:8, height:8, borderRadius:2, background:AGING_COLORS[i], flexShrink:0 }} />
+                      <span style={{ color:"#94a3b8", flex:1, minWidth:0 }}>{AGING_BUCKETS[i].label}</span>
+                      <strong style={{ color:AGING_TEXT[i] }}>{n(u)}</strong>
+                    </div>
+                  ))}
+                  {!mix.length && <span style={{ fontSize:12, color:"#94a3b8" }}>No dated units</span>}
+                </div>
+              )}
+              {r.on > 0 && (
+                <div style={{ display:"flex", height:6, borderRadius:3, overflow:"hidden", background:"rgba(255,255,255,.06)" }}>
+                  {r.units.map((u, i) => (u > 0 ? <div key={i} style={{ width:`${100 * u / r.on}%`, background:AGING_COLORS[i], opacity: bucket < 0 || bucket === i ? 1 : .3 }} /> : null))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(2, minmax(0, 1fr))", gap:6, marginTop:10 }}>
+            {stat("On hand", n(r.on), r.undated ? `+${n(r.undated)} undated` : "")}
+            {stat("Free now (ATS)", r.free == null ? "-" : n(r.free))}
+            {stat("Oldest lot", r.oldest ? _agingFmtDate(r.oldest) : "-", r.oldDays != null ? _agingAge(r.oldDays) : "", soldOn ? null : { gridColumn:"1 / -1" })}
+            {soldOn && stat("Sold last 12m", s ? n(s.sold) : "-", s && s.last ? `last sold ${_agingFmtMonth(s.last)}` : "no sales on record")}
+          </div>
+        </div>
+        {isOpen && renderLots(r)}
+      </div>
+    );
+  };
+
+  const shown = rows.slice(0, limit);
+  const left = rows.length - shown.length;
+  const strong = t => <strong style={{ color:"#e2e8f0" }}>{t}</strong>;
+  return (
+    <div style={{ maxWidth:720, margin:"0 auto" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:8, margin:"0 2px 4px" }}>
+        <div style={{ fontSize:16, fontWeight:800, color:"#f1f5f9" }}>How old the warehouse stock is</div>
+        <button onClick={() => setTick(t => t + 1)} style={{ fontSize:11, fontWeight:700, color:"#94a3b8", background:"transparent", border:"none", cursor:"pointer", padding:0, flexShrink:0 }} aria-label="Reload">↻</button>
+      </div>
+      <div style={{ fontSize:11.5, color:"#64748b", margin:"0 2px 10px" }}>JTW, TR and DCW{asOfTxt ? ` · inventory file of ${asOfTxt}` : ""}</div>
+
+      <div style={{ display:"flex", gap:8, alignItems:"flex-start", fontSize:12, color:"#94a3b8", lineHeight:1.45, margin:"0 0 12px", padding:"9px 11px", borderRadius:10, background:"rgba(251,113,133,.07)", border:"1px solid rgba(251,113,133,.2)" }}>
+        <span style={{ fontSize:13, lineHeight:1.3 }}>ℹ️</span>
+        <span>Every lot is aged by the day it was received. {strong("Tap an age range")} to see only the styles with stock that old. Tap it again, or {strong("All ages")}, to see every style.</span>
+      </div>
+
+      <select value={brand} onChange={ev => set({ brand:ev.target.value, open:"" })} style={{ width:"100%", boxSizing:"border-box", padding:"10px 12px", border:"2px solid rgba(255,255,255,.12)", borderRadius:10, fontSize:16, fontWeight:600, background:"rgba(255,255,255,.06)", color:"#e2e8f0", outline:"none", cursor:"pointer", colorScheme:"dark", marginBottom:10 }}>
+        <option value="">🏷️ All brands · {n(allBrands)} units</option>
+        {brandList.map(([b, u]) => <option key={b} value={b}>{b} · {n(u)} units</option>)}
+      </select>
+
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(2, minmax(0, 1fr))", gap:6, marginBottom:14 }}>
+        {tile(-1)}
+        {AGING_BUCKETS.map((_, i) => tile(i))}
+      </div>
+
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, flexWrap:"wrap", margin:"0 2px 8px" }}>
+        <span style={{ fontSize:12.5, fontWeight:700, color:"#94a3b8" }}>
+          {n(rows.length)} style{rows.length === 1 ? "" : "s"}{bucket >= 0 ? <> with stock {strong(AGING_BUCKETS[bucket].label.toLowerCase())} old</> : ""}{brand ? <> · {strong(brand)}</> : ""}
+        </span>
+        <select value={sortKey} onChange={ev => set({ sort:ev.target.value })} style={{ padding:"6px 8px", border:"1px solid rgba(255,255,255,.14)", borderRadius:8, fontSize:13, fontWeight:600, background:"rgba(255,255,255,.06)", color:"#e2e8f0", colorScheme:"dark", cursor:"pointer", maxWidth:"100%" }}>
+          {AGING_SORTS.filter(o => !o.sold || soldOn).map(o => <option key={o.k} value={o.k}>{o.k === "units" && bucket >= 0 ? "Most units in this range" : o.k === "units" ? "Most units on hand" : o.label}</option>)}
+        </select>
+      </div>
+      {sold && sold.err && !sold.denied && !soldOn && <div style={{ fontSize:11.5, color:"#fbbf24", margin:"0 2px 8px" }}>Units sold did not load ({sold.err}). <button onClick={() => setTick(t => t + 1)} style={{ fontSize:11.5, fontWeight:700, color:"#fbbf24", background:"transparent", border:"none", textDecoration:"underline", cursor:"pointer", padding:0 }}>Try again</button></div>}
+
+      {shown.map(renderRow)}
+      {!rows.length && <div style={{ ...card, padding:"24px 16px", textAlign:"center", fontSize:13, color:"#94a3b8" }}>No styles in this range.</div>}
+      {left > 0 && (
+        <button onClick={() => setLimit(l => l + 30)} style={{ width:"100%", padding:"11px 0", borderRadius:12, border:"1px solid rgba(255,255,255,.14)", background:"rgba(255,255,255,.05)", color:"#e2e8f0", fontSize:13, fontWeight:700, cursor:"pointer", marginTop:2 }}>
+          Show more ({n(Math.min(30, left))} of {n(left)} left)
+        </button>
+      )}
+
+      <div style={{ fontSize:11, color:"#64748b", lineHeight:1.5, margin:"14px 2px 0" }}>
+        On hand = units in JTW, TR and DCW lots, each lot aged by its receive date. Free now (ATS) = warehouse units available to sell now for the style, smart routed.
+        {soldOn ? ` Sold last 12m = units invoiced, net of returns, ${_agingFmtMonth(soldData.from)} to ${_agingFmtMonth(soldData.to)}.` : ""}
+        {` ${X.undatedLabel} stock has no receive date and is not counted.`} Tap a style to see its lots.
+      </div>
+    </div>
+  );
+}
+
 export default function VersaInventoryApp() {
   const [view, setView] = useState("loading"); // loading, brands, inventory, detail
   const [inventory, setInventory] = useState([]);
@@ -6774,6 +7230,7 @@ export default function VersaInventoryApp() {
     setFactoryPicksRaw(sortFactoryPicks(f));
   }, []);
   const [calView, setCalView] = useState(EMPTY_CAL_VIEW);   // Calendar tab: date, factory, Day/Week/Month/Year, shown day
+  const [agingView, setAgingView] = useState(EMPTY_AGING_VIEW);   // Aging tab: brand, age range, sort, open style
   const [auditView, setAuditView] = useState(EMPTY_AUDIT_VIEW);   // Production Audit tab: segment, Day/Week/Month, day, factory, filters
   const [warehouseFilter, setWarehouseFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -6802,7 +7259,7 @@ export default function VersaInventoryApp() {
   const [categoryFilter, setCategoryFilter] = useState("all"); // "all", one category, or the brand page's ticked list
   const [brandCategories, setBrandCategories] = useState([]); // ticked on the brands view ([] = All Products)
   const [showExport, setShowExport] = useState(false);
-  const [activeTab, setActiveTab] = useState("inventory"); // "inventory" | "production" | "overseas" | "analytics" | "calendar"
+  const [activeTab, setActiveTab] = useState("inventory"); // "inventory" | "production" | "overseas" | "analytics" | "calendar" | "aging"
   const [poIds, setPoIds] = useState([]);           // the POs on the PO screen (buildPoIndex ids)
   const [poMissing, setPoMissing] = useState([]);   // typed or pasted POs that matched nothing
   // Customer open orders load once at start; the PO search says when they are still loading
@@ -7630,7 +8087,7 @@ export default function VersaInventoryApp() {
               </g>
             </svg>
             <div>
-              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>{activeTab === "production" ? "Production Audit" : activeTab === "analytics" ? "Color Analytics" : activeTab === "overseas" ? "Overseas Summary" : activeTab === "calendar" ? "Production Calendar" : "Inventory Management"}</h1>
+              <h1 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em" }}>{activeTab === "production" ? "Production Audit" : activeTab === "analytics" ? "Color Analytics" : activeTab === "overseas" ? "Overseas Summary" : activeTab === "calendar" ? "Production Calendar" : activeTab === "aging" ? "Inventory Aging" : "Inventory Management"}</h1>
               <div style={{ display:"flex",alignItems:"center",gap:8 }}>
                 <p style={{ fontSize:12,color:"#64748b" }}>Real-time inventory system</p>
                 <span style={{ fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:99,background:statusColors[syncStatus.type],color:statusTextColors[syncStatus.type] }}>
@@ -8150,6 +8607,11 @@ export default function VersaInventoryApp() {
         {activeTab === "calendar" && (
           <ProductionCalendarView productionData={productionData} openOrdersData={openOrdersData} styleOverrides={styleOverrides} inventory={recapItems.length ? recapItems : allItems} onStyleClick={(item) => setSelectedItem(item)} value={calView} onChange={setCalView} />
         )}
+
+        {/* AGING TAB */}
+        {activeTab === "aging" && (
+          <InventoryAgingView styleOverrides={styleOverrides} value={agingView} onChange={setAgingView} />
+        )}
       </main>
 
       {/* ─── FLOATING BACK BUTTON (inventory view) ─── */}
@@ -8183,6 +8645,7 @@ export default function VersaInventoryApp() {
           { key:"overseas", label:"Overseas", icon:"🚢", activeColor:"#f59e0b" },
           { key:"analytics", label:"Analytics", icon:"📊", activeColor:"#10b981" },
           { key:"calendar", label:"Calendar", icon:"📅", activeColor:"#a78bfa" },
+          { key:"aging", label:"Aging", icon:"⏳", activeColor:"#fb7185" },
         ].map(tab => {
           const isActive = activeTab === tab.key;
           return (
