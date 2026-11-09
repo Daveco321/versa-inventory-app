@@ -6300,7 +6300,8 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
     const byProd = (cards && cards.by_prod) || {};
     let prods = Object.keys(byProd).map(p => {
       const list = cardsFor(p);
-      return { p, f:factoryOf(p) || "-", list, latest:(list[0] && list[0].date) || "", name:poNameOf(p) };
+      return { p, f:factoryOf(p) || "-", list, latest:(list[0] && list[0].date) || "", name:poNameOf(p),
+        waiting:list.some(c => (c.waiting || []).includes(p)) };
     }).filter(r => r.list.length);
     const fc = {};
     prods.forEach(r => { fc[r.f] = (fc[r.f] || 0) + 1; });
@@ -6335,6 +6336,7 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
                       <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
                         <span style={{ fontWeight:800, fontSize:15, color:"#f1f5f9", fontFamily:"monospace" }}>{r.p}</span>
                         <span style={chip("rgba(34,211,238,.12)", "#67e8f9", { fontSize:10 })}>🏭 {factoryName(r.f)}</span>
+                        {r.waiting && <span style={chip("rgba(251,191,36,.14)", "#fbbf24", { fontSize:10 })}>NOT ON THE LEDGER YET</span>}
                       </div>
                       {r.name && <div style={{ fontSize:12, color:"#94a3b8", marginTop:2, lineHeight:1.3 }}>{r.name}</div>}
                       <div style={{ fontSize:11, color:"#64748b", marginTop:3 }}>
@@ -6352,6 +6354,7 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
         <p style={{ fontSize:11, color:"#64748b", marginTop:12, lineHeight:1.5 }}>
           Swatch cards are picked up from David's email every Monday around 9 PM New York time and filed under the production POs named on them.
           {last && last.finished_at ? ` Last check: ${new Date(last.finished_at).toLocaleString("en-US", { month:"short", day:"numeric", hour:"numeric", minute:"2-digit" })}.` : ""}
+          {cards && cards.filtered ? ` A card shows while its production PO is on the Style Ledger and drops off when the PO leaves it. A card for a new PO the ledger does not have yet shows for ${cards.wait_days || 60} days, marked not on the ledger yet. Cards that dropped off are kept on file and come back if their PO returns${cards.hidden ? ` (${cards.hidden} hidden now)` : ""}.` : ""}
         </p>
       </div>
     );
