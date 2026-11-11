@@ -509,6 +509,18 @@ function sortBrands(entries) {
   });
 }
 
+// The combined All Brands page, like the All Brands tile on the online catalog and the
+// desktop (David, Nov 11 2026). It is never a key in `brands`: the page is put together from
+// the brands in view, so the brand list, its totals and the exports never count a style twice.
+const ALL_BRANDS = "__ALL__";
+const ALL_BRANDS_PAGE = 120;   // styles drawn at a time on the All Brands page (Show more adds the next)
+// the All Brands page's name for its brand pick: every brand, one or two names, or a count
+function allBrandsTitle(picks, brands) {
+  if (!picks || !picks.length) return "All Brands";
+  const name = a => (brands[a] || BRAND_MAPPING[a] || {}).full_name || a;
+  return picks.length <= 2 ? picks.map(name).join(" + ") : `${picks.length} Brands`;
+}
+
 // ═══════════════════════════════════════════
 // SMART ROUTING ENGINE (mobile)
 // ═══════════════════════════════════════════
@@ -1527,9 +1539,12 @@ function ColorSummaryPanel({ items, colorMap, brandAbbr, filterMode, activeColor
     const inc = item.incoming || 0;
     const ats = item.total_ats || 0;
     if (wh + inc <= 0 && ats <= 0) return;
-    const ci = getStyleColorInfo(item.sku, brandAbbr, colorMap, styleOverrides);
+    // each style's own brand (the same thing inside one brand; on the All Brands page
+    // the styles come from every brand)
+    const ib = item.brand_abbr || item.brand || brandAbbr;
+    const ci = getStyleColorInfo(item.sku, ib, colorMap, styleOverrides);
     const disp = ci ? ci.display : "";
-    const cat = classifyColor(disp, brandAbbr);
+    const cat = classifyColor(disp, ib);
     const skuU = item.sku.toUpperCase();
     if (data[cat]) {
       data[cat].wh += wh; data[cat].inc += inc; data[cat].ats += ats; data[cat].total += wh + inc;
@@ -1851,7 +1866,9 @@ function ImageWithFallback({ src, alt, style, className, onClick }) {
 }
 
 // ─── Brand Card ──────────────────────────
-function BrandCard({ abbr, data, onClick, filterMode, brandCategories, styleOverrides, warehouseFilter }) {
+const _cardNumSize = v => String(v).length > 7 ? 15 : 18;
+// icon / subtitle: the All Brands tile, which has no logo and says how many brands it combines
+function BrandCard({ abbr, data, onClick, filterMode, brandCategories, styleOverrides, warehouseFilter, icon, subtitle }) {
   // When categories are ticked, recompute totals from only matching items
   let displayData = data;
   if (categoryIsActive(brandCategories) && data.items) {
@@ -1866,23 +1883,30 @@ function BrandCard({ abbr, data, onClick, filterMode, brandCategories, styleOver
   return (
     <div onClick={onClick} className="brand-card">
       <div style={{ height:120, display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(135deg,#f8fafc,#f1f5f9)",borderRadius:"12px 12px 0 0",padding:12,overflow:"hidden" }}>
-        <img src={data.logo || DEFAULT_LOGO} alt={data.full_name} style={{ maxHeight:80,maxWidth:"100%",objectFit:"contain" }} onError={e => { e.target.src = DEFAULT_LOGO; }} />
+        {icon ? (
+          <div style={{ width:72,height:72,borderRadius:"50%",background:"linear-gradient(135deg,#7c3aed,#4f46e5)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:30,boxShadow:"0 4px 12px rgba(124,58,237,.3)" }}>{icon}</div>
+        ) : (
+          <img src={data.logo || DEFAULT_LOGO} alt={data.full_name} style={{ maxHeight:80,maxWidth:"100%",objectFit:"contain" }} onError={e => { e.target.src = DEFAULT_LOGO; }} />
+        )}
       </div>
       <div style={{ padding:"14px 16px" }}>
-        <h3 style={{ fontSize:16,fontWeight:700,color:"#1f2937",marginBottom:2 }}>{data.full_name}</h3>
-        <p style={{ fontSize:12,color:"#6b7280",marginBottom:8 }}>{abbr}</p>
-        <div style={{ display:"flex",justifyContent:"space-between",gap:8 }}>
-          <div style={{ background:"#f0fdf4",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
+        <h3 style={{ fontSize:16,fontWeight:700,color: icon ? "#4f46e5" : "#1f2937",marginBottom:2 }}>{data.full_name}</h3>
+        <p style={{ fontSize:12,color:"#6b7280",marginBottom:8 }}>{subtitle || abbr}</p>
+        {/* a number in the millions takes a smaller size, so all three boxes fit on a phone
+            (the All Brands tile's totals and the DKNY card ran past the edge); on the
+            narrowest phones the last box moves to a second line instead of being cut off */}
+        <div style={{ display:"flex",justifyContent:"space-between",gap:8,flexWrap:"wrap" }}>
+          <div style={{ background:"#f0fdf4",padding:"6px 6px",borderRadius:8,flex:1,textAlign:"center" }}>
             <p style={{ fontSize:10,color:"#16a34a",fontWeight:600 }}>SKUs</p>
-            <p style={{ fontSize:18,fontWeight:800,color:"#166534" }}>{displayData.sku_count}</p>
+            <p style={{ fontSize:_cardNumSize(displayData.sku_count),fontWeight:800,color:"#166534",whiteSpace:"nowrap" }}>{displayData.sku_count}</p>
           </div>
-          <div style={{ background:"#faf5ff",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
+          <div style={{ background:"#faf5ff",padding:"6px 6px",borderRadius:8,flex:1,textAlign:"center" }}>
             <p style={{ fontSize:10,color:"#7c3aed",fontWeight:600 }}>{warehouseFilter && warehouseFilter !== "all" ? warehouseFilter.toUpperCase() : "WH Stock"}</p>
-            <p style={{ fontSize:18,fontWeight:800,color:"#5b21b6" }}>{(displayData.total_warehouse||0).toLocaleString()}</p>
+            <p style={{ fontSize:_cardNumSize((displayData.total_warehouse||0).toLocaleString()),fontWeight:800,color:"#5b21b6",whiteSpace:"nowrap" }}>{(displayData.total_warehouse||0).toLocaleString()}</p>
           </div>
-          <div style={{ background:"#eef2ff",padding:"6px 10px",borderRadius:8,flex:1,textAlign:"center" }}>
+          <div style={{ background:"#eef2ff",padding:"6px 6px",borderRadius:8,flex:1,textAlign:"center" }}>
             <p style={{ fontSize:10,color:"#4f46e5",fontWeight:600 }}>ATS</p>
-            <p style={{ fontSize:18,fontWeight:800,color:"#3730a3" }}>{(displayData.total_ats||0).toLocaleString()}</p>
+            <p style={{ fontSize:_cardNumSize((displayData.total_ats||0).toLocaleString()),fontWeight:800,color:"#3730a3",whiteSpace:"nowrap" }}>{(displayData.total_ats||0).toLocaleString()}</p>
           </div>
         </div>
       </div>
@@ -2018,6 +2042,64 @@ function FactoryPanel({ value, onChange, counts, loading }) {
           })}
           <p style={{ fontSize:11, color:"#94a3b8", margin:"8px 8px 0", lineHeight:1.5 }}>
             Only the ticked factories' production shows. A style made at two factories counts under both and shows only the ticked factory's units.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── All Brands page: which brands show (the catalog's "Show Brands") ──────────
+// value = the ticked brands ([] = every brand). list = [{ abbr, name, n }] in brand order,
+// n = styles in the page's category; a ticked brand stays listed at 0 so it can be unticked.
+function BrandPickPanel({ value, onChange, list }) {
+  const [open, setOpen] = useState(false);
+  const active = value.length > 0;
+  const toggle = a => onChange(value.includes(a) ? value.filter(x => x !== a) : [...value, a]);
+  const nameOf = a => (list.find(r => r.abbr === a) || {}).name || a;
+  const box = on => (
+    <span aria-hidden="true" style={{ width:18, height:18, borderRadius:5, flexShrink:0, display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:900, lineHeight:1, border:on ? "2px solid #818cf8" : "2px solid #64748b", background:on ? "#6366f1" : "transparent", color:"#fff" }}>{on ? "✓" : ""}</span>
+  );
+  const row = on => ({ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"10px 8px", minHeight:42, background: on ? "rgba(129,140,248,.12)" : "transparent", border:"none", borderRadius:10, color:"#e2e8f0", fontSize:13, fontWeight:600, cursor:"pointer", textAlign:"left" });
+  return (
+    <div style={{ background:"rgba(129,140,248,.08)", border:`1px solid ${active ? "rgba(129,140,248,.6)" : "rgba(129,140,248,.25)"}`, borderRadius:14, marginBottom:16 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px" }}>
+        <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+          style={{ flex:1, minWidth:0, display:"flex", alignItems:"center", gap:10, background:"none", border:"none", cursor:"pointer", textAlign:"left", padding:0 }}>
+          <span style={{ fontSize:20 }}>🏷️</span>
+          <span style={{ flex:1, minWidth:0 }}>
+            <span style={{ display:"block", fontSize:13, fontWeight:800, color:"#c7d2fe" }}>Brands</span>
+            <span style={{ display:"block", fontSize:12, color: active ? "#e0e7ff" : "#94a3b8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+              {active ? value.map(nameOf).join(", ") : "Every brand. Tap to pick some."}
+            </span>
+          </span>
+          <span style={{ color:"#94a3b8", fontSize:11 }}>{open ? "▲" : "▼"}</span>
+        </button>
+        {active && (
+          <button type="button" onClick={() => onChange([])}
+            style={{ background:"rgba(129,140,248,.18)", border:"1px solid rgba(129,140,248,.45)", color:"#e0e7ff", fontSize:11, fontWeight:700, padding:"5px 10px", borderRadius:99, cursor:"pointer", whiteSpace:"nowrap" }}>
+            Clear
+          </button>
+        )}
+      </div>
+      {open && (
+        <div role="group" aria-label="Brands" style={{ padding:"0 6px 12px" }}>
+          <button type="button" role="checkbox" aria-checked={!active} onClick={() => onChange([])} style={{ ...row(!active), fontWeight:700 }}>
+            {box(!active)}<span>All brands</span>
+          </button>
+          <div style={{ height:1, background:"rgba(255,255,255,.08)", margin:"4px 8px" }} />
+          {list.map(({ abbr, name, n }) => {
+            const on = value.includes(abbr);
+            return (
+              <button key={abbr} type="button" role="checkbox" aria-checked={on} onClick={() => toggle(abbr)} style={row(on)}>
+                {box(on)}
+                <span style={{ flex:1, minWidth:0 }}>{name}</span>
+                <span style={{ fontSize:11, fontWeight:600, color:"#94a3b8", whiteSpace:"nowrap" }}>{n.toLocaleString()} {n === 1 ? "style" : "styles"}</span>
+              </button>
+            );
+          })}
+          <p style={{ fontSize:11, color:"#94a3b8", margin:"8px 8px 0", lineHeight:1.5 }}>
+            Only the ticked brands show. The totals, the color and fabric summaries and the export follow the pick.
           </p>
         </div>
       )}
@@ -2634,7 +2716,8 @@ function buildExportRow(item, { custView, filterMode, productionData, suppressio
 }
 
 // ─── Export Panel ────────────────
-function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filteredItems, productionData, viewMode, suppressionOverrides, styleOverrides, colorMap, prepackDefaults, inventory, flowMode, warehouseFilter, factoryPicks = [] }) {
+// currentLabel: the open page's name when it is not one brand (the All Brands page)
+function ExportPanel({ onClose, brands, currentBrand, currentLabel, filterMode, API_URL, filteredItems, productionData, viewMode, suppressionOverrides, styleOverrides, colorMap, prepackDefaults, inventory, flowMode, warehouseFilter, factoryPicks = [] }) {
   const [manifest, setManifest] = useState(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(null);
@@ -2806,7 +2889,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
 
   const handleExportCurrentView = async () => {
     if (!filteredItems?.length) return;
-    const brandName = currentBrand ? (brands[currentBrand]?.full_name || currentBrand) : "Inventory";
+    const brandName = currentLabel || (currentBrand ? (brands[currentBrand]?.full_name || currentBrand) : "Inventory");
     const filename = `${brandName}_${fileModeLabel}`;
     setDownloading("CURRENT");
     try {
@@ -2973,7 +3056,7 @@ function ExportPanel({ onClose, brands, currentBrand, filterMode, API_URL, filte
   const filterLabel = filterMode === "incoming" ? "🚢 Overseas" : filterMode === "ats" ? (warehouseFilter && warehouseFilter !== "all" ? `🏭 ${warehouseFilter.toUpperCase()}` : "🏭 Warehouse") : "📦 All Inventory";
   const filterColor = filterMode === "incoming" ? "#f59e0b" : filterMode === "ats" ? "#3b82f6" : "#10b981";
   const isInBrand = viewMode === "inventory" && currentBrand;
-  const currentBrandName = currentBrand ? (brands[currentBrand]?.full_name || currentBrand) : "";
+  const currentBrandName = currentLabel || (currentBrand ? (brands[currentBrand]?.full_name || currentBrand) : "");
 
   // Sort brands: current brand first, then alphabetical
   const sortedBrands = sortBrands(Object.entries(brands));
@@ -3999,7 +4082,7 @@ function PoResultsView({ ids, missing, index, lookup, ordersStatus, onRetryOrder
     <>
       <div style={{ display:"flex",alignItems:"center",gap:12,marginBottom:14,flexWrap:"wrap" }}>
         <button onClick={onBack} style={{ background:"rgba(255,255,255,.08)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,.1)",padding:"9px 16px",borderRadius:10,fontWeight:600,fontSize:13,cursor:"pointer" }}>
-          ← All Brands
+          ← Brands
         </button>
         <div style={{ flex:1,minWidth:0 }}>
           <h2 style={{ fontSize:20,fontWeight:800,color:"#f1f5f9" }}>📦 PO Search</h2>
@@ -7258,6 +7341,14 @@ export default function VersaInventoryApp() {
   const [fabricCodeFilter, setFabricCodeFilter] = useState(null);       // { code, label, skus: Set }
   const [categoryFilter, setCategoryFilter] = useState("all"); // "all", one category, or the brand page's ticked list
   const [brandCategories, setBrandCategories] = useState([]); // ticked on the brands view ([] = All Products)
+  // All Brands page: the ticked brands ([] = every brand), kept in brand order. A new pick
+  // clears the Color / Fabric drill filters, as a new category, date or factory does.
+  const [allBrandPicks, setAllBrandPicksRaw] = useState([]);
+  const setAllBrandPicks = useCallback(p => {
+    setColorCategoryFilter(null); setFabricCodeFilter(null);
+    setAllBrandPicksRaw(sortBrands(p.map(a => [a, BRAND_MAPPING[a] || {}])).map(e => e[0]));
+  }, []);
+  const [allBrandsShown, setAllBrandsShown] = useState({ key: "", n: ALL_BRANDS_PAGE });   // All Brands page: styles drawn, for which list
   const [showExport, setShowExport] = useState(false);
   const [activeTab, setActiveTab] = useState("inventory"); // "inventory" | "production" | "overseas" | "analytics" | "calendar" | "aging"
   const [poIds, setPoIds] = useState([]);           // the POs on the PO screen (buildPoIndex ids)
@@ -7377,6 +7468,13 @@ export default function VersaInventoryApp() {
       (data.items || []).some(i => matchesAnyCategory(i.sku, i.brand_abbr || i.brand, brandCategories))
     );
   }, [brands, brandCategories, styleOverrides]);
+
+  // the All Brands tile on the brand list (BrandCard narrows it to the ticked categories)
+  const allBrandsTile = useMemo(() => ({
+    full_name: "All Brands", items: allItems, sku_count: allItems.length,
+    total_ats: allItems.reduce((s, i) => s + (i.total_ats || 0), 0),
+    total_warehouse: allItems.reduce((s, i) => s + (i.total_warehouse || 0), 0),
+  }), [allItems]);
 
   // ─── Data Loading ──────────────────────
   useEffect(() => {
@@ -7734,14 +7832,17 @@ export default function VersaInventoryApp() {
     if (!showFactoryPicker || !builtBrands || builtBrands.mode !== "incoming") return {};
     let items;
     if (view === "inventory" && currentBrand) {
-      items = (builtBrands.brands[currentBrand] || {}).items || [];
+      // the All Brands page counts its ticked brands (every brand when none is ticked)
+      items = currentBrand === ALL_BRANDS
+        ? Object.entries(builtBrands.brands).filter(([a]) => !allBrandPicks.length || allBrandPicks.includes(a)).flatMap(([, b]) => b.items || [])
+        : (builtBrands.brands[currentBrand] || {}).items || [];
       if (categoryIsActive(categoryFilter)) items = items.filter(i => matchesAnyCategory(i.sku, i.brand_abbr || i.brand, categoryFilter));
     } else {
       items = Object.values(builtBrands.brands).flatMap(b => b.items || []);
       if (brandCategories.length) items = items.filter(i => matchesAnyCategory(i.sku, i.brand_abbr || i.brand, brandCategories));
     }
     return factoryStyleCounts(items, dateWindow, productionData, inventory, suppressionOverrides);
-  }, [showFactoryPicker, builtBrands, view, currentBrand, categoryFilter, brandCategories, dateWindow, productionData, inventory, suppressionOverrides, styleOverrides]);
+  }, [showFactoryPicker, builtBrands, view, currentBrand, categoryFilter, brandCategories, allBrandPicks, dateWindow, productionData, inventory, suppressionOverrides, styleOverrides]);
 
   // ─── Navigation with Browser History ────────────────────────
   const goToBrands = useCallback(() => { 
@@ -7763,7 +7864,9 @@ export default function VersaInventoryApp() {
     // Pre-seed the brand's category filter from the categories ticked on the brands view
     setCategoryFilter(brandCategories.length === 0 ? "all"
       : brandCategories.length === 1 ? brandCategories[0] : [...brandCategories]);
-    window.history.pushState({ view: "inventory", brand: brandKey }, "", `#brand-${brandKey}`);
+    // the All Brands page opens on every brand, as the catalog's does
+    if (brandKey === ALL_BRANDS) setAllBrandPicksRaw([]);
+    window.history.pushState({ view: "inventory", brand: brandKey }, "", brandKey === ALL_BRANDS ? "#all-brands" : `#brand-${brandKey}`);
     // Preload images for this brand
     const b = brands[brandKey];
     if (b?.items) preloadImages(b.items, styleOverrides);
@@ -7907,7 +8010,31 @@ export default function VersaInventoryApp() {
   }, [sortBy]);
 
   // ─── Brand View Filtering ─────────────
-  const brandData = currentBrand ? brands[currentBrand] : null;
+  // The All Brands page: every brand in view in brand order (the ticked ones only, when some
+  // are ticked), each style keeping its own brand. Null when no brand is in view at all.
+  const isAllBrands = currentBrand === ALL_BRANDS;
+  const allBrandsData = useMemo(() => {
+    if (!isAllBrands) return null;
+    const entries = sortBrands(Object.entries(brands));
+    if (!entries.length) return null;
+    const shown = allBrandPicks.length ? entries.filter(([a]) => allBrandPicks.includes(a)) : entries;
+    return { full_name: allBrandsTitle(allBrandPicks, brands), logo: null, brandCount: shown.length,
+      items: shown.flatMap(([, b]) => b.items || []) };
+  }, [isAllBrands, brands, allBrandPicks]);
+  // the brand picker's rows: styles per brand in the page's category, brand order
+  const allBrandsPickList = useMemo(() => {
+    if (!isAllBrands) return [];
+    const rows = sortBrands(Object.entries(brands)).map(([abbr, b]) => ({
+      abbr, name: b.full_name || abbr,
+      n: categoryIsActive(categoryFilter)
+        ? (b.items || []).filter(i => matchesAnyCategory(i.sku, i.brand_abbr || i.brand, categoryFilter)).length
+        : (b.items || []).length,
+    })).filter(r => r.n > 0 || allBrandPicks.includes(r.abbr));
+    // a ticked brand that left the view (another mode, dates, factories) stays, at 0
+    allBrandPicks.forEach(a => { if (!rows.some(r => r.abbr === a)) rows.push({ abbr: a, name: (BRAND_MAPPING[a] || {}).full_name || a, n: 0 }); });
+    return rows;
+  }, [isAllBrands, brands, categoryFilter, allBrandPicks, styleOverrides]);
+  const brandData = isAllBrands ? allBrandsData : currentBrand ? brands[currentBrand] : null;
   const filteredItems = useMemo(() => {
     if (!brandData) return [];
     let items = [...brandData.items];
@@ -8004,6 +8131,17 @@ export default function VersaInventoryApp() {
 
     return items;
   }, [brandData, categoryFilter, colorCategoryFilter, fabricCodeFilter, searchQuery, fitFilter, fabricFilter, sortBy, productionData, suppressionOverrides, styleOverrides, flowMode, filterMode, deductionAssignments, inventory]);
+
+  // The All Brands page draws its tiles a page at a time (a phone cannot lay out thousands
+  // at once). The totals, the summaries and the export still cover the whole list. Any new
+  // list (another pick, category, color, fabric, search, sort, view, dates or factories)
+  // starts at the first page again; a background refresh of the same list keeps what is drawn.
+  const allBrandsListKey = isAllBrands ? [allBrandPicks.join(","), JSON.stringify(categoryFilter),
+    colorCategoryFilter ? colorCategoryFilter.label : "", fabricCodeFilter ? fabricCodeFilter.label : "",
+    searchQuery, fitFilter.join(","), fabricFilter.join(","), sortBy, flowMode, filterMode, warehouseFilter,
+    JSON.stringify(dateWindow), factoryPicks.join(",")].join("|") : "";
+  const allBrandsShownN = allBrandsShown.key === allBrandsListKey ? allBrandsShown.n : ALL_BRANDS_PAGE;
+  const shownItems = isAllBrands ? filteredItems.slice(0, allBrandsShownN) : filteredItems;
 
   // Items with only category filter applied — used by Color/Fabric summary panels
   // so their counts reflect the active category (e.g. Long Sleeve) without being
@@ -8289,6 +8427,10 @@ export default function VersaInventoryApp() {
                 </div>
               ) : (
                 <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:16 }}>
+                  {/* every brand's styles on one page, like the online catalog's All Brands tile */}
+                  <BrandCard abbr={ALL_BRANDS} data={allBrandsTile} icon="🏷️"
+                    subtitle={`${filteredBrands.length} brand${filteredBrands.length === 1 ? "" : "s"} combined`}
+                    onClick={() => goToInventory(ALL_BRANDS)} filterMode={filterMode} brandCategories={brandCategories} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} />
                   {filteredBrands.map(([abbr, data]) => (
                     <BrandCard key={abbr} abbr={abbr} data={data} onClick={() => goToInventory(abbr)} filterMode={filterMode} brandCategories={brandCategories} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} />
                   ))}
@@ -8313,6 +8455,12 @@ export default function VersaInventoryApp() {
             <p style={{ fontSize:48,marginBottom:12 }}>🔍</p>
             <p style={{ fontSize:16,color:"#cbd5e1" }}>
               {(() => {
+                if (isAllBrands) {   // no brand at all in view
+                  return facOn && datesOn ? `Nothing overseas from ${facText} arrives in these delivery dates`
+                    : datesOn ? "Nothing overseas arrives in these delivery dates"
+                    : facOn ? `Nothing overseas from ${facText}`
+                    : "No styles in this view";
+                }
                 const name = (BRAND_MAPPING[currentBrand] || {}).full_name || currentBrand;
                 return facOn && datesOn ? `${name} has nothing from ${facText} arriving in these delivery dates`
                   : datesOn ? `${name} has nothing arriving in these delivery dates`
@@ -8327,7 +8475,7 @@ export default function VersaInventoryApp() {
               {facOn && (
                 <button onClick={() => setFactoryPicks([])} className="filter-pill active">Clear factories</button>
               )}
-              <button onClick={goToBrands} className="filter-pill">← All Brands</button>
+              <button onClick={goToBrands} className="filter-pill">← Brands</button>
             </div>
           </div>
         )}
@@ -8337,13 +8485,21 @@ export default function VersaInventoryApp() {
             {/* Header */}
             <div style={{ display:"flex",alignItems:"center",gap:16,marginBottom:20,flexWrap:"wrap" }}>
               <button onClick={goToBrands} style={{ background:"rgba(255,255,255,.08)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,.1)",padding:"9px 16px",borderRadius:10,fontWeight:600,fontSize:13,cursor:"pointer" }}>
-                ← All Brands
+                ← Brands
               </button>
               <div style={{ display:"flex",alignItems:"center",gap:12,flex:1 }}>
-                <img src={brandData.logo || DEFAULT_LOGO} alt={brandData.full_name} style={{ height:40,maxWidth:120,objectFit:"contain",borderRadius:6 }} onError={e => e.target.style.display="none"} />
+                {isAllBrands ? (
+                  <div style={{ width:40,height:40,borderRadius:"50%",background:"linear-gradient(135deg,#7c3aed,#4f46e5)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0 }}>🏷️</div>
+                ) : (
+                  <img src={brandData.logo || DEFAULT_LOGO} alt={brandData.full_name} style={{ height:40,maxWidth:120,objectFit:"contain",borderRadius:6 }} onError={e => e.target.style.display="none"} />
+                )}
                 <div>
-                  <h2 style={{ fontSize:22,fontWeight:800,color:"#f1f5f9" }}>{brandData.full_name}</h2>
-                  <p style={{ fontSize:13,color:"#64748b" }}>{currentBrand} · {brandData.items.length} styles</p>
+                  <h2 style={{ fontSize:22,fontWeight:800,color:"#f1f5f9" }}>{isAllBrands ? "All Brands" : brandData.full_name}</h2>
+                  <p style={{ fontSize:13,color:"#64748b" }}>
+                    {isAllBrands
+                      ? `${brandData.brandCount} brand${brandData.brandCount === 1 ? "" : "s"} · ${brandData.items.length.toLocaleString()} styles`
+                      : `${currentBrand} · ${brandData.items.length} styles`}
+                  </p>
                 </div>
               </div>
               <button
@@ -8371,6 +8527,9 @@ export default function VersaInventoryApp() {
                 🧵 {showFabricSummary ? "✕ Hide Summary (Fabrics)" : "Show Summary (Fabrics)"}
               </button>
             </div>
+
+            {/* All Brands page: tick the brands to show (the catalog's Show Brands) */}
+            {isAllBrands && <BrandPickPanel value={allBrandPicks} onChange={setAllBrandPicks} list={allBrandsPickList} />}
 
             {/* Brand Stats Bar */}
             {(() => {
@@ -8457,6 +8616,12 @@ export default function VersaInventoryApp() {
                     <button onClick={() => setCategoryFilter("all")} style={{ background:"none",border:"none",color:"#818cf8",cursor:"pointer",fontSize:12,padding:0,lineHeight:1,marginLeft:2 }}>✕</button>
                   </span>
                 )}
+                {isAllBrands && allBrandPicks.length > 0 && (
+                  <span style={{ display:"inline-flex",alignItems:"center",gap:4,background:"rgba(99,102,241,.15)",color:"#a5b4fc",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,border:"1px solid rgba(99,102,241,.3)" }}>
+                    🏷️ {allBrandsTitle(allBrandPicks, brands)}
+                    <button onClick={() => setAllBrandPicks([])} aria-label="Show every brand" style={{ background:"none",border:"none",color:"#a5b4fc",cursor:"pointer",fontSize:12,padding:0,lineHeight:1,marginLeft:2 }}>✕</button>
+                  </span>
+                )}
                 {colorCategoryFilter && (
                   <span style={{ display:"inline-flex",alignItems:"center",gap:4,background:"rgba(14,165,233,.15)",color:"#38bdf8",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,border:"1px solid rgba(14,165,233,.3)" }}>
                     🎨 {colorCategoryFilter.label}
@@ -8503,7 +8668,7 @@ export default function VersaInventoryApp() {
               <ColorSummaryPanel
                 items={categoryFilteredItems}
                 colorMap={colorMap}
-                brandAbbr={currentBrand}
+                brandAbbr={isAllBrands ? null : currentBrand}
                 filterMode={filterMode}
                 activeColorFilter={colorCategoryFilter}
                 onColorFilter={setColorCategoryFilter}
@@ -8536,7 +8701,7 @@ export default function VersaInventoryApp() {
                 {(() => {
                   let lastDateStr = null;
                   const useEtd = sortBy.startsWith("etd");
-                  return filteredItems.map((item, idx) => {
+                  return shownItems.map((item, idx) => {
                     const dateObj = useEtd ? item._flow_etd : item._flow_arrival;
                     const dateStr = dateObj ? formatDateShort(dateObj) : "No Date";
                     const etdStr = item._flow_etd ? formatDateShort(item._flow_etd) : "—";
@@ -8544,7 +8709,7 @@ export default function VersaInventoryApp() {
                     const showSep = dateStr !== lastDateStr;
                     if (showSep) lastDateStr = dateStr;
                     return (
-                      <Fragment key={item._flow_key || `flow_${idx}`}>
+                      <Fragment key={(isAllBrands ? `${item.brand_abbr || item.brand}|` : "") + (item._flow_key || `flow_${idx}`)}>
                         {showSep && (
                           <div style={{ gridColumn:"1 / -1",margin:"12px 0 4px" }}>
                             <div style={{ display:"flex",alignItems:"center",gap:12 }}>
@@ -8566,11 +8731,22 @@ export default function VersaInventoryApp() {
               </div>
             ) : (
               <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:16 }}>
-                {filteredItems.map(item => (
-                  <ProductCard key={item.sku} item={item} onClick={() => goToDetail(item)} onRoutingClick={(it) => setRoutingItem(it)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} deductionAssignments={deductionAssignments} transferIndex={transferIndex} />
+                {shownItems.map(item => (
+                  <ProductCard key={isAllBrands ? `${item.brand_abbr || item.brand}|${item.sku}` : item.sku} item={item} onClick={() => goToDetail(item)} onRoutingClick={(it) => setRoutingItem(it)} filterMode={filterMode} prodData={productionData} colorMap={colorMap} bannerRules={bannerRules} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} warehouseFilter={warehouseFilter} deductionAssignments={deductionAssignments} transferIndex={transferIndex} />
                 ))}
               </div>
             )}
+            {/* All Brands page: the next page of tiles */}
+            {shownItems.length < filteredItems.length && (() => {
+              const left = filteredItems.length - shownItems.length;
+              const rowWord = flowMode && filterMode === "incoming" ? "rows" : "styles";
+              return (
+                <button onClick={() => setAllBrandsShown({ key: allBrandsListKey, n: allBrandsShownN + ALL_BRANDS_PAGE })}
+                  style={{ width:"100%", padding:"13px 0", borderRadius:12, border:"1px solid rgba(255,255,255,.14)", background:"rgba(255,255,255,.05)", color:"#e2e8f0", fontSize:14, fontWeight:700, cursor:"pointer", marginTop:16 }}>
+                  Show {Math.min(ALL_BRANDS_PAGE, left).toLocaleString()} more {rowWord} ({left.toLocaleString()} left)
+                </button>
+              );
+            })()}
           </>
         )}
         </>}
@@ -8627,7 +8803,7 @@ export default function VersaInventoryApp() {
         onMouseEnter={e => { e.currentTarget.style.background = "linear-gradient(135deg,#667eea,#764ba2)"; }}
         onMouseLeave={e => { e.currentTarget.style.background = "linear-gradient(135deg,#334155,#1e293b)"; }}
         >
-          ← All Brands
+          ← Brands
         </button>
       )}
 
@@ -8686,7 +8862,7 @@ export default function VersaInventoryApp() {
         />
       )}
       {showExport && (
-        <ExportPanel onClose={() => setShowExport(false)} brands={brands} currentBrand={currentBrand} filterMode={filterMode} API_URL={API_URL} filteredItems={filteredItems} productionData={productionData} viewMode={view} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} colorMap={colorMap} prepackDefaults={prepackDefaults} inventory={inventory} flowMode={flowMode} warehouseFilter={warehouseFilter} factoryPicks={factoryPicks} />
+        <ExportPanel onClose={() => setShowExport(false)} brands={brands} currentBrand={currentBrand} currentLabel={isAllBrands ? allBrandsTitle(allBrandPicks, brands) : undefined} filterMode={filterMode} API_URL={API_URL} filteredItems={filteredItems} productionData={productionData} viewMode={view} suppressionOverrides={suppressionOverrides} styleOverrides={styleOverrides} colorMap={colorMap} prepackDefaults={prepackDefaults} inventory={inventory} flowMode={flowMode} warehouseFilter={warehouseFilter} factoryPicks={factoryPicks} />
       )}
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
