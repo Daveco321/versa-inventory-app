@@ -422,10 +422,12 @@ function getSizePack(sku, brandAbbr, prepackDefaults, styleOverrides) {
 }
 
 function _getSizePackBase(sku, brandAbbr, prepackDefaults, styleOverrides) {
-  // Check style override sizePack first (matches desktop)
+  // Check style override sizePack first (matches desktop). An override with an
+  // EMPTY size list is skipped, like desktop _getSizePackInfoBase and every server
+  // export: it is incomplete data and would hide the rule (Von Dutch jewelry).
   if (styleOverrides) {
     const ov = getStyleOverride(sku, styleOverrides);
-    if (ov && ov.sizePack) return ov.sizePack;
+    if (ov && ov.sizePack && Array.isArray(ov.sizePack.sizes) && ov.sizePack.sizes.length > 0) return ov.sizePack;
   }
   // Try S3-backed prepack defaults first (scoring system matches desktop)
   if (prepackDefaults && prepackDefaults.length > 0) {
@@ -443,6 +445,10 @@ function matchPrepackDefault(sku, brandAbbr, prepackDefaults) {
   const skuUpper = sku.toUpperCase().trim();
   const base = skuUpper.split('-')[0];
   const brandUp = (brandAbbr || '').toUpperCase().trim();
+  // Customer = the style's first two letters, the same as the desktop admin view
+  // (_currentPrepackCustomer) and the server exports (_export_customer), so
+  // customer-specific size rules show here too.
+  const custUp = skuUpper.substring(0, 2);
   const fit = extractFitCode(sku);
   const fab = base.length >= 6 ? base.substring(4, 6).toUpperCase() : '';
 
@@ -475,7 +481,7 @@ function matchPrepackDefault(sku, brandAbbr, prepackDefaults) {
     const rFits = _ruleFits(d);
     if (rFits.length > 0 && !rFits.includes(fit)) continue;
     const rCusts = _ruleCustomers(d);
-    if (rCusts.length > 0) continue; // mobile has no customer context
+    if (rCusts.length > 0 && (!custUp || !rCusts.map(c => c.toUpperCase()).includes(custUp))) continue;
     const rBrands = _ruleBrands(d);
     if (rBrands.length > 0 && (!brandUp || !rBrands.map(b => b.toUpperCase()).includes(brandUp))) continue;
     const rFabs = _ruleFabrics(d);
@@ -485,6 +491,7 @@ function matchPrepackDefault(sku, brandAbbr, prepackDefaults) {
     let score = 0;
     if (rCat !== 'any')       score += 1;
     if (rFits.length > 0)     score += 1;
+    if (rCusts.length > 0)    score += 2;
     if (rBrands.length > 0)   score += 2;
     if (rFabs.length > 0)     score += 1;
 
