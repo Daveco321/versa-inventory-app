@@ -131,6 +131,17 @@ function _refreshImageVersion() {   // true when photo URLs changed
 }
 let _overridesVersion = "";   // S3 version of the overrides the app holds
 let _lastInvJson = null;      // last inventory applied, to skip identical refreshes
+// The last copy of each feed the 5-minute refresh reloads (production, orders, APO,
+// allocations, deduction assignments): a refresh only re-renders, and re-runs smart routing,
+// when the data really changed.
+const _feedJson = {};
+function _unchangedFeed(key, data) {
+  let s;
+  try { s = JSON.stringify(data === undefined ? null : data); } catch (e) { return false; }
+  if (_feedJson[key] === s) return true;
+  _feedJson[key] = s;
+  return false;
+}
 // The server sends a JPEG this wide instead of the full-size original: "grid" for the
 // full-width product cards, "small" for the 40-180px tiles elsewhere.
 const THUMB_W = { grid: 960, small: 480 };
@@ -607,8 +618,13 @@ function _oneTimeNjUncommit(row, cover) {
   if (row._overseas_deducted) row._overseas_deducted = Math.max(0, row._overseas_deducted - cover);
 }
 
-function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, apoData, allocationData, suppressionOverrides) {
-  const matchingRows = inventory.filter(r => (r.sku || "").toUpperCase().split("-")[0] === baseStyle);
+// exact = route one style number only (the app's routing map and the routing popup, like the
+// desktop _routeSku): its own rows, its own ledger lines, the desktop's 10% gate, no pooling with
+// sibling rows. njExtra = the one-time NJ style's NJ units on its size rows.
+function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, apoData, allocationData, suppressionOverrides, exact = false, njExtra = 0) {
+  const matchingRows = inventory.filter(r => exact
+    ? (r.sku || "").toUpperCase() === baseStyle
+    : (r.sku || "").toUpperCase().split("-")[0] === baseStyle);
   if (matchingRows.length === 0) return null;
 
   const warehouseTotal = matchingRows.reduce(
@@ -630,7 +646,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
   // drops suppressed batches so the only remaining supply is what the rest of
   // the app agrees exists (warehouse + non-suppressed productions). The pool is
   // every size of the style (getProductionForSku reads one row's own lines).
-  const productions = getProductionForBaseStyle(baseStyle, prodData)
+  const productions = (exact ? getProductionForSku(baseStyle, prodData) : getProductionForBaseStyle(baseStyle, prodData))
     .filter(p => !_isProductionSuppressed(warehouseTotal, p, matchingRows[0].sku, suppressionOverrides))
     .sort((a, b) => (a.arrival || a.etd || new Date("2099-01-01")) - (b.arrival || b.etd || new Date("2099-01-01")));
 
@@ -646,8 +662,10 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
   if (otherWarehouse > 0) {
     slots.push({ type: "warehouse", po: null, originalUnits: otherWarehouse, units: otherWarehouse, arrival: today, etd: null, fob_flag: false, fob_note: "", nj: false, consumers: [] });
   }
-  if (njTotal > 0) {
-    slots.push({ type: "warehouse", po: null, originalUnits: njTotal, units: njTotal, arrival: today, etd: null, fob_flag: false, fob_note: "", nj: true, landing: "NJ", consumers: [] });
+  // one-time NJ style: its landed NJ stock sits on its size rows (desktop _oneTimeNjSizedNj)
+  const njSlotUnits = njTotal + Math.max(0, njExtra || 0);
+  if (njSlotUnits > 0) {
+    slots.push({ type: "warehouse", po: null, originalUnits: njSlotUnits, units: njSlotUnits, arrival: today, etd: null, fob_flag: false, fob_note: "", nj: true, landing: "NJ", consumers: [] });
   }
   if (abfiTotal > 0) {
     slots.push({ type: "warehouse", po: null, originalUnits: abfiTotal, units: abfiTotal, arrival: today, etd: null, fob_flag: false, fob_note: "", nj: true, landing: "ABFI", consumers: [] });
@@ -710,7 +728,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     const rowDemand = demandBySku[skuU] || 0;
     const rowDeduction = Math.abs(row.committed||0) + Math.abs(row.allocated||0);
     if (rowDeduction === 0 && rowDemand === 0) continue;
-    const tol = Math.max(100, rowDeduction * 0.05);
+    const tol = Math.max(100, rowDeduction * (exact ? 0.10 : 0.05));   // exact: the desktop _routeSku gate
     if (Math.abs(rowDemand - rowDeduction) > tol) return null;
   }
 
@@ -908,7 +926,7 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     let overflow = 0;
     matchingRows.forEach(r => {
       const rowWh = (r.jtw||0)+(r.tr||0)+(r.dcw||0)+(r.qa||0)+(r.nj||0)+(r.abfi||0);
-      if (perSkuWarehouse[r.sku] > rowWh) {
+      if (!exact && perSkuWarehouse[r.sku] > rowWh) {
         overflow += perSkuWarehouse[r.sku] - rowWh;
         perSkuWarehouse[r.sku] = rowWh;
       }
@@ -927,63 +945,156 @@ function _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, a
     }
   }
 
-  return { warehouseConsumed, overseasConsumed, perSkuWarehouse, slots };
+  // Per-SKU overseas from the production slots' consumer tags, like the desktop _routeSku: only
+  // what production actually gave the SKU. Demand the supply can't cover stays unfulfilled
+  // instead of pushing overseas ATS below zero (David, Nov 19 2026). The pool is every size of
+  // the style, so a size that took a sibling's lot passes the excess to sizes with incoming to
+  // spare, as the warehouse split above does.
+  const perSkuOverseas = {};
+  matchingRows.forEach(r => { perSkuOverseas[r.sku] = 0; });
+  {
+    const skuToRow = new Map();
+    matchingRows.forEach(r => skuToRow.set((r.sku||"").toUpperCase(), r));
+    slots.filter(s => s.type === "production").flatMap(s => s.consumers || []).forEach(c => {
+      const row = skuToRow.get((c.targetSku||"").toUpperCase());
+      if (row) perSkuOverseas[row.sku] += c.units;
+    });
+    let overflow = 0;
+    let firstOver = null;
+    matchingRows.forEach(r => {
+      const inc = Math.max(0, r.incoming || 0);
+      if (!exact && perSkuOverseas[r.sku] > inc) {
+        overflow += perSkuOverseas[r.sku] - inc;
+        if (!firstOver) firstOver = r;
+        perSkuOverseas[r.sku] = inc;
+      }
+    });
+    for (const r of matchingRows) {
+      if (overflow <= 0) break;
+      const spare = Math.max(0, r.incoming || 0) - perSkuOverseas[r.sku];
+      if (spare > 0) {
+        const absorb = Math.min(spare, overflow);
+        perSkuOverseas[r.sku] += absorb;
+        overflow -= absorb;
+      }
+    }
+    // nowhere left to put it (the feed's incoming is short of the ledger): it stays on the size
+    // that claimed it, so the style's total still matches the routing
+    if (overflow > 0 && firstOver) perSkuOverseas[firstOver.sku] += overflow;
+  }
+
+  return { warehouseConsumed, overseasConsumed, perSkuWarehouse, perSkuOverseas, slots };
 }
 
+// Copies of one SKU in the feed merge before routing, like the desktop _buildSmartRoutingCache
+// (David's BUGBSA002SLS bug, Aug 13 2026): physical warehouses and incoming add up, committed and
+// allocated keep the largest figure (each copy repeats the style's numbers; adding them would
+// double the order and trip the reconciliation gate).
+function _mergeRoutingRows(inventory) {
+  const bySku = new Map();
+  const out = [];
+  (inventory || []).forEach(item => {
+    if (!item || !item.sku) return;
+    const k = item.sku.toUpperCase();
+    const m = bySku.get(k);
+    if (!m) { const c = { ...item }; bySku.set(k, c); out.push(c); return; }
+    ["jtw", "tr", "dcw", "qa", "nj", "abfi", "incoming"].forEach(f => { m[f] = (m[f] || 0) + (item[f] || 0); });
+    if (Math.abs(item.committed || 0) > Math.abs(m.committed || 0)) m.committed = item.committed;
+    if (Math.abs(item.allocated || 0) > Math.abs(m.allocated || 0)) m.allocated = item.allocated;
+  });
+  return out;
+}
+
+// Route one exact style number the way the desktop _routeSku does (rows = the merged feed rows).
+// Used by the routing popup; the routing map below does the same with its lists indexed once.
+function _routeSkuMobile(sku, rows, prodData, openOrdersData, apoData, allocationData, suppressionOverrides) {
+  const key = String(sku || "").toUpperCase();
+  let njExtra = 0;
+  if (_oneTimeNjFirst(key)) {
+    (rows || []).forEach(r => {
+      const s = String((r && r.sku) || "").toUpperCase();
+      if (s.startsWith(key + "-") || s.startsWith(key + " ")) njExtra += Math.max(0, +r.nj || 0);
+    });
+  }
+  return _routeBaseStyleMobile(key, (rows || []).filter(r => (r.sku || "").toUpperCase() === key),
+    prodData, openOrdersData, apoData, allocationData, suppressionOverrides, true, njExtra);
+}
+
+// The app's routing map: every style number routed on its own, exactly like the desktop's
+// _buildSmartRoutingCache (David, Nov 19 2026: the phone used to pool a style with its -V and size
+// rows, so a -V row's stock could fill the main style's order and the two apps' overseas ATS differed).
 function _buildSmartRoutingMobile(inventory, prodData, openOrdersData, apoData, allocationData, suppressionOverrides) {
   // Without orders the engine can't make any decisions — return empty map so
   // callers know to fall back to FIFO. Same defense-in-depth as desktop.
   if (!openOrdersData || openOrdersData.length === 0) return {};
-  const baseStyles = new Set();
-  inventory.forEach(item => {
-    const base = (item.sku||"").toUpperCase().split("-")[0];
-    if (base) baseStyles.add(base);
-  });
+  const rows = _mergeRoutingRows(inventory);
+  // each style's orders, APO and allocations, indexed once (a route reads only its own)
+  const index = (list, keyOf) => {
+    const m = new Map();
+    (list || []).forEach(x => {
+      const k = keyOf(x);
+      if (!k) return;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(x);
+    });
+    return m;
+  };
+  const ordersBy = index(openOrdersData, o => (o && o.style ? String(o.style).toUpperCase() : ""));
+  const apoBy = index(apoData, e => (e && e.style ? String(e.style).toUpperCase() : ""));
+  const allocBy = index(allocationData, a => (a && a.sku ? String(a.sku).toUpperCase() : ""));
   const perSku = {};
-  for (const baseStyle of baseStyles) {
-    const result = _routeBaseStyleMobile(baseStyle, inventory, prodData, openOrdersData, apoData, allocationData, suppressionOverrides);
-    if (result) {
-      Object.entries(result.perSkuWarehouse).forEach(([sku, wh]) => {
-        const row = inventory.find(r => r.sku === sku);
-        if (!row) return;
-        const rowDed = Math.abs(row.committed||0) + Math.abs(row.allocated||0);
-        perSku[sku] = {
-          warehouseConsumed: wh,
-          overseasConsumed: Math.max(0, rowDed - wh)
-        };
+  rows.forEach(row => {
+    const key = (row.sku || "").toUpperCase();
+    if (!key) return;
+    let njExtra = 0;
+    if (_oneTimeNjFirst(key)) {
+      rows.forEach(r => {
+        const s = (r.sku || "").toUpperCase();
+        if (s.startsWith(key + "-") || s.startsWith(key + " ")) njExtra += Math.max(0, +r.nj || 0);
       });
     }
-  }
+    const result = _routeBaseStyleMobile(key, [row], prodData, ordersBy.get(key) || [], apoBy.get(key) || [],
+      allocBy.get(key) || [], suppressionOverrides, true, njExtra);
+    if (!result) return;
+    perSku[row.sku] = {
+      warehouseConsumed: result.perSkuWarehouse[row.sku] || 0,
+      overseasConsumed: result.perSkuOverseas[row.sku] || 0
+    };
+  });
   return perSku;
 }
 
-function rebuildBrands(inventory, filterMode = "all", prodData = [], suppressionOverrides = new Set(), deductionAssignments = {}, styleOverrides = {}, warehouseFilter = "all", allocationData = [], openOrdersData = [], apoData = []) {
-  const brands = {};
-  let source = [...inventory];
+// Apply virtual warehouse allocations to item.committed (matches desktop applyManualAllocationsToInventory).
+// Desktop convention: Excel `committed` is negative (e.g. -1000). Virtual allocation qty is positive.
+// Subtracting positive from negative makes committed more negative → bigger deduction after Math.abs.
+// Previously this modified `allocated` instead, which double-counted when Excel `allocated` was also non-zero.
+// Shared by rebuildBrands, the routing map, Analytics and the routing popup.
+function applyVwAllocations(inventory, allocationData) {
+  const source = [...(inventory || [])];
+  if (!allocationData || allocationData.length === 0) return source;
+  const allocTotals = {};
+  allocationData.forEach(a => {
+    const sku = (a.sku || "").toUpperCase();
+    if (sku) allocTotals[sku] = (allocTotals[sku] || 0) + (parseInt(a.qty) || 0);
+  });
+  return source.map(item => {
+    const allocQty = allocTotals[(item.sku || "").toUpperCase()] || 0;
+    if (allocQty > 0) {
+      return { ...item, committed: (item.committed || 0) - allocQty };
+    }
+    return item;
+  });
+}
 
-  // Apply virtual warehouse allocations to item.committed (matches desktop applyManualAllocationsToInventory).
-  // Desktop convention: Excel `committed` is negative (e.g. -1000). Virtual allocation qty is positive.
-  // Subtracting positive from negative makes committed more negative → bigger deduction after Math.abs.
-  // Previously this modified `allocated` instead, which double-counted when Excel `allocated` was also non-zero.
-  if (allocationData.length > 0) {
-    const allocTotals = {};
-    allocationData.forEach(a => {
-      const sku = (a.sku || "").toUpperCase();
-      if (sku) allocTotals[sku] = (allocTotals[sku] || 0) + (parseInt(a.qty) || 0);
-    });
-    source = source.map(item => {
-      const allocQty = allocTotals[(item.sku || "").toUpperCase()] || 0;
-      if (allocQty > 0) {
-        return { ...item, committed: (item.committed || 0) - allocQty };
-      }
-      return item;
-    });
-  }
+function rebuildBrands(inventory, filterMode = "all", prodData = [], suppressionOverrides = new Set(), deductionAssignments = {}, styleOverrides = {}, warehouseFilter = "all", allocationData = [], openOrdersData = [], apoData = [], smartPerSkuIn = null) {
+  const brands = {};
+  let source = applyVwAllocations(inventory, allocationData);
 
   // Build smart routing map. Lookups during the deduction loops below replace
   // legacy "warehouse-first FIFO" with start-date-aware routing per SKU.
-  // Empty map → engine falls back to legacy FIFO for every SKU.
-  const smartPerSku = _buildSmartRoutingMobile(source, prodData, openOrdersData, apoData, allocationData, suppressionOverrides);
+  // Empty map → engine falls back to legacy FIFO for every SKU. The app builds it once per
+  // data change and passes it in (smartPerSkuIn), so every mode reads the same routing.
+  const smartPerSku = smartPerSkuIn || _buildSmartRoutingMobile(source, prodData, openOrdersData, apoData, allocationData, suppressionOverrides);
 
   if (filterMode === "incoming") {
     source = source.filter(i => (i.incoming || 0) > 0).map(item => {
@@ -2379,7 +2490,9 @@ function FullscreenImage({ src, alt, onClose }) {
 // instead of guessing.
 function RoutingModal({ baseStyle, onClose, inventory, productionData, openOrdersData, apoData, allocationData }) {
   if (!baseStyle) return null;
-  const result = _routeBaseStyleMobile(baseStyle, inventory, productionData, openOrdersData, apoData, allocationData);
+  // the same route the app's numbers use: this style number on its own, allocations applied,
+  // feed copies merged (baseStyle is the card's full style number)
+  const result = _routeSkuMobile(baseStyle, _mergeRoutingRows(applyVwAllocations(inventory, allocationData)), productionData, openOrdersData, apoData, allocationData);
 
   // Format slot display order:
   //  • Warehouse first
@@ -4628,7 +4741,7 @@ const COLOR_CATS = ["white","black","navy","other_solids","fancies"];
 const COLOR_CAT_LABELS = { white:"White Solid", black:"Black Solid", navy:"All Shades of Blue", other_solids:"Other Solids", fancies:"Fancies" };
 const COLOR_CAT_EMOJI = { white:"⬜", black:"⬛", navy:"🟦", other_solids:"🎨", fancies:"✨" };
 
-function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignments }) {
+function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignments, smartPerSku }) {
   const [expandedBrand, setExpandedBrand] = useState({});
   const [sortBy, setSortBy] = useState("total-desc");
   const [search, setSearch] = useState("");
@@ -4644,21 +4757,24 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
       const incoming = item.incoming || 0;
       const committed = Math.abs(item.committed||0) + Math.abs(item.allocated||0);
       const totalStock = wh + incoming;
-      const ats = item.total_ats || 0;
+      // The All Inventory view's formula on the same rows (virtual warehouse allocations
+      // included), so this ATS matches the Inventory tab (David, Nov 19 2026)
+      const ats = totalStock - committed;
 
-      // ── Split committed into WH vs Overseas using FIFO (same as rebuildBrands) ──
+      // ── Split committed into WH vs Overseas the way the Warehouse view deducts it: smart
+      // routing's warehouse share when the style also has incoming, else all of it on the
+      // warehouse (rebuildBrands "ats" branch). Overseas is the rest, including orders the
+      // stock and production can't cover yet. ──
       let commWh = committed, commOs = 0;
       if (committed > 0) {
         const assign = (deductionAssignments || {})[item.sku] || null;
-        if (assign === 'overseas') {
-          commWh = 0; commOs = committed;
-        } else if (assign === 'warehouse') {
-          commWh = committed; commOs = 0;
-        } else {
-          // FIFO default: warehouse absorbs first, remainder to overseas
-          commWh = Math.min(committed, wh);
-          commOs = Math.max(0, committed - wh);
-        }
+        const smart = smartPerSku ? smartPerSku[item.sku] : null;
+        if (assign === 'overseas') commWh = 0;
+        else if (assign === 'warehouse') commWh = committed;
+        else if (smart && incoming > 0) commWh = Math.min(committed, smart.warehouseConsumed || 0);
+        else if (incoming > 0) commWh = Math.min(committed, wh);
+        else commWh = committed;
+        commOs = committed - commWh;
       }
 
       // Brand resolution
@@ -4736,7 +4852,7 @@ function AnalyticsView({ inventory, colorMap, styleOverrides, deductionAssignmen
     });
 
     return list;
-  }, [inventory, colorMap, styleOverrides, sortBy, deductionAssignments]);
+  }, [inventory, colorMap, styleOverrides, sortBy, deductionAssignments, smartPerSku]);
 
   const filtered = useMemo(() => {
     if (!search) return data;
@@ -6502,7 +6618,7 @@ function ProductionAuditView({ productionData, openOrdersData, styleOverrides, i
 // production order/delivery appears as its own row. Mirrors the desktop tool:
 // search by SKU/PO/production ref, filter by brand & customer, sort by date.
 // ═══════════════════════════════════════════
-function OverseasSummaryView({ inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, colorMap, brands, onItemClick, dateWindow = EMPTY_DATE_WINDOW, onDateWindowChange, factories = [], onFactoriesChange }) {
+function OverseasSummaryView({ inventory, overseasBrands, productionData, suppressionOverrides, deductionAssignments, styleOverrides, colorMap, brands, onItemClick, dateWindow = EMPTY_DATE_WINDOW, onDateWindowChange, factories = [], onFactoriesChange }) {
   const [search, setSearch] = useState("");
   const [brandFilter, setBrandFilter] = useState("");
   const [customerFilter, setCustomerFilter] = useState("");
@@ -6515,77 +6631,31 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
     return () => clearTimeout(t);
   }, [search]);
 
-  // Build flow items from ALL inventory — one row per PO/delivery.
-  // Mirrors the desktop getOverseasFlowItems() logic with FIFO deduction.
+  // One row per production line of every style in the Overseas view, from the same build,
+  // smart routing and lot split as the Inventory tab's Overseas mode (its Flow Mode rows), so
+  // the two tabs show the same numbers (David, Nov 19 2026). It used to build its own rows from
+  // the raw feed with a warehouse-first split, and listed a style filed twice in the feed twice.
   const flowItems = useMemo(() => {
-    const items = [];
-    inventory.forEach(item => {
-      const wh = (item.jtw||0) + (item.tr||0) + (item.dcw||0) + (item.qa||0) + (item.nj||0) + (item.abfi||0);
-      // the row's own ledger lines (getProductionForSku), one row per line
-      const prods = getActiveProductionForSku(item.sku, productionData, wh, suppressionOverrides);
-      if (prods.length === 0) return; // no active production → skip
-
-      const deductions = Math.abs(item.committed||0) + Math.abs(item.allocated||0);
-      let overseasDeduction = 0;
-      if (deductions > 0) {
-        const skuAssign = deductionAssignments[item.sku] || null;
-        if (skuAssign === "overseas") overseasDeduction = deductions;
-        else if (skuAssign === "warehouse") overseasDeduction = 0;
-        else {
-          // FIFO default: warehouse absorbs first, remainder spills to overseas
-          const whAbsorbed = Math.min(deductions, wh);
-          overseasDeduction = Math.max(0, deductions - whAbsorbed);
-        }
-      }
-
-      // Resolve brand for the row (same logic rebuildBrands uses for display)
-      let brand = item.brand || "UNKNOWN";
-      const BRAND_ALIASES = { NM: "NICOLE" };
-      if (BRAND_ALIASES[brand]) brand = BRAND_ALIASES[brand];
-      const named = styleNumberBrand(item.sku);
-      if (named) brand = named;
-      else if (item.sku && item.sku.length >= 4) {
-        const code = item.sku.substring(2, 4).toUpperCase();
-        if (SKU_BRAND_CODE_MAP[code] && !BRAND_MAPPING[brand]) brand = SKU_BRAND_CODE_MAP[code];
-      }
-      const ov = getStyleOverride(item.sku, styleOverrides);
-      if (ov && ov.brand) brand = ov.brand;
-      const brandFull = (BRAND_MAPPING[brand] || {}).full_name || brand;
-
-      // Sort POs by arrival (earliest first) for waterfall deduction
-      const sortedProds = [...prods].sort((a, b) => {
-        const da = a.arrival || a.etd || new Date("2099");
-        const db = b.arrival || b.etd || new Date("2099");
-        return da - db;
-      });
-
-      let remaining = overseasDeduction;
-      sortedProds.forEach(p => {
-        const units = p.units || 0;
-        const deductFromThis = Math.min(remaining, units);
-        const flowAts = units - deductFromThis;
-        remaining -= deductFromThis;
-
-        items.push({
-          ...item,
-          brand,
-          brand_abbr: brand,
-          brand_full: brandFull,
-          total_ats: flowAts,
-          _flow: true,
-          _flow_production: p.production || "",
-          _flow_po: p.poName || "",
-          _flow_units: units,
-          _flow_deducted: deductFromThis,
-          _flow_etd: p.etd,
-          _flow_arrival: p.arrival,
-          _flow_fob_flag: !!p.fob_flag,
-          _flow_fob_note: p.fob_note || ""
-        });
-      });
+    const items = Object.values(overseasBrands || {}).flatMap(b => b.items || []);
+    const rows = expandItemsToFlowRowsForExport(items, inventory, productionData, suppressionOverrides);
+    const lots = new Map();
+    rows.forEach(r => lots.set(r.sku, (lots.get(r.sku) || 0) + 1));
+    return rows.map(r => {
+      const brand = r.brand_abbr || r.brand || "UNKNOWN";
+      return {
+        ...r,
+        brand,
+        brand_abbr: brand,
+        brand_full: r.brand_full || (BRAND_MAPPING[brand] || {}).full_name || brand,
+        _flow_fob_flag: !!(r._flow_lot && r._flow_lot.fob_flag),
+        _flow_fob_note: (r._flow_lot && r._flow_lot.fob_note) || "",
+        // the style's own figures, counted when every one of its lots is on screen
+        _os_lots: lots.get(r.sku) || 1,
+        _os_incoming: r.incoming || 0,
+        _os_deducted: r._overseas_deducted || 0
+      };
     });
-    return items;
-  }, [inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides]);
+  }, [overseasBrands, inventory, productionData, suppressionOverrides]);
 
   // Brand dropdown options (only brands present in the flow data, sorted by full name)
   const brandOpts = useMemo(() => {
@@ -6652,10 +6722,29 @@ function OverseasSummaryView({ inventory, productionData, suppressionOverrides, 
     return sorted;
   }, [preFactory, factories, sortBy]);
 
-  // Stats
-  const totalUnits = visible.reduce((s, i) => s + (i._flow_units || 0), 0);
-  const totalAts = visible.reduce((s, i) => s + Math.max(0, i.total_ats), 0);
-  const totalDeducted = visible.reduce((s, i) => s + (i._flow_deducted || 0), 0);
+  // Stats. A style with every lot on screen counts its own figures, so an oversold style keeps
+  // its negative and the totals match the Inventory tab's Overseas view; a style a filter cuts
+  // counts the lots shown.
+  const osTotals = (() => {
+    const per = new Map();
+    visible.forEach(i => {
+      const e = per.get(i.sku) || { n: 0, units: 0, ded: 0, ats: 0, row: i };
+      e.n++; e.units += i._flow_units || 0; e.ded += i._flow_deducted || 0; e.ats += i.total_ats || 0;
+      per.set(i.sku, e);
+    });
+    let units = 0, ded = 0, ats = 0;
+    per.forEach(e => {
+      if (e.n >= (e.row._os_lots || 1)) {
+        units += e.row._os_incoming; ded += e.row._os_deducted; ats += e.row._os_incoming - e.row._os_deducted;
+      } else {
+        units += e.units; ded += e.ded; ats += e.ats;
+      }
+    });
+    return { units, ded, ats };
+  })();
+  const totalUnits = osTotals.units;
+  const totalAts = osTotals.ats;
+  const totalDeducted = osTotals.ded;
   const uniqueSkus = new Set(visible.map(i => i.sku)).size;
   const uniqueBrands = new Set(visible.map(i => i.brand_abbr)).size;
 
@@ -7363,20 +7452,21 @@ export default function VersaInventoryApp() {
   // Customer open orders load once at start; the PO search says when they are still loading
   // or did not load, and can try again (the orders API can be slow to wake up).
   const [ordersStatus, setOrdersStatus] = useState("loading"); // loading | ok | failed
-  const loadOpenOrders = useCallback(async (timeoutMs = 12000) => {
-    setOrdersStatus("loading");
+  const loadOpenOrders = useCallback(async (timeoutMs = 12000, background = false) => {
+    // a background refresh keeps the screen as it is: no "loading", and the old orders stay on a failure
+    if (!background) setOrdersStatus("loading");
     const c = new AbortController();
     const t = setTimeout(() => c.abort(), timeoutMs);
     try {
       const resp = await fetch(`${ORDERS_API_URL}/api/orders`, { signal: c.signal });
       if (!resp.ok) throw new Error(`Status ${resp.status}`);
       const json = await resp.json();
-      setOpenOrdersData(json.orders || []);
+      if (!_unchangedFeed("orders", json.orders || [])) setOpenOrdersData(json.orders || []);
       setOrdersStatus("ok");
       console.log("✓ Open orders loaded:", (json.orders || []).length, "rows");
     } catch (e) {
       console.warn("Open orders unavailable:", e.message);
-      setOrdersStatus("failed");
+      if (!background) setOrdersStatus("failed");
     } finally { clearTimeout(t); }
   }, []);
 
@@ -7540,6 +7630,7 @@ export default function VersaInventoryApp() {
         const resp = await fetch(`${API_URL}/production`);
         if (!resp.ok) return;
         const json = await resp.json();
+        if (_unchangedFeed("production", json.production || [])) return;
         const parsed = (json.production || []).map(p => {
           const etdDate = parseLedgerDate(p.etd);
           const brand = brandByStyleNumber(p.style, p.brand || "");   // column E unless the style number disagrees
@@ -7628,6 +7719,7 @@ export default function VersaInventoryApp() {
         const resp = await fetch(`${API_URL}/allocations`);
         if (!resp.ok) return;
         const json = await resp.json();
+        if (_unchangedFeed("allocations", json.allocations || [])) return;
         setAllocationData(json.allocations || []);
         console.log("✓ Allocations loaded:", (json.allocations || []).length, "rows");
       } catch (e) { console.warn("Allocations unavailable:", e.message); }
@@ -7640,6 +7732,7 @@ export default function VersaInventoryApp() {
         const resp = await fetch(`${API_URL}/apo`);
         if (!resp.ok) return;
         const json = await resp.json();
+        if (_unchangedFeed("apo", json.apo || [])) return;
         setApoData(json.apo || []);
         console.log("✓ APO data loaded:", (json.apo || []).length, "rows");
       } catch (e) { console.warn("APO data unavailable:", e.message); }
@@ -7732,6 +7825,7 @@ export default function VersaInventoryApp() {
         const resp = await fetch(`${API_URL}/deduction-assignments`, { signal: c.signal });
         if (!resp.ok) return;
         const json = await resp.json();
+        if (_unchangedFeed("assignments", json.assignments || {})) return;
         setDeductionAssignments(json.assignments || {});
         console.log("✓ Deduction assignments loaded:", Object.keys(json.assignments || {}).length);
       } catch (e) { console.warn("Deduction assignments unavailable:", e.message); }
@@ -7776,6 +7870,12 @@ export default function VersaInventoryApp() {
         }
       } catch (e) { /* silent retry next interval */ }
       await overridesDone;
+      // Production, open orders, APO, allocations and deduction assignments follow on the same
+      // cycle (each re-renders only when it changed), so an open app never pairs fresh stock
+      // with old orders, allocations or production (David, Nov 19 2026).
+      await Promise.all([
+        loadProduction(), loadAllocations(), loadApo(), loadOpenOrders(15000, true), loadDeductionAssignments()
+      ]).catch(() => {});
       refreshing = false;
     };
     const refreshInterval = setInterval(() => {
@@ -7790,11 +7890,10 @@ export default function VersaInventoryApp() {
     };
     document.addEventListener("visibilitychange", onVisible);
 
-    // Daily refresh for production data and color map
+    // Daily refresh for the color map (production follows the 5-minute refresh above)
     const dailyRefresh = setInterval(() => {
-      loadProduction();
       loadColorMap();
-      console.log("🔄 Daily refresh: production + colors reloaded");
+      console.log("🔄 Daily refresh: colors reloaded");
     }, 86400000); // 24 hours
 
     // Weekly refresh for allocation data (every 7 days)
@@ -7813,12 +7912,25 @@ export default function VersaInventoryApp() {
   // The full rebuild (smart routing included) is slow on a phone, so a date change never
   // re-runs it: the rebuild is kept, and the delivery-date window and the factory pick
   // (overseas view only) are applied to it separately, which is quick.
+  // Smart routing runs once per data change and is shared by every mode, the Overseas tab and
+  // Analytics, so they all read the same deductions (and switching modes no longer re-routes).
+  const routingSource = useMemo(() => applyVwAllocations(inventory, allocationData), [inventory, allocationData]);
+  const smartPerSku = useMemo(() => (inventory.length > 0
+    ? _buildSmartRoutingMobile(routingSource, productionData, openOrdersData, apoData, allocationData, suppressionOverrides)
+    : {}), [routingSource, productionData, openOrdersData, apoData, allocationData, suppressionOverrides]);
   const [builtBrands, setBuiltBrands] = useState(null);
   useEffect(() => {
     if (inventory.length > 0) {
-      setBuiltBrands({ mode: filterMode, brands: rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData, openOrdersData, apoData) });
+      setBuiltBrands({ mode: filterMode, brands: rebuildBrands(inventory, filterMode, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData, openOrdersData, apoData, smartPerSku) });
     }
-  }, [filterMode, inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData, openOrdersData, apoData]);
+  }, [filterMode, inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, warehouseFilter, allocationData, openOrdersData, apoData, smartPerSku]);
+  // The Overseas tab lists the Overseas view's own styles (the build before any date window or
+  // factory pick, which the tab applies per production line itself).
+  const overseasBrands = useMemo(() => {
+    if (activeTab !== "overseas" || inventory.length === 0) return null;
+    if (builtBrands && builtBrands.mode === "incoming") return builtBrands.brands;
+    return rebuildBrands(inventory, "incoming", productionData, suppressionOverrides, deductionAssignments, styleOverrides, "all", allocationData, openOrdersData, apoData, smartPerSku);
+  }, [activeTab, builtBrands, inventory, productionData, suppressionOverrides, deductionAssignments, styleOverrides, allocationData, openOrdersData, apoData, smartPerSku]);
   useEffect(() => {
     if (!builtBrands) return;
     setBrands(builtBrands.mode === "incoming"
@@ -8767,6 +8879,7 @@ export default function VersaInventoryApp() {
         {activeTab === "overseas" && (
           <OverseasSummaryView
             inventory={inventory}
+            overseasBrands={overseasBrands}
             productionData={productionData}
             suppressionOverrides={suppressionOverrides}
             deductionAssignments={deductionAssignments}
@@ -8783,7 +8896,7 @@ export default function VersaInventoryApp() {
 
         {/* ANALYTICS TAB */}
         {activeTab === "analytics" && (
-          <AnalyticsView inventory={inventory} colorMap={colorMap} styleOverrides={styleOverrides} deductionAssignments={deductionAssignments} />
+          <AnalyticsView inventory={routingSource} colorMap={colorMap} styleOverrides={styleOverrides} deductionAssignments={deductionAssignments} smartPerSku={smartPerSku} />
         )}
 
         {/* CALENDAR TAB */}
@@ -8851,7 +8964,7 @@ export default function VersaInventoryApp() {
       )}
       {routingItem && (
         <RoutingModal
-          baseStyle={(routingItem.sku || "").toUpperCase().split("-")[0]}
+          baseStyle={(routingItem.sku || "").toUpperCase()}
           onClose={() => setRoutingItem(null)}
           inventory={inventory}
           productionData={productionData}
