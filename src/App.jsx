@@ -8295,6 +8295,11 @@ export default function VersaInventoryApp() {
   const datesOn = filterMode === "incoming" && dateWindowActive(dateWindow);
   const facOn = filterMode === "incoming" && factoryPicks.length > 0;
   const facText = facOn ? factoriesSummary(factoryPicks) : "";
+  // The date window on the Incoming / ATS tiles (David, Nov 27 2026). "Next N days" anchors to
+  // today each time it is tapped, so the totals move as the window slides forward (Spring
+  // arrivals entering at the far end, past-due lots leaving at the near end). The range under
+  // the number says which arrivals the tile counts.
+  const datesText = datesOn ? dateWindowSummary(dateWindow) : "";
 
   // ─── Sync Status Colors ────────────────
   const statusColors = { loading:"#fef3c7", success:"#dcfce7", cached:"#dbeafe", error:"#fee2e2" };
@@ -8460,14 +8465,15 @@ export default function VersaInventoryApp() {
             <div style={{ display:"flex",gap:12,marginBottom:24,flexWrap:"wrap" }}>
               {[
                 { label: warehouseFilter !== "all" ? `${warehouseFilter.toUpperCase()} Stock` : "WH Stock", value:allItemsFiltered.reduce((s,i) => s+(i.total_warehouse||0),0).toLocaleString(), icon:"🏭", bg:"linear-gradient(135deg,#a78bfa,#7c3aed)" },
-                { label:"Incoming", value:allItemsFiltered.reduce((s,i) => s+(i.incoming||0),0).toLocaleString(), icon:"🚢", bg:"linear-gradient(135deg,#fbbf24,#d97706)" },
-                { label:"Total ATS", value:allItemsFiltered.reduce((s,i) => s+(i.total_ats||0),0).toLocaleString(), icon:"✅", bg:"linear-gradient(135deg,#34d399,#10b981)" },
+                { label:"Incoming", value:allItemsFiltered.reduce((s,i) => s+(i.incoming||0),0).toLocaleString(), icon:"🚢", bg:"linear-gradient(135deg,#fbbf24,#d97706)", note:datesText },
+                { label:"Total ATS", value:allItemsFiltered.reduce((s,i) => s+(i.total_ats||0),0).toLocaleString(), icon:"✅", bg:"linear-gradient(135deg,#34d399,#10b981)", note:datesText },
               ].map(s => (
                 <div key={s.label} style={{ flex:1,minWidth:160,background:s.bg,padding:"14px 18px",borderRadius:14,color:"#fff",display:"flex",alignItems:"center",gap:12 }}>
                   <span style={{ fontSize:28 }}>{s.icon}</span>
                   <div>
                     <p style={{ fontSize:11,opacity:.8,fontWeight:600 }}>{s.label}</p>
                     <p style={{ fontSize:24,fontWeight:800 }}>{s.value}</p>
+                    {s.note && <p style={{ fontSize:11,opacity:.9,fontWeight:600,marginTop:2 }}>📅 {s.note}</p>}
                   </div>
                 </div>
               ))}
@@ -8662,10 +8668,12 @@ export default function VersaInventoryApp() {
                   <div style={{ flex:1,minWidth:100,background:"linear-gradient(135deg,#fbbf24,#d97706)",padding:"12px 16px",borderRadius:12,color:"#fff" }}>
                     <p style={{ fontSize:10,opacity:.8,fontWeight:600 }}>🚢 Incoming</p>
                     <p style={{ fontSize:22,fontWeight:800 }}>{inc.toLocaleString()}</p>
+                    {datesText && <p style={{ fontSize:10.5,opacity:.9,fontWeight:600,marginTop:2 }}>📅 {datesText}</p>}
                   </div>
                   <div style={{ flex:1,minWidth:100,background:"linear-gradient(135deg,#34d399,#059669)",padding:"12px 16px",borderRadius:12,color:"#fff" }}>
                     <p style={{ fontSize:10,opacity:.8,fontWeight:600 }}>📦 ATS</p>
                     <p style={{ fontSize:22,fontWeight:800 }}>{ats.toLocaleString()}</p>
+                    {datesText && <p style={{ fontSize:10.5,opacity:.9,fontWeight:600,marginTop:2 }}>📅 {datesText}</p>}
                   </div>
                 </div>
               );
